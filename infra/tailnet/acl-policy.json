@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Aegis — Política de ACL de la tailnet (Tailscale Admin Console → ACLs)
+# =============================================================================
+cat <<'YAML'
+// Malla Aegis: solo tráfico dirigido y mínimo.
+//  - Dispositivos → bridge:8000 (único ingreso al backend).
+//  - El bridge (host) no expone nada más a la malla.
+//  - El LLM (Ollama 127.0.0.1) NUNCA se expone a la tailnet.
+{
+  "acls": [
+    // device → aegis:8000 (bridge). Sin acceso a nada más.
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:server:80", "tag:server:8000"]
+    },
+    // Aegis puede salir a Internet (descargas de paquetes) y a la tailnet.
+    {
+      "action": "accept",
+      "src": ["tag:server"],
+      "dst": ["*:*"]
+    },
+    {
+      // Denegar por defecto todo lo demás (dispositivos entre sí).
+      "action": "accept",
+      "src": [],
+      "dst": []
+    }
+  ],
+  "ssh": [],
+  "tagOwners": {
+    "tag:server": ["autogroup:admin"]
+  }
+}
+YAML

@@ -1,0 +1,39 @@
+# Secretos y entornos
+.env
+.env.*
+!.env.example
+secrets.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Flutter / Dart
+build/
+.dart_tool/
+.flutter-plugins*
+.packages
+*.iml
+.idea/
+.fvm/
+
+# Node
+node_modules/
+
+# Datos y logs
+*.log
+logs/
+data/
+*.db
+*.sqlite*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Artefactos
+dist/
+*.tgz
