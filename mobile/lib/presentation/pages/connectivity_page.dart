@@ -1,9 +1,13 @@
-/// Página de autodiagnóstico de la conexión al puente y la malla.
+/// Diagnóstico de la malla: estado del bridge, agentes, modelos y raw log.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/theme/dedsec_colors.dart';
+import '../../core/widgets/aegis_scaffold.dart';
+import '../../core/widgets/hud_panel.dart';
+import '../../core/widgets/status_led.dart';
 import '../providers/agent_providers.dart';
 
 class ConnectivityPage extends ConsumerWidget {
@@ -15,120 +19,163 @@ class ConnectivityPage extends ConsumerWidget {
     final health = ref.watch(healthProvider);
     final models = ref.watch(modelsProvider);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Conectividad')),
+    return AegisScaffold(
+      appBar: AppBar(title: const Text('DIAGNÓSTICO DE MALLA')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _section(
-            'Puente (host del backend)',
-            host.apiHost,
-            host.usesMeshHostname ? 'malla privada (Tailscale)' : 'loopback local',
-            usingMesh: host.usesMeshHostname,
+          HudPanel(
+            title: 'PUENTE',
+            accent: DedsecColors.ok,
+            trailing: const StatusLed(color: DedsecColors.ok, size: 9),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  host.apiHost,
+                  style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 13.5, color: DedsecColors.fg),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    if (host.usesMeshHostname) ...[
+                      const Text(
+                        '▲',
+                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.info),
+                      ),
+                      const SizedBox(width: 5),
+                      const Text(
+                        'privada · MagicDNS',
+                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.info),
+                      ),
+                    ] else ...[
+                      const Text(
+                        '●',
+                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgFaint),
+                      ),
+                      const SizedBox(width: 5),
+                      const Text(
+                        'loopback local',
+                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgFaint),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 12),
           health.when(
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => _errorBox('No se alcanzó el bridge', '$e'),
+            loading: () => const HudPanel(
+              title: 'ESTADO',
+              trailing: StatusLed(color: DedsecColors.warn, size: 9, pulse: true),
+              child: Text(
+                '// sondeando nodos…',
+                style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fgDim),
+              ),
+            ),
+            error: (e, _) => HudPanel(
+              title: 'SIN VÍA',
+              accent: DedsecColors.danger,
+              trailing: const StatusLed(color: DedsecColors.danger, size: 9),
+              child: Text(
+                '// no se alcanzó el bridge\n$e',
+                style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.danger),
+              ),
+            ),
             data: (h) => Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _section(
-                  'Bridge (${h.host})',
-                  h.ok ? 'saludable' : 'degradado',
-                  'hermes=${h.hermesOk ? "ok" : "down"} · ollama=${h.ollamaOk ? "ok" : "down"}',
+                _node(
+                  title: 'BRIDGE (${h.host})',
+                  value: h.ok ? 'saludable' : 'degradado',
+                  sub: 'hermes=${h.hermesOk ? 'ok' : 'down'} · ollama=${h.ollamaOk ? 'ok' : 'down'}',
                   ok: h.ok,
                 ),
                 const SizedBox(height: 12),
-                _section(
-                  'Agentes disponibles',
-                  h.agents.join(', '),
-                  '',
-                  ok: true,
+                _node(
+                  title: 'AGENTES',
+                  value: h.agents.isEmpty ? '// ninguno' : h.agents.join(' · '),
+                  sub: '',
+                  ok: h.agents.isNotEmpty,
                 ),
                 const SizedBox(height: 12),
-                _section(
-                  'Modelo Ollama',
-                  models.when(
-                    data: (m) => m.isEmpty ? 'sin modelos' : m.map((x) => x.split(":")[0]).join(', '),
+                _node(
+                  title: 'MODELO OLLAMA',
+                  value: models.when(
+                    data: (m) => m.isEmpty ? 'sin modelos' : m.map((x) => x.split(':')[0]).join(', '),
                     loading: () => 'consultando…',
                     error: (e, _) => 'error',
                   ),
-                  models.when(
+                  sub: models.when(
                     data: (m) => m.isEmpty ? 'arranca ${host.apiHost}:11434' : 'vía bridge',
                     loading: () => '',
                     error: (e, _) => '$e',
                   ),
                   ok: health.hasValue && h.ollamaOk,
                 ),
+                const SizedBox(height: 12),
+                HudPanel(
+                  title: 'LOG',
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '[health] host=${h.host} hermes=${h.hermesOk ? 'ok' : 'down'} ollama=${h.ollamaOk ? 'ok' : 'down'}',
+                          style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 10.5, color: DedsecColors.fgDim),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '[agents] ${h.agents.join(' ')}',
+                          style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 10.5, color: DedsecColors.fgDim),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           OutlinedButton.icon(
             onPressed: () => ref.invalidate(healthProvider),
-            icon: const Icon(Icons.refresh),
-            label: const Text('Repetir diagnóstico'),
+            icon: const Icon(Icons.refresh, size: 16),
+            label: const Text('RESCAN ▸'),
           ),
+          const SizedBox(height: 24),
         ],
       ),
     );
   }
 
-  Widget _section(String title, String value, String subtitle, {bool? ok, bool usingMesh = false}) {
-    final color = ok == null
-        ? Colors.blueGrey
-        : ok
-            ? Colors.green
-            : Colors.redAccent;
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: color.withValues(alpha: .4)),
-      ),
-      child: ListTile(
-        leading: Icon(
-          ok == null ? Icons.rotate_right : (ok ? Icons.check_circle : Icons.error),
-          color: color,
-        ),
-        title: Text(title),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 2),
-            Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
-            if (subtitle.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-              ),
-            if (usingMesh)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.vpn_lock, size: 13, color: Colors.indigo),
-                    SizedBox(width: 4),
-                    Text('privada · MagicDNS', style: TextStyle(fontSize: 11, color: Colors.indigo)),
-                  ],
-                ),
-              ),
+  Widget _node({
+    required String title,
+    required String value,
+    required String sub,
+    required bool ok,
+  }) {
+    final color = ok ? DedsecColors.ok : DedsecColors.danger;
+    return HudPanel(
+      title: title,
+      accent: color,
+      trailing: StatusLed(color: color, size: 9),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 13, color: DedsecColors.fg),
+          ),
+          if (sub.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              sub,
+              style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgFaint),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _errorBox(String title, String detail) {
-    return Card(
-      elevation: 0,
-      color: Colors.red.shade50,
-      child: ListTile(
-        leading: const Icon(Icons.cloud_off, color: Colors.red),
-        title: Text(title),
-        subtitle: Text(detail, style: const TextStyle(fontSize: 12)),
+        ],
       ),
     );
   }

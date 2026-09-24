@@ -1,4 +1,5 @@
 // Prueba de humo de la app Aegis (repo fake, sin red).
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -39,17 +40,25 @@ class FakeAgentRepository implements AgentRepository {
 }
 
 void main() {
-  testWidgets('Aegis Console renders home page', (tester) async {
+  testWidgets('Aegis Console renders DedSec home', (tester) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [agentRepositoryProvider.overrideWithValue(FakeAgentRepository())],
         child: const AegisApp(),
       ),
     );
-    await tester.pumpAndSettle();
 
-    expect(find.text('Aegis Console'), findsOneWidget);
-    expect(find.text('Lanzar tarea'), findsOneWidget);
-    expect(find.text('Worker'), findsOneWidget);
+    // Secuencia de arranque (boot) → centro de control.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('AEGIS CONSOLE'), findsOneWidget);
+    expect(find.text('[NUEVO ENCARGO]'), findsOneWidget);
+    expect(find.text('WORKER'), findsOneWidget);
+    expect(find.text('ORQUESTADOR'), findsOneWidget);
+    expect(find.text('EJECUTAR  ▶'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
   });
 }

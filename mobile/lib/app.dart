@@ -1,8 +1,10 @@
-/// Raíz de la aplicación Aegis (tema + navegación).
+/// Raíz de la aplicación Aegis (tema DedSec + arranque + navegación).
 library;
 
 import 'package:flutter/material.dart';
 
+import 'core/theme/aegis_theme.dart';
+import 'core/widgets/boot_screen.dart';
 import 'presentation/pages/home_page.dart';
 
 class AegisApp extends StatelessWidget {
@@ -13,11 +15,9 @@ class AegisApp extends StatelessWidget {
     return MaterialApp(
       title: 'Aegis Console',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0F766E)),
-      ),
-      home: const HomePage(),
+      theme: AegisTheme.dark(),
+      themeMode: ThemeMode.dark,
+      home: const BootScreen(child: HomePage()),
     );
   }
 }

@@ -1,9 +1,15 @@
-/// Página de seguimiento en vivo de la tarea activa (feed, aprobaciones, steer).
+/// Misión en vivo: respuesta en streaming, feed, aprobaciones, steer y stop.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/theme/dedsec_colors.dart';
+import '../../core/widgets/aegis_logo.dart';
+import '../../core/widgets/aegis_scaffold.dart';
+import '../../core/widgets/blink_cursor.dart';
+import '../../core/widgets/hud_panel.dart';
+import '../../core/widgets/status_led.dart';
 import '../providers/agent_providers.dart';
 import '../widgets/agent_badge.dart';
 import '../widgets/approval_prompt.dart';
@@ -36,24 +42,36 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
     final session = ref.watch(taskSessionProvider);
 
     if (session == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Tarea')),
-        body: const Center(child: Text('No hay tarea activa. Lanza una desde el inicio.')),
+      return AegisScaffold(
+        appBar: AppBar(title: const Text('AEGIS')),
+        body: const Center(
+          child: Text(
+            '// no hay misión activa — lanza una desde el control',
+            style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fgFaint),
+          ),
+        ),
       );
     }
 
     final terminal = const {'completed', 'failed', 'stopped'}.contains(session.status);
     final isLive = !terminal;
 
-    return Scaffold(
+    return AegisScaffold(
       appBar: AppBar(
-        title: const Text('Seguimiento de tarea'),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AegisLogo(size: 18),
+            SizedBox(width: 8),
+            Text('MISIÓN EN VIVO'),
+          ],
+        ),
         actions: [
           if (isLive)
             IconButton(
               tooltip: 'Detener tarea',
               onPressed: () => ref.read(taskSessionProvider.notifier).stopTask(),
-              icon: const Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
+              icon: const Icon(Icons.stop_circle_outlined, color: DedsecColors.danger),
             ),
         ],
       ),
@@ -66,9 +84,11 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                 ListView(
                   padding: const EdgeInsets.only(bottom: 24),
                   children: [
-                    if (session.finalText.isNotEmpty) _answerCard(session),
+                    if (session.finalText.isNotEmpty)
+                      _responsePanel(session.finalText, isLive)
+                    else
+                      _responsePlaceholder(),
                     const SizedBox(height: 8),
-                    _statusChip(session, context),
                     if (session.pendingApproval != null) ...[
                       const SizedBox(height: 8),
                       ApprovalPrompt(
@@ -88,32 +108,43 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                   Positioned(
                     top: 8,
                     right: 16,
-                    child: Chip(
-                      avatar: const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: DedsecColors.bg2,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: DedsecColors.line),
                       ),
-                      label:
-                          Text(session.wsStatus, style: const TextStyle(fontSize: 11)),
-                      visualDensity: VisualDensity.compact,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const StatusLed(color: DedsecColors.warn, size: 8, pulse: true),
+                          const SizedBox(width: 6),
+                          Text(
+                            'ws: ${session.wsStatus}',
+                            style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 10, color: DedsecColors.warn),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
               ],
             ),
           ),
-          if (isLive) _steerBar(session),
+          if (isLive) _steerBar(),
         ],
       ),
     );
   }
 
   Widget _header(AgentSession session) {
+    final status = session.status;
+    final isLive = !const {'completed', 'failed', 'stopped'}.contains(status);
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+      decoration: const BoxDecoration(
+        color: DedsecColors.bg1,
+        border: Border(bottom: BorderSide(color: DedsecColors.line)),
       ),
       child: Row(
         children: [
@@ -122,58 +153,75 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
           Expanded(
             child: Text(
               session.task.runId,
-              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+              style: const TextStyle(
+                fontFamily: DedsecColors.mono,
+                fontSize: 11.5,
+                color: DedsecColors.fgDim,
+              ),
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          const SizedBox(width: 8),
+          _statusChip(status, isLive),
         ],
       ),
     );
   }
 
-  Widget _answerCard(AgentSession session) {
-    return Card(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      elevation: 0,
-      color: Colors.teal.shade50,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: Colors.teal.shade200),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Text(
-          session.finalText,
-          style: const TextStyle(fontSize: 14.5, height: 1.4),
-        ),
-      ),
-    );
-  }
-
-  Widget _statusChip(AgentSession session, BuildContext context) {
-    final (bg, fg, label) = switch (session.status) {
-      'running' => (Colors.blue.shade100, Colors.blue.shade900, 'ejecutando'),
-      'completed' => (Colors.green.shade100, Colors.green.shade900, 'completada'),
-      'failed' => (Colors.red.shade100, Colors.red.shade900, 'fallada'),
-      'stopped' => (Colors.orange.shade100, Colors.orange.shade900, 'detenida'),
-      _ => (Colors.grey.shade200, Colors.grey.shade800, 'iniciando'),
+  Widget _statusChip(String status, bool isLive) {
+    final (label, color) = switch (status) {
+      'running' => ('RUNNING', DedsecColors.brand),
+      'completed' => ('COMPLETED', DedsecColors.ok),
+      'failed' => ('FAILED', DedsecColors.danger),
+      'stopped' => ('STOPPED', DedsecColors.warn),
+      _ => ('QUEUED', DedsecColors.fgDim),
     };
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: Chip(
-          backgroundColor: bg,
-          label: Text(label,
-              style: TextStyle(
-                  color: fg, fontSize: 12, fontWeight: FontWeight.w600)),
-          visualDensity: VisualDensity.compact,
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        StatusLed(color: color, size: 8, pulse: isLive),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(
+            fontFamily: DedsecColors.mono,
+            fontSize: 10.5,
+            letterSpacing: 1.5,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _responsePanel(String finalText, bool isLive) {
+    return HudPanel(
+      title: 'SALIDA ▾',
+      trailing: isLive ? const BlinkCursor(size: 12) : null,
+      child: SelectableText(
+        finalText,
+        style: const TextStyle(
+          fontFamily: DedsecColors.mono,
+          fontSize: 13.5,
+          height: 1.55,
+          color: DedsecColors.fg,
         ),
       ),
     );
   }
 
-  Widget _steerBar(AgentSession session) {
+  Widget _responsePlaceholder() {
+    return HudPanel(
+      title: 'SALIDA ▾',
+      trailing: const BlinkCursor(size: 12),
+      child: const Text(
+        '// esperando datos del agente…',
+        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fgFaint),
+      ),
+    );
+  }
+
+  Widget _steerBar() {
     return SafeArea(
       top: false,
       child: Padding(
@@ -185,18 +233,21 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                 controller: _steer,
                 decoration: const InputDecoration(
                   isDense: true,
-                  hintText: 'Redirigir al agente…',
-                  border: OutlineInputBorder(),
-                  contentPadding:
-                      EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  hintText: '\$ redirigir ▸',
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
                 onSubmitted: _sendSteer,
               ),
             ),
             const SizedBox(width: 8),
-            IconButton.filledTonal(
+            IconButton(
               onPressed: () => _sendSteer(_steer.text),
-              icon: const Icon(Icons.send),
+              icon: const Icon(Icons.send, size: 18),
+              style: IconButton.styleFrom(
+                foregroundColor: DedsecColors.brand,
+                side: const BorderSide(color: DedsecColors.line),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+              ),
             ),
           ],
         ),

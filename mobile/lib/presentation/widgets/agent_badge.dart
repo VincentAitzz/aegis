@@ -1,7 +1,9 @@
-/// Badge del agente (worker/orchestrator) con color por rol.
+/// Badge de agente estilo placa de circuito, color por rol.
 library;
 
 import 'package:flutter/material.dart';
+
+import '../../core/theme/dedsec_colors.dart';
 
 class AgentBadge extends StatelessWidget {
   const AgentBadge({super.key, required this.agent});
@@ -11,26 +13,34 @@ class AgentBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isWorker = agent == 'worker';
-    final color = isWorker ? Colors.teal : Colors.indigo;
+    final color = isWorker ? DedsecColors.ok : DedsecColors.brand;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: .14),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: .45)),
+        color: color.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: color.withValues(alpha: .55)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.smart_toy, size: 14, color: color),
+          Text(
+            '▣',
+            style: TextStyle(
+              fontFamily: DedsecColors.mono,
+              fontSize: 10,
+              color: color,
+            ),
+          ),
           const SizedBox(width: 6),
           Text(
-            agent,
+            agent.toUpperCase(),
             style: TextStyle(
+              fontFamily: DedsecColors.mono,
               color: color,
               fontWeight: FontWeight.w600,
-              fontSize: 12,
-              letterSpacing: .4,
+              fontSize: 11,
+              letterSpacing: 1.2,
             ),
           ),
         ],

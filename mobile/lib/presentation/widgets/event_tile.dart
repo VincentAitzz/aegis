@@ -1,8 +1,9 @@
-/// Tile de un evento del feed (tool, delta, aprobación, terminal, ws.state).
+/// Línea de log de un evento: `[hh:mm:ss] marcador breve descripción`.
 library;
 
 import 'package:flutter/material.dart';
 
+import '../../core/theme/dedsec_colors.dart';
 import '../../data/models/agent_models.dart';
 
 class EventTile extends StatelessWidget {
@@ -12,30 +13,50 @@ class EventTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMuted = const {'ws.status', 'raw.progress'}.contains(event.type);
+    final (mark, color) = _marker;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _icon(context),
-          const SizedBox(width: 10),
-          const SizedBox(width: 4, height: 18, child: VerticalDivider()),
+          SizedBox(
+            width: 74,
+            child: Text(
+              _fmtTime(event.when),
+              style: const TextStyle(
+                fontFamily: DedsecColors.mono,
+                fontSize: 10,
+                color: DedsecColors.fgFaint,
+                height: 1.5,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 14,
+            child: Text(
+              mark,
+              style: TextStyle(
+                fontFamily: DedsecColors.mono,
+                fontSize: 12,
+                height: 1.35,
+                color: color,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  event.summary,
-                  maxLines: 6,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 13.5, height: 1.35, color: _isMuted ? Colors.grey.shade500 : null),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  event.when,
-                  style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-                ),
-              ],
+            child: Text(
+              event.summary,
+              maxLines: 6,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: DedsecColors.mono,
+                fontSize: 13,
+                height: 1.45,
+                color: isMuted ? DedsecColors.fgFaint : DedsecColors.fg,
+              ),
             ),
           ),
         ],
@@ -43,26 +64,24 @@ class EventTile extends StatelessWidget {
     );
   }
 
-  bool get _isMuted => const {'ws.status', 'raw.progress'}.contains(event.type);
+  (String, Color) get _marker => switch (event.type) {
+        'task.created' => ('●', DedsecColors.info),
+        'text.delta' => ('▸', DedsecColors.fg),
+        'reasoning' => ('◈', DedsecColors.info),
+        'tool.started' => ('>', DedsecColors.info),
+        'tool.completed' => ('✓', DedsecColors.ok),
+        'approval.request' => ('▲', DedsecColors.warn),
+        'approval.resolved' => ('◆', DedsecColors.warn),
+        'task.done' => ('■', DedsecColors.ok),
+        'task.failed' => ('■', DedsecColors.danger),
+        'task.stopped' => ('◼', DedsecColors.danger),
+        _ => ('·', DedsecColors.fgFaint),
+      };
 
-  Widget _icon(BuildContext context) {
-    final (icon, color) = switch (event.type) {
-      'task.created' => (Icons.play_circle_outline, Colors.blueGrey),
-      'text.delta' => (Icons.forum_outlined, Colors.teal),
-      'reasoning' => (Icons.psychology_outlined, Colors.deepPurple),
-      'tool.started' => (Icons.build_outlined, Colors.amber.shade800),
-      'tool.completed' => (Icons.check_circle_outline, Colors.green),
-      'approval.request' => (Icons.warning_amber_rounded, Colors.orange),
-      'approval.resolved' => (Icons.thumbs_up_down_outlined, Colors.orange),
-      'task.done' => (Icons.verified_outlined, Colors.green),
-      'task.failed' => (Icons.error_outline, Colors.red),
-      'task.stopped' => (Icons.stop_circle_outlined, Colors.red),
-      'ws.status' => (Icons.wifi_outlined, Colors.blueGrey),
-      _ => (Icons.circle, Colors.grey),
-    };
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Icon(icon, size: 16, color: color),
-    );
+  static String _fmtTime(String iso) {
+    final t = DateTime.tryParse(iso);
+    if (t == null) return '';
+    String p(int v) => v.toString().padLeft(2, '0');
+    return '${p(t.hour)}:${p(t.minute)}:${p(t.second)}';
   }
 }
