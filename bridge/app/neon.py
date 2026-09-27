@@ -77,7 +77,7 @@ def connection_uri(project: str, *, pooled: bool = True) -> str:
     que alguien pueda commitear.
     """
     cfg = config(project)
-    pid, branch = cfg.neon_project, cfg.branch
+    pid, branch = cfg.neon_project, cfg.neon_branch
     if not pid:
         raise NeonError(f"el registro no tiene proyecto Neon para '{project}'")
     branches = _api(f"/projects/{pid}/branches?limit=100").get("branches", [])
