@@ -163,7 +163,7 @@ abstract final class AegisTheme {
       progressIndicatorTheme: const ProgressIndicatorThemeData(color: DedsecColors.brand, linearTrackColor: DedsecColors.bg2, circularTrackColor: DedsecColors.bg2),
       textSelectionTheme: const TextSelectionThemeData(
         cursorColor: DedsecColors.brand,
-        selectionColor: Color(0x4DC83BFE),
+        selectionColor: Color(0x4D2EFFA0),
         selectionHandleColor: DedsecColors.brand,
       ),
       iconTheme: const IconThemeData(color: DedsecColors.fg),

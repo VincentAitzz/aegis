@@ -10,7 +10,7 @@ abstract final class DedsecColors {
   static const bg2 = Color(0xFF161A1D);
   static const line = Color(0xFF252B30);
 
-  static const Color brand = Color(0xFFC83BFE);
+  static const Color brand = Color(0xFF2EFFA0);
 
   static const ok = Color(0xFF2EFFA0);
   static const info = Color(0xFF35C7FF);
