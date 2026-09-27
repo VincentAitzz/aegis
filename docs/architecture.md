@@ -36,7 +36,19 @@ un contrato simple REST+WS, y hace de **cola/proxy** de eventos.
   <key>`). Métodos: crear run, estado, aprobar/refusar, steer, stop y stream SSE.
   Nota: `httpx.Timeout` debe recibir los 4 parámetros (`connect/read/write/pool`).
 - `models.py` — contrato Pydantic REST+WS (validación estricta).
-- `llm.py` — warm-up/no-bloqueante de modelo Ollama y listado.
+- `llm.py` — warm-up/no-bloqueante de modelo Ollama, listado y **embeddings**
+  locales (`/api/embed`) para la memoria.
+- `telemetry.py` — observabilidad: eventos JSON estructurados en
+  `data/logs/bridge.jsonl` y por run en `data/logs/runs/<run_id>.jsonl` (cada
+  evento con su duración; en `task.failed` queda error + traza de pila).
+- `memory/` — 'cerebro' del proyecto: `sqlite_graph.py` (grafo conceptual
+  persistente, backend por defecto), `episodic.py` (ChromaDB embebido +
+  embeddings Ollama), `graphiti.py` (backend avanzado opt-in), fachada
+  `ProjectMemory` (remember/recall/render).
+- `hooks.py` — reacción a eventos terminales: construye el episodio (éxito o
+  pitfall con error) y lo persiste en memoria + telemetría.
+- `mcp_memory.py` — fase 2: servidor MCP (stdio) para que el agente consulte la
+  memoria a demanda.
 
 ### 2.2 App (`mobile/lib/`)
 
@@ -124,3 +136,87 @@ Tipos de `type`: `task.created`, `status.changed`, `reasoning`, `text.delta`,
   64k mínimo). Documentar el presupuesto KV ~12 GB @64k no permite 14b en 6 GB VRAM.
 - En ese escenario: `model_overrides.orchestrator` → `qwen2.5-coder:14b` y re-run del
   smoke worker/orchestrator.
+
+## 7. Capas críticas de ejecución
+
+El entorno de ejecución se estructura en tres capas: **aislamiento**,
+**observabilidad** y **memoria**. Dibujo del flujo completo:
+
+```
+[Móvil] → REST/WS → [Bridge :8000]
+                        │  POST /tasks
+                        │   ├─ recall(prompt) ──► memoria: episodios + grafo
+                        │   └─ instructions + contexto previo
+                        ▼
+                     [Hermes API :8642]  ──►  [terminal: docker aegis-sandbox]   (capA: aislamiento)
+                        │                        compila / ejecuta / corre tests
+                        │                        ├─ stdout+stderr → devuelve al agente (contexto inmediato)
+                        │                        └─ trazas → logs /api
+                        ▼
+                     events SSE → relay
+                        ├─ telemetry.run_event → data/logs/runs/<run_id>.jsonl   (capB: observabilidad)
+                        └─ on_terminal (task.done|task.failed)
+                             ├─ episodio éxito  → remember()                     (capC: memoria)
+                             └─ pitfall+traza   → remember() + run.failed.detail
+```
+
+### 7.1 Aislamiento (Docker)
+
+- Recomendado por Hermes: `terminal.backend: docker`. Así, **cada comando** que
+  el agente ejecuta (escribir el módulo, compilar, correr unit tests) ocurre
+  dentro de un contenedor `aegis-sandbox` construido desde
+  `infra/docker/Dockerfile`, con `docker_mount_cwd_to_workspace` (el cwd se
+  monta en `/workspace`) y `docker_run_as_host_user` (archivos a tu uid).
+- Límites (host ~15 GB RAM + Ollama a 64k): `container_cpu=2`,
+  `container_memory=4096`, `container_disk=24576`, `container_persistent=true`.
+- Actívalo con `./infra/docker/enable-docker-backend.sh` (usa
+  `hermes config set`, no toca el YAML) — ver `docs/runbook.md`.
+- Si el fallo del proceso ocurre en el contenedor, su stderr vuelve al agente
+  como resultado del tool de terminal (contexto inmediato) y además queda en el
+  log estructurado del run para re-alimentar la memoria.
+
+### 7.2 Observabilidad (telemetría estructurada)
+
+- `bridge/app/telemetry.py` emite JSONL en dos planos:
+  - `data/logs/bridge.jsonl` — eventos globales (recall de memoria, episodios
+    guardados, fallos con traza).
+  - `data/logs/runs/<run_id>.jsonl` — la secuencia completa del run: cada evento
+    normalizado con `event_exec_ms`, y `run.failed.detail` con **línea y traza de
+    pila** del fallo. Es el artefacto que el flujo de memoria usa como episodio
+    negativo.
+- `GET /health` incluye `memory` (estado de los almacenes) y la telemetría se
+  configura en `lifespan` desde `LOG_DIR` (`.env`).
+- Extra (documentado): `hermes monitoring` exporta métricas OTLP si se desea.
+
+### 7.3 Memoria ('cerebro' del proyecto)
+
+Tres niveles, cada uno con su rol:
+
+| Nivel | Almacén | Backend | Rol |
+|-------|---------|---------|-----|
+| (c) Nativa | Hermes memory graph (`hermes journey`) | incl. Hermes | autobiografía del agente (se llena con el uso) |
+| (b) Conceptual | grafo de conceptos, episodios ligados | `sqlite` (por defecto) o `graphiti` (opt-in) | enlaces entre conceptos descubiertos juntos |
+| (a) Episódica | embeddings + índice vectorial | ChromaDB embebido + Ollama (`nomic-embed-text`) | recuperación semántica "¿ya resolvimos algo así?" |
+
+Ciclo de vida (automatizado en el bridge):
+
+1. **Recordar** — `hooks.on_terminal_event` en `relay._reader`: al terminar un
+   run, construye el episodio (prompt, resumen, código extraído de bloques
+   fenced, error si falló) y llama a `ProjectMemory.remember()`:
+   - guarda el episodio en el grafo (SQLite o Graphiti) con sus conceptos,
+   - lo indexa por embedding (Chroma + Ollama) cuando está disponible.
+2. **Recordar antes de crear** — `POST /tasks` (y WS `create_task`) calcula
+   `recall(prompt)` y, si hay contexto, lo inyecta como `instructions` extra
+   bajo `## Contexto de experiencia previa`. El modelo (64k de contexto) lo
+   asimila sin coste.
+3. **Consultar a demanda (fase 2)** — `app/mcp_memory.py` expone
+   `memory_search`/`memory_status` como tools MCP sobre stdio, para que el
+   propio agente consulte dentro del run.
+
+Config (`.env`): `MEMORY_ENABLED`, `MEMORY_DIR`, `MEMORY_RECALL_K`,
+`MEMORY_GRAPH_BACKEND` (`sqlite`|`graphiti`|`off`), `EMBED_MODEL`.
+
+Degradación intencionada: sin `chromadb`/Ollama la memoria **no rompe el
+bridge** — la episódica se desactiva sola y el grafo (SQLite, sin deps)
+sigue sirviendo recuperación léxica. Los tests (`tests/test_memory.py`)
+verifican este comportamiento.

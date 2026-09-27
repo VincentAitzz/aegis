@@ -25,9 +25,11 @@ comunicándose **exclusivamente** a través de una red privada virtual de malla
 ## Repositorio
 
 ```
-bridge/        Puente REST+WS (FastAPI)
+bridge/        Puente REST+WS (FastAPI) — también observabilidad (telemetry) y memoria (memory/)
+  app/memory/    'cerebro': grafo conceptual (SQLite/Graphiti) + episódica (ChromaDB)
+  app/mcp_memory.py  servidor MCP (fase 2) para consultar memoria desde el agente
 mobile/        App Flutter (Aegis Console)
-infra/         Scripts de aprovisionamiento (tailscale, ollama, dispositivo)
+infra/         Scripts de aprovisionamiento (tailscale, ollama, dispositivo, docker sandbox)
 docs/          Arquitectura, contrato API y runbook
 ```
 
@@ -39,6 +41,25 @@ docs/          Arquitectura, contrato API y runbook
 - 14b+ @64k **no entra** (pesos 9 GB + KV ~12 GB = 21 GB); el orquestador y el
   worker son **roles lógicos** sobre el mismo 7b. La ruta a 14b queda documentada
   en `docs/architecture.md` para hardware futuro.
+- Memoria: ChromaDB y el grafo corren in-process (~300 MB adicionales); el
+  modelo de embeddings es `nomic-embed-text` (pequeño, ~274 MB). Reservado para
+  limitar `container_memory` del sandbox a 4 GB (ver §Capas).
+
+## Capas de ejecución
+
+El backend local se estructura en tres capas críticas (detalle en
+`docs/architecture.md` §7):
+
+| Capa | Qué hace | Cómo |
+|------|----------|------|
+| **Aislamiento** | el agente compila/testea dentro de un contenedor, jamás en el host | `terminal.backend: docker` + imagen `infra/docker/Dockerfile` |
+| **Observabilidad** | cada evento y cada fallo quedan como log JSON estructurado | `data/logs/bridge.jsonl` + `data/logs/runs/<run_id>.jsonl` con traza |
+| **Memoria** | cada problema resuelto (o fallido) se guarda como episodio y se consulta antes de crear tareas | ChromaDB (semántica) + grafo conceptual + memoria nativa de Hermes |
+
+Activar el aislamiento: `./infra/docker/enable-docker-backend.sh` (tras instalar
+Docker). La memoria degrada sola si falta chroma/embeddings: el grafo (SQLite)
+sigue aportando contexto léxico y se inyecta como `instructions` en cada
+`POST /tasks`.
 
 ## Servicios
 
@@ -60,6 +81,7 @@ hermes gateway run                        # API server en 127.0.0.1:8642
 # 2) Bridge
 cd bridge && python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env                      # pega HERMES_API_KEY (de ~/.hermes/.env)
+ollama pull nomic-embed-text              # embeddings de la memoria (una vez)
 ./run.sh
 
 # 3) Malla (una vez por nodo, con sudo)
@@ -85,6 +107,11 @@ infra/mobile/install-phone.sh            # installa APK + adb reverse 8000/11434
   stream de deltas → respuesta final en pantalla.
 - ✅ Contrato bidireccional: `POST /tasks`, WS `/ws` (suscribir/steer/approve/stop),
   replay de historial para suscriptores tardíos.
+- ✅ Observabilidad: logs JSON por evento y por run con trazas de fallo
+  (`data/logs/`; telemetría en `GET /health`).
+- ✅ Memoria: episodios éxito/pitfall en grafo (SQLite) + ChromaDB cuando está
+  instalado; contexto previo inyectado en cada tarea; servidor MCP `mcp_memory.py`.
+- ⏳ Aislamiento: Docker pendiente de instalación → `infra/docker/enable-docker-backend.sh`.
 - Pendiente: ACL en admin console (`infra/tailnet/acl-policy.json`), firmado de APK.
 
 Ver `docs/architecture.md` (diseño + contrato) y `docs/runbook.md` (operación).
