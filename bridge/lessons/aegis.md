@@ -119,6 +119,76 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
   `check` del repo `aegis`. Antes de que lo tuviéramos, el agente escribía
   Python sin ninguna red detrás.
 
+### A-011 · Escritura rechazada → reescribe. Verificar NO es el siguiente paso
+
+- **Qué pasó**: unidad "crear `verifier.py`". Paso 1: `aegis_write_file` → el
+  guardarraíl rechazó por sintaxis (`línea 25: expected ':'`) y borró el archivo.
+  Paso 2: el modelo llamó `repo_verify(check, aegis)` → **OK, 15/15 módulos
+  importan**. Pasos 3-5: dos reparaciones y nada. Entregó 0 de 1.
+- **Las dos trampas**:
+  1. `repo_verify` en verde **no prueba que el entregable exista**: el archivo se
+     había borrado, y con él desapareció del conteo de módulos. Un verificador
+     verde sobre un entregable ausente es un falso positivo.
+  2. El rollback **borraba el contenido escrito**, así que nadie podía leer qué
+     había escrito mal. Sin evidencia, el error se repite a ciegas.
+- **Regla**: si una escritura sale `RECHAZADA`, el siguiente paso es **volver a
+  escribir el archivo**, nunca verificar. Y antes de reescribir, lee la
+  cuarentena: el guardarraíl deja el contenido en `bridge/data/quarantine/`.
+- **Ya está arreglado**: la cuarentena existe y el mensaje dice dónde está.
+
+### A-012 · Para Python, dale el esqueleto, no la especificación
+
+- **Qué pasó**: con la interfaz descrita en prosa, el modelo generó la estructura
+  y metió un error de sintaxis. Con `projects.py` (interfaz corta) acertó.
+- **Por qué**: la estructura es lo único que el modelo puede hacer mal de forma
+  silenciosa, y yo puedo escribirla gratis. El cuerpo de las funciones son
+  sentencias, y las sentencias casi nunca tienen error de sintaxis.
+- **Regla**: cuando el archivo sea Python y la interfaz importe, incluye en las
+  instrucciones el esqueleto completo con `pass` en los cuerpos, y pide que solo
+  rellene los cuerpos. "Escribe esto filling the bodies" en vez de "esto es lo
+  que tiene que hacer".
+
+### A-013 · El agente declaró haber creado un archivo que nunca escribió
+
+- **Qué pasó**: tercer intento de la misma unidad. La escritura falló con
+  `aegis_write_file() got an unexpected keyword argument 'what'` (el tercer vez
+  que confunde el argumento `what` de `repo_verify`, con A-008 ya inyectada). El
+  modelo no reintentó, y su respuesta final fue:
+
+  > "El verificador ha confirmado que todos los módulos se importan correctamente.
+  > Podemos concluir que el archivo `verifier.py` ha sido creado y verificado
+  > exitosamente."
+
+  No se había escrito nada. Nunca se escribió.
+- **Por qué importa más que los otros errores**: los otros hacen que el agente
+  falle. Este hace que el agente **mienta sobre su propio trabajo**, que es peor
+  para un sistema autónomo: un asistente que reporta éxito sin evidencia no es
+  inútil, es peligroso, porque parece que funciona.
+- **Regla dura**: `answer` es una **opinión del modelo**, nunca evidencia. El
+  mismo `repo_verify` en verde que él citaba como prueba era la prueba de lo
+  contrario: el archivo no existía, por eso el check daba verde. Para saber si un
+  entregable está, se mira el archivo, no la respuesta.
+- **Consecuencia de diseño**: por eso existe `verifier.py` y por eso la puerta
+  verifica con el comando, no preguntándole al modelo. Y por eso la Fase 1
+  escribe artefactos en disco: si el plan no está en un archivo, no se puede
+  auditar.
+
+### A-014 · Siete reintentos idénticos, y la lección que no alcanzó
+
+- **Qué pasó**: el segundo intento escribió 7 veces `aegis_write_file` con la
+  misma ruta equivocada (`/RUTA/AL/REPO/...`: armó la ruta a mano y perdió el
+  segmento `Workspace`), en 19 pasos, sin cambiar nunca de estrategia.
+- **La lección A-011 estaba inyectada** y no evitó nada: la lección hablaba de
+  reescribir tras un rechazo, y este modelo ni siquiera estava en el caso que
+  describía. **Una lección solo previene el error que nombra.**
+- **Corolario**: el antidoto no es una lección más, es la mecánica. Ya está:
+  `verifier.es_repetido` cuenta la llamada idéntica que falló dos veces, y la
+  puerta pone `stop: True` cuando no hay mejora. La lección sirve para entender;
+  el mecanismo es lo que para.
+- **Mejora del guardarraíl**: el mensaje de ruta ahora dice cuál era la correcta
+  (`¿Querías decir: ...?`). Un error sin salida convierte una torpeza en un
+  callejón; un error con la respuesta a un paso delata el hueco exacto.
+
 ---
 
 ## Reglas de este repo
@@ -147,5 +217,12 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 | 2026-09-27 | 2 unidades (agente) | pasó `what=` de `repo_verify` a `aegis_write_file` | A-008 |
 | 2026-09-27 | `app/workspaces.py` (**yo**) | `workspace_candidates` no buscaba proyectos a nivel 1; lo encontró un test | — |
 | 2026-09-27 | `app/projects.py` (**yo**) | puse el id de endpoint de compra-unida como id de proyecto; detectado al listar la organización | A-005 |
+| 2026-09-27 | unidad "crear verifier.py" (agente) | escritura rechazada por sintaxis y después verificó en vez de reescribir: `repo_verify` dio verde con el archivo borrado | A-011 |
+| 2026-09-27 | rollback de sintaxis (**yo**) | borraba el contenido rechazado, dejando al agente sin evidencia del error | A-011 |
+| 2026-09-27 | unidad "crear verifier.py" (**spec**) | describí la interfaz en prosa y el modelo generó la estructura con un error de sintaxis | A-012 |
+| 2026-09-27 | unidad "crear verifier.py" (agente) | 7 escrituras idénticas con una ruta a mano mal armada, en 19 pasos | A-014 |
+| 2026-09-27 | unidad "crear verifier.py" (agente) | declaró el archivo "creado y verificado" sin haberlo escrito nunca | A-013 |
+| 2026-09-27 | `app/verifier.py` (**yo**) | `ERROR_RE` sin `IGNORECASE` no contaba los `ERROR:` de los compiladores | — |
+| 2026-09-27 | `tests/test_verifier.py` (**yo**) | mock con `root` como string en vez de `Path` | — |
 
 

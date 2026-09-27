@@ -246,8 +246,16 @@ def _execute(name: str, args: dict[str, Any]) -> str:
 
 async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         max_steps: int = MAX_STEPS, instructions: str = "",
-                        project: str = "", memory: str = "") -> dict[str, Any]:
-    """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza."""
+                        project: str = "", memory: str = "",
+                        gate: Any = None) -> dict[str, Any]:
+    """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza.
+
+    `gate` es el corrector de una sola llamada por paso: `await gate(step, tool,
+    argumentos, resultado)` devuelve un veredicto y decide si el run sigue. Es lo
+    que convierte "el modelo dijo que lo hizo" en "el verificador lo comprobó", y
+    sin él el autopilot no tiene forma de saber si lo hizo. Un paso que la puerta
+    reprueba se registra igual: el dato es justamente ese.
+    """
     tools = _tools_schema()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": build_system_prompt(instructions, project, memory)},
@@ -302,6 +310,27 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 else:
                     entry["ok"] = True
                     entry["result"] = result[:1500]
+                if gate is not None and entry["ok"]:
+                    # La puerta solo juzga lo que la tool aceptó: si la propia tool
+                    # falló, su error ya es el veredicto de este paso.
+                    veredicto = await gate(step, name, args, result)
+                    if veredicto:
+                        entry["gate"] = veredicto
+                        if veredicto.get("stop"):
+                            messages.append({
+                                "role": "user",
+                                "content": "VEREDICTO DEL VERIFICADOR:\n"
+                                           + json.dumps(veredicto, ensure_ascii=False)[:MAX_CHARS_PER_STEP],
+                            })
+                            return {
+                                "model": model,
+                                "answer": f"Pausado en el paso {step}: la puerta de "
+                                          f"verificación reprueba el avance.\n"
+                                          f"{json.dumps(veredicto, ensure_ascii=False)[:600]}",
+                                "steps": len(trace),
+                                "trace": trace,
+                                "stopped_by_gate": True,
+                            }
                 trace.append(entry)
                 messages.append({
                     "role": "user",

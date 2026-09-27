@@ -134,3 +134,25 @@ class TestPythonSyntaxGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCuarentena(unittest.TestCase):
+    """Revertir protege el repo; sin evidencia, no se puede aprender del error."""
+
+    def test_lo_rechazado_queda_guardado(self):
+        import app.mcp_ops as mcp
+        from pathlib import Path
+        destino = Path("/tmp/aegis-quarantine-test.py")
+        ok, mensaje = mcp._write_guarded(destino, "def roto(:\n    pass\n", None)
+        self.assertFalse(ok)
+        self.assertIn("Repite la edición", mensaje)
+        self.assertIn("data/quarantine", mensaje)
+        # el archivo roto NO puede quedar en el repo
+        self.assertFalse(destino.exists())
+        # pero el contenido rechazado tiene que existir en algún sitio
+        import re
+        rutas = re.findall(r"(/[\w./-]*data/quarantine/[\w.-]+)", mensaje)
+        self.assertTrue(rutas, "el mensaje no dice dónde quedó la evidencia")
+        self.assertTrue(Path(rutas[0]).is_file())
+        Path(rutas[0]).unlink()
+        destino.unlink(missing_ok=True)

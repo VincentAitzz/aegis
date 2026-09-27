@@ -145,7 +145,9 @@ def _safe_resolve(path: str) -> Path:
     roots_r = {a: p.root.resolve() for a, p in PROJECTS.items()}
     if not any(target.is_relative_to(r) for r in roots_r.values()):
         permitidas = ", ".join(str(r) for r in roots_r.values())
-        raise ValueError(f"ruta fuera de las raíces permitidas: {target} (permitido: {permitidas})")
+        pista = _sugerir_ruta(target, list(roots_r.values()))
+        raise ValueError(f"ruta fuera de las raíces permitidas: {target} "
+                         f"(permitido: {permitidas}).{pista}")
     if any(p in target.parts for p in _DENY_PARTS):
         raise ValueError(f"ruta prohibida: {target}")
     if (target.name in _DENY_NAMES or target.name.startswith(".env")
@@ -413,6 +415,52 @@ def _root_of_script(name: str) -> Path | None:
     return None
 
 
+def _sugerir_ruta(target: Path, roots: list[Path]) -> str:
+    """Deduce la ruta correcta cuando parece que se olvidó un segmento.
+
+    El error real que se repite es `/RUTA/AL/REPO/...` en vez de
+    `/RUTA/AL/REPO/...`: el alias es cierto, falta el segmento de
+    en medio. Un "ruta no permitida" sin más deja al agente reintentando lo mismo;
+    con la ruta buena a la vista, se recupera en un paso.
+    """
+    t, mejor = list(target.parts), ""
+    for root in roots:
+        r = list(root.parts)
+        comun = 0
+        while comun < min(len(r), len(t)) and r[comun] == t[comun]:
+            comun += 1
+        rr, tt = r[comun:], t[comun:]
+        for k in range(min(len(rr), len(tt)), 0, -1):
+            if rr[-k:] == tt[:k]:
+                cand = str(Path(*(r[:comun] + rr + tt[k:])))
+                if cand != str(target) and (not mejor or len(cand) < len(mejor)):
+                    mejor = cand
+                break
+    return f" ¿Querías decir: {mejor}?" if mejor else ""
+
+
+def _quarantine(target: Path, content: str, detail: str) -> str:
+    """Guarda lo que se rechazó y devuelve dónde quedó.
+
+    Revertir protege el repo, pero borrar el contenido destruye la única evidencia
+    de por qué falló. Un guardarraíl que solo borra obliga a repetir el error a
+    ciegas: el agente no puede leer lo que escribió. Con la cuarentena puede.
+    """
+    import time
+
+    base = ROOT / "bridge" / "data" / "quarantine"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        destino = base / f"{stamp}-{target.name}.rejected"
+        destino.write_text(
+            f"# rechazado: {target}\n# motivo: {detail}\n\n{content}",
+            encoding="utf-8")
+        return str(destino)
+    except OSError:
+        return ""
+
+
 def _write_guarded(target: Path, content: str, before: str | None) -> tuple[bool, str]:
     """Escribe y, si el fuente deja de parsear, revierte. Devuelve (ok, mensaje)."""
     if before is None:
@@ -427,10 +475,13 @@ def _write_guarded(target: Path, content: str, before: str | None) -> tuple[bool
     else:
         target.write_text(before, encoding="utf-8")
         revert = "se revirtió al contenido anterior"
+    copia = _quarantine(target, content, detail)
+    pista = (f" Lo que escribiste quedó en {copia}: léelo con aegis_read_file y "
+             f"corrige esa línea.") if copia else ""
     return False, (
         f"AVISO: la edición dejó el archivo sin sintaxis válida, así que {revert}.\n"
         f"{detail}\nRepite la edición correctamente (no sustituyas el nombre de la "
-        f"constante por su valor)."
+        f"constante por su valor).{pista}"
     )
 
 
