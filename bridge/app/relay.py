@@ -5,12 +5,13 @@ import contextlib
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import WebSocket
 
 from .hermes_client import hermes
 from .models import EventOut
+from .telemetry import telemetry
 
 log = logging.getLogger("aegis.bridge.relay")
 
@@ -50,6 +51,12 @@ class Relay:
         self._tasks: dict[str, dict[str, Any]] = {}     # run_id -> estado local
         self._history: dict[str, list[EventOut]] = {}   # run_id -> eventos ya publicados (replay)
         self._lock = asyncio.Lock()
+        # Hook opcional al terminar un run (main.py lo engancha a memoria/telemetría).
+        self.on_terminal: Optional[Callable[[EventOut], Awaitable[None]]] = None
+
+    def set_prompt(self, run_id: str, prompt: str) -> None:
+        """Guarda el prompt del run: la memoria lo necesita al construir episodios."""
+        self._tasks.setdefault(run_id, {"run_id": run_id, "status": "queued"})["prompt"] = prompt
 
     # -- suscripción ---------------------------------------------------------
     async def subscribe(self, ws: WebSocket, run_id: str, agent: str) -> None:
@@ -107,6 +114,7 @@ class Relay:
 
     async def _reader(self, run_id: str, agent: str) -> None:
         log.info("lector SSE iniciado para run %s", run_id)
+        started = time.perf_counter()
         try:
             async for raw in hermes.run_events(run_id):
                 ev = normalize_event(run_id, agent, raw["event"], raw["data"])
@@ -116,8 +124,20 @@ class Relay:
                 hist.append(ev)
                 if len(hist) > self._HISTORY_MAX:
                     del hist[:len(hist) - self._HISTORY_MAX]
+                before = time.perf_counter()
                 await self.publish_to(run_id, ev)
+                # Observabilidad: cada evento normalizado queda en el log del run.
+                telemetry.run_event(run_id, ev.type, ev.agent, ev.at, ev.payload)
+                telemetry.run_span(run_id, "event_exec_ms",
+                                   event=ev.type, ms=round((time.perf_counter() - before) * 1000.0, 2))
                 if ev.type in _TERMINAL:
+                    telemetry.run_span(run_id, "run_duration_s",
+                                       seconds=round(time.perf_counter() - started, 3))
+                    if self.on_terminal:
+                        try:
+                            await self.on_terminal(ev)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("hook terminal para %s falló: %s", run_id, exc)
                     break
         except Exception as exc:  # noqa: BLE001
             log.warning("lector run %s terminó con error: %s", run_id, exc)

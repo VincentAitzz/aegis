@@ -1,7 +1,7 @@
-"""Introspección y calentamiento de modelos en Ollama."""
+"""Introspección, calentamiento de modelos y embeddings en Ollama."""
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -49,6 +49,25 @@ class Ollama:
             except httpx.HTTPError as exc:
                 log.warning("warm-up de %s falló: %s", name, exc)
         asyncio.create_task(_warm())
+
+    # -- embeddings (memoria) ------------------------------------------------
+    async def embed_texts(self, texts: list[str], model: str = "nomic-embed-text") -> Optional[list[list[float]]]:
+        """Embeddings locales vía /api/embed de Ollama (sin salida a Internet).
+
+        Devuelve None si el modelo de embeddings no está en Ollama (fallo
+        degradable: la memoria episódica simplemente no persiste ese episodio).
+        """
+        if not texts:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=None)) as client:
+                r = await client.post(f"{self.base_url}/api/embed",
+                                      json={"model": model, "input": texts})
+                r.raise_for_status()
+                return r.json().get("embeddings")
+        except httpx.HTTPError as exc:
+            log.warning("embeddings %s fallaron: %s", model, exc)
+            return None
 
 
 ollama = Ollama(get_settings().ollama_base_url)

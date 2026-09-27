@@ -14,7 +14,7 @@ AGENT = sys.argv[2] if len(sys.argv) > 2 else "worker"
 
 
 async def main() -> None:
-    async with httpx.AsyncClient() as c:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(240)) as c:
         r = await c.post(f"{BRIDGE}/tasks", json={"agent": AGENT, "prompt": PROMPT})
         r.raise_for_status()
         task = r.json()
