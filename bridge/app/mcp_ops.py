@@ -1,0 +1,648 @@
+"""Servidor MCP "aegis-ops": tools de build e instalación del móvil en el HOST.
+
+El sandbox docker del agente NO tiene Flutter/JDK/adb, así que estas tools
+ejecutan el toolchain real del host (usuario demo) vía subprocess:
+
+  * aegis_read_file / aegis_write_file / aegis_patch_file  — edición SEGURA del repo en el host.
+  * build_apk(api_host)      — valida el cambio de tema y compila el APK debug.
+  * adb_devices()            — estado de adb (conexiones por Mesh/LAN).
+  * adb_connect(ip)          — adb connect a un teléfono por su IP Tailscale.
+  * install_apk()            — adb install -r + arranque de Aegis Console.
+
+La escritura está restringida al árbol del repo (whitelist), veta .git/.env* y
+binomios, y se niega a perseguir secretos. Solo sirve como bus de "ci/cd"
+local: un único usuario, cero secretos aquí.
+"""
+
+import ast
+import logging
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+log = logging.getLogger("aegis.bridge.mcp_ops")
+
+ROOT = Path("/RUTA/AL/WORKSPACE/aegis")
+MOBILE = ROOT / "mobile"
+THEME = MOBILE / "lib/core/theme/dedsec_colors.dart"
+APK = MOBILE / "build/app/outputs/flutter-apk/app-debug.apk"
+
+# La raíz del repo de Aegis. Las demás raíces y los verificadores por proyecto
+# viven en `app/projects.py`: un solo registro, y agregar un proyecto es una fila.
+
+ADB = "/RUTA/AL/SDK-ANDROID/platform-tools"
+JAVA = "/RUTA/AL/JDK/bin"
+FLUTTER = "/RUTA/A/FLUTTER/bin"
+
+DEFAULT_MESH_IP = "100.101.102.103"                     # galaxy-a17 por Tailscale
+DEFAULT_MESH_PORT = "43679"                            # puerto adb de respaldo
+DEFAULT_MESH_DEVICE = f"{DEFAULT_MESH_IP}:{DEFAULT_MESH_PORT}"
+LEGACY_BRAND = "0xFFC83BFE"                    # magenta original del tema
+
+_BRAND_RE = re.compile(r"brand\s*=\s*Color\(0x([0-9A-Fa-f]{8})\)")
+
+# Rutas prohibidas dentro de las raíces (nunca editables vía aegis-ops):
+# control de versiones, dependencias instaladas y árboles generados. Editarlos a
+# mano rompe el entorno de una forma que ningún test explica después.
+#
+# `.dev.vars` está aquí porque es donde `wrangler dev` guarda los secrets del
+# Worker (incluida la URL de Postgres con contraseña). Allow-listarlo sería darle
+# al agente lectura de credenciales, y el escaneo de contenido no lo evita: una
+# URL de base de datos no tiene forma de secreto de aspecto «clave».
+_DENY_PARTS = (".git", "node_modules", "dist", ".astro", ".wrangler", ".venv",
+               "__pycache__", "build", ".next", ".cache", ".dev.vars")
+_DENY_NAMES = (".env", ".env.local", ".env.production", ".env.production.local",
+               ".dev.vars", ".dev.vars.example")
+_BIN_SUFFIXES = (".apk", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".so", ".a",
+                 ".idx", ".pack", ".zip", ".keystore", ".jks", ".p12", ".pfx")
+
+# Patrones de secretos: la tool se NEGA a escribir/leer contenido así, y lo
+# adivina en el path/archivo (p. ej. .env). Esto NO expone el secreto: solo dice
+# que hay algo sensible en esa ruta.
+#
+# Los de la segunda línea se agregaron cuando Aegis pasó a manejar credenciales de
+# Neon: una URL de Postgres y un bearer NO tienen forma de «clave» y pasaban
+# limpios. El filtro de placeholders (_PLACEHOLDER_RE) evita el falso positivo
+# de bloquear un `.env.example`, que es una plantilla y su trabajo es existir.
+_SECRET_RE = re.compile(
+    r"(sk-[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|figd_[0-9A-Za-z]{16,}"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|password\s*[=:]\s*\S+|token\s*[=:]\s*\S+)"
+    r"|((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://(?:[^\s:/@]*:)?[^\s@]{4,}@\S+)"
+    r"|(NEON_API_KEY\s*[=:]\s*\S+)"
+    r"|(Authorization:\s*Bearer\s+\S+)"
+    r"|(\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,})"
+    r"|((?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token)\s*[=:]\s*[\"']?\S{12,})",
+    re.IGNORECASE,
+)
+
+# Valores que son plantilla, no secreto. La comparación es sobre el VALOR
+# ENTERO, nunca sobre una palabra suelta: una key real de AWS contiene "EXAMPLE"
+# en medio, y un filtro que busca la palabra suelta la deja pasar.
+_PLACEHOLDER_MARKERS = ("<", "{{", "${", "...", "…")
+_PLACEHOLDER_PREFIXES = (
+    "cambiar", "cambia", "placeholder", "changeme", "change_me", "your", "tus_", "tu_",
+    "ejemplo", "example", "dummy", "fake", "xxx", "valor", "aqui", "aquí", "reemplaza",
+)
+
+
+def _is_placeholder(found: str) -> bool:
+    if any(m in found for m in _PLACEHOLDER_MARKERS):
+        return True
+    raw = found.strip().strip("\"'")
+    # El valor es lo que va DESPUÉS del `=` o del `:`. Sin esto, "API_KEY=tus-datos"
+    # se compara entero contra los prefijos y una plantilla legítima se bloquea.
+    if "=" in raw:
+        value = raw.split("=", 1)[1]
+    elif ":" in raw and "://" not in raw:
+        value = raw.split(":", 1)[1]
+    else:
+        value = raw.split()[-1] if raw.split() else ""
+    # "tus-datos-aqui" y "tus datos aqui" cuentan igual que "tus_datos"
+    value = re.sub(r"[^a-z0-9]+", "_", value.strip("\"',;)]").lower())
+    return value.startswith(_PLACEHOLDER_PREFIXES)
+
+mcp = FastMCP("aegis-ops")
+
+
+def _env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["JAVA_HOME"] = "/RUTA/AL/JDK"
+    env["PATH"] = ":".join([JAVA, FLUTTER, ADB, env.get("PATH", "")])
+    return env
+
+
+def _run(args: list[str], timeout: int = 600,
+         cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        args, capture_output=True, text=True, env=_env(), timeout=timeout,
+        cwd=str(cwd) if cwd else None,
+    )
+
+
+def _safe_resolve(path: str) -> Path:
+    """Resuelve `path` y se asegura de que caiga dentro de una raíz permitida.
+
+    Formas aceptadas:
+      * `portafolio/src/lib/db.ts`  → alias explícito
+      * `mobile/lib/main.dart`       → relativa a ROOT (aegis)
+      * `/ruta/absoluta`            → se valida contra cualquier raíz
+    """
+    alias = None
+    head, sep, rest = path.partition("/")
+    from .projects import PROJECTS
+    if sep and head in PROJECTS:
+        alias, path = head, rest
+    if path.startswith(("/", "~")):
+        target = Path(path).expanduser().resolve()
+    elif alias is not None:
+        target = (PROJECTS[alias].root / path).resolve()
+    else:
+        target = (ROOT / path).resolve()
+    roots_r = {a: p.root.resolve() for a, p in PROJECTS.items()}
+    if not any(target.is_relative_to(r) for r in roots_r.values()):
+        permitidas = ", ".join(str(r) for r in roots_r.values())
+        raise ValueError(f"ruta fuera de las raíces permitidas: {target} (permitido: {permitidas})")
+    if any(p in target.parts for p in _DENY_PARTS):
+        raise ValueError(f"ruta prohibida: {target}")
+    if (target.name in _DENY_NAMES or target.name.startswith(".env")
+            or target.name.startswith(".dev.vars")):
+        raise ValueError(f"archivo de entorno prohibido: {target.name}")
+    if target.suffix.lower() in _BIN_SUFFIXES:
+        raise ValueError(f"archivo binario/no editable: {target.name}")
+    if _SECRET_RE.search(target.name):
+        raise ValueError(f"nombre de archivo sospechoso de secreto: {target.name}")
+    return target
+
+
+def root_of(path: Path) -> str:
+    """Alias de la raíz a la que pertenece un archivo ya resuelto."""
+    from .projects import PROJECTS
+    for alias, proj in PROJECTS.items():
+        if path.is_relative_to(proj.root.resolve()):
+            return alias
+    return "?"
+
+
+def _no_secrets(content: str) -> None:
+    """Niega contenido con aspecto de secreto. Nunca imprime el valor encontrado."""
+    for m in _SECRET_RE.finditer(content):
+        found = m.group(0)
+        if _is_placeholder(found):
+            continue          # es una plantilla: su trabajo es existir
+        leak = re.sub(r"[A-Za-z0-9]", "x", found)[:12]
+        raise ValueError(f"contenido con posible secreto → denegado (visto: {leak}…)")
+
+
+@mcp.tool()
+def projects_list() -> str:
+    """Qué proyectos hay en el workspace y cuáles puede operar Aegis.
+
+    Responde la pregunta que antes exigía leer código: qué proyectos son, tienen
+    verificador, tienen base de datos, y qué les falta para entrar al registro.
+    """
+    from .workspaces import describe_workspace
+    return describe_workspace()
+
+
+@mcp.tool()
+def repo_verify(what: str = "check", repo: str = "portafolio", tail: int = 40) -> str:
+    """Verifica el proyecto: `check` (tipos), `test` (vitest), `build` (astro).
+
+    Es la única tool de verificación a propósito: un modelo 7B rinde peor con
+    muchas tools que con una que hace bien una cosa. Sin esto el agente escribe
+    a ciegas, y escribir a ciegas es exactamente como falló antes.
+
+    Argumentos:
+        what  check | test | build
+        repo  alias de la raíz (portafolio | aegis)
+        tail  cuántas líneas de salida devolver
+    """
+    from .projects import PROJECTS
+    proj = PROJECTS.get(repo)
+    if proj is None:
+        return f"repo desconocido: {repo} (conocidos: {', '.join(PROJECTS)})"
+    root = proj.root
+    if not root.exists():
+        return f"la raíz de '{repo}' no existe: {root}"
+    node_dir = os.path.expanduser("~/.local/node/bin")
+    env = dict(os.environ)
+    env["PATH"] = f"{node_dir}:{env.get('PATH', '')}"
+    env.setdefault("JAVA_HOME", "/RUTA/AL/JDK")
+
+    spec = proj.verify or {}
+    if what not in ("check", "test", "build"):
+        return f"what inválido: {what} (usa check, test o build)"
+    cmd = spec.get(what)
+    if not cmd:
+        return (f"'{repo}' no declara verificador para '{what}'. "
+                f"Disponibles: {sorted(spec) or 'ninguno'}. "
+                f"Sin verificador, el agente solo tiene la validación de sintaxis.")
+    exe = Path(cmd[0])
+    if not exe.is_absolute() and "/" in cmd[0]:
+        # Un binario local del proyecto (node_modules/.bin/...) se ejecuta desde
+        # la raíz: si no existe, el proyecto no instaló sus dependencias.
+        if not (root / cmd[0]).exists():
+            return f"falta {cmd[0]} en {root} (¿`npm install` sin correr?)"
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              env=env, cwd=str(root), timeout=900)
+    except subprocess.TimeoutExpired:
+        return f"repo_verify({what}) agotó el tiempo"
+    except FileNotFoundError as exc:
+        return f"repo_verify({what}): no encontré {cmd[0]} ({exc})"
+    out = (proc.stdout + proc.stderr).strip().splitlines()
+    estado = "OK" if proc.returncode == 0 else f"FALLÓ (exit={proc.returncode})"
+    resumen = out[-tail:] if out else ["(sin salida)"]
+    return f"repo_verify({what}) en {repo}: {estado}\n" + "\n".join(resumen)
+
+
+@mcp.tool()
+def db_query(project: str, sql: str, limit_rows: int = 200) -> str:
+    """Lee datos de la rama de DESARROLLO de un proyecto registrado en Neon.
+
+    Solo admite sentencias que empiecen por SELECT o WITH, y una por llamada.
+    Es la herramienta de verificación: los invariantes se comprueban contra la
+    base real. No muta nada, y por eso no pide confirmación.
+
+    `project` es un alias del registro (app/neon.py), NO una ruta ni un host.
+    """
+    from .neon import NeonError, db_query as _query
+    try:
+        return _query(project, sql, limit_rows=limit_rows)
+    except NeonError as exc:
+        return f"db_query: {exc}"
+
+
+@mcp.tool()
+def db_migrate(project: str, file: str = "") -> str:
+    """Aplica las migraciones de un proyecto contra su rama de DESARROLLO.
+
+    Sin `file`, aplica todas las de `migrations/` en orden. Con `file`, solo esa,
+    y tiene que estar dentro de la raíz del proyecto y bajo `migrations/`.
+
+    La URL sale SIEMPRE de la rama registrada: quien llama no elige base, ni rama,
+    ni host. El error posible no es "aplicó a producción", es "no encontré esa
+    migración".
+    """
+    from .neon import NeonError, db_migrate as _migrate
+    try:
+        return _migrate(project, file or None)
+    except NeonError as exc:
+        return f"db_migrate: {exc}"
+
+
+@mcp.tool()
+def neon_branch(project: str, branch: str = "") -> str:
+    """Crea la rama de desarrollo de un proyecto si falta, y dice en qué estado
+    están las ramas. Sin argumentos crea la que tenga registrada el proyecto."""
+    from .neon import NeonError, neon_branch as _branch
+    try:
+        return _branch(project, branch or None)
+    except NeonError as exc:
+        return f"neon_branch: {exc}"
+
+
+def current_brand() -> str:
+    """Devuelve el hex actual de DedsecColors.brand en el repo del host."""
+    try:
+        text = THEME.read_text()
+    except FileNotFoundError:
+        return "<no existe el tema>"
+    m = _BRAND_RE.search(text)
+    return ("0x" + m.group(1).upper()) if m else "<no encontrado>"
+
+
+def _short_diff() -> str:
+    """git diff --stat resumido (trazabilidad del cambio tras build)."""
+    proc = _run(["git", "-C", str(ROOT), "diff", "--stat", "--", "mobile/lib"], timeout=30)
+    stat = proc.stdout.strip() or "(sin cambios en mobile/lib)"
+    return f"git diff --stat\n{stat}\n"
+
+
+@mcp.tool()
+def aegis_read_file(path: str, section: str = "") -> str:
+    """Lee un archivo TEXTUAL del repo (whitelist; deniega .env/binar./secretos).
+
+    Argumentos:
+        path    ruta `<alias>/…` (p.ej. `portafolio/docs/modelo-datos.md`),
+                relativa al repo de Aegis, o absoluta dentro de una raíz.
+        section en markdown, opcional: '3' devuelve desde `## 3.` hasta el
+                siguiente `## `; '4.4' desde `### 4.4`. Vacío = el archivo
+                entero (máx. 400 líneas).
+    Devuelve el contenido con números de línea.
+    """
+    target = _safe_resolve(path)
+    if not target.exists():
+        return f"NO existe: {target}"
+    if target.is_dir():
+        return f"es un directorio ({target}); esto no es lectura de archivo."
+    data = target.read_bytes()
+    if b"\x00" in data[:4096]:
+        return f"archivo binario: {target}"
+    _no_secrets(data.decode(errors="replace"))
+    lines = data.decode(errors="replace").splitlines()
+    lo, hi = 1, len(lines)
+    if section:
+        marker = re.compile(rf"^(#{{2,4}})\s+{re.escape(section)}[.\s]")
+        start = end = None
+        for idx, ln in enumerate(lines):
+            if start is None and marker.match(ln):
+                start, level = idx, len(marker.match(ln).group(1))
+                continue
+            if start is not None:
+                other = re.match(r"^(#{2,4})\s", ln)
+                if other and len(other.group(1)) <= level:
+                    end = idx
+                    break
+        if start is None:
+            heads = [ln for ln in lines if re.match(r"^#{2,4}\s", ln)]
+            return (f"No encontré la sección '{section}' en {target}. "
+                    f"Encabezados disponibles:\n" + "\n".join(heads[:40]))
+        lo = start + 1
+        hi = end if end is not None else len(lines)
+    body = "\n".join(f"{i}: {ln}" for i, ln in enumerate(lines[lo - 1:hi], start=lo))
+    return f"{target} (sección '{section}' líneas {lo}-{hi} de {len(lines)})\n---\n{body}"
+
+
+TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".mjs", ".js", ".jsx")
+PY_SUFFIXES = (".py",)
+
+
+def _python_ok(path: Path) -> tuple[bool, str]:
+    """Valida la sintaxis de un fuente Python con el parser de la stdlib.
+
+    `ast.parse` no ejecuta nada: no importa el módulo ni pide sus dependencias, y
+    por eso sirve sobre un archivo a medio escribir. Cierra el agujero que dejó
+    pasar un `def` perdido: hasta ahora los `.py` no se comprobaban en absoluto.
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return False, str(exc)
+    try:
+        ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return False, f"línea {exc.lineno}: {exc.msg}"
+    return True, ""
+
+
+def _syntax_ok(path: Path) -> tuple[bool, str]:
+    """Valida la sintaxis de un fuente. Dart con `dart format`, TS con la API de
+    TypeScript: ambos soncheap, no escriben nada y no exigen que el proyecto
+    entero typecheque todavía."""
+    if path.suffix == ".dart":
+        try:
+            proc = _run([str(FLUTTER + "/dart"), "format", "--output=none", str(path)], timeout=60)
+        except subprocess.TimeoutExpired:
+            return True, ""
+        if proc.returncode == 0:
+            return True, ""
+        lines = [ln.strip() for ln in (proc.stdout + proc.stderr).splitlines() if ln.strip()]
+        detail = next((ln for ln in lines if ln.startswith("Could not format")), "")
+        if not detail:
+            detail = next((ln for ln in lines if ln.startswith("line ")), "")
+        return False, (detail or (lines[0] if lines else "sintaxis inválida"))
+    if path.suffix in PY_SUFFIXES:
+        return _python_ok(path)
+    if path.suffix in TS_SUFFIXES:
+        checker = _root_of_script("check-syntax.mjs")
+        if checker is None:
+            return True, ""
+        try:
+            proc = _run(["node", str(checker), str(path)], timeout=90)
+        except subprocess.TimeoutExpired:
+            return True, ""
+        if proc.returncode == 0:
+            return True, ""
+        out = (proc.stdout + proc.stderr).strip().splitlines()
+        return False, " | ".join(out[:6]) or "sintaxis inválida"
+    return True, ""
+
+
+def _root_of_script(name: str) -> Path | None:
+    """Busca un script de apoyo en cualquiera de las raíces conocidas."""
+    from .projects import PROJECTS
+    for proj in PROJECTS.values():
+        candidate = proj.root / "scripts" / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _write_guarded(target: Path, content: str, before: str | None) -> tuple[bool, str]:
+    """Escribe y, si el fuente deja de parsear, revierte. Devuelve (ok, mensaje)."""
+    if before is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    ok, detail = _syntax_ok(target)
+    if ok:
+        return True, ""
+    if before is None:
+        target.unlink(missing_ok=True)
+        revert = "se eliminó (era nuevo)"
+    else:
+        target.write_text(before, encoding="utf-8")
+        revert = "se revirtió al contenido anterior"
+    return False, (
+        f"AVISO: la edición dejó el archivo sin sintaxis válida, así que {revert}.\n"
+        f"{detail}\nRepite la edición correctamente (no sustituyas el nombre de la "
+        f"constante por su valor)."
+    )
+
+
+@mcp.tool()
+def aegis_write_file(path: str, content: str) -> str:
+    """Escribe contenido COMPLETO en un archivo del repo (whitelist + anti-secretos).
+
+    Sobrescribe el archivo entero. Si el resultado no parsea, se revierte solo.
+    Para cambios quirúrgicos usa aegis_patch_file.
+    """
+    target = _safe_resolve(path)
+    _no_secrets(content)
+    before = target.read_text() if target.exists() else None
+    ok, message = _write_guarded(target, content, before)
+    if not ok:
+        return f"escritura RECHAZADA en {target}. {message}"
+    if before is None:
+        return f"creado {target}"
+    delta = len(content.splitlines()) - len(before.splitlines())
+    return f"actualizado {target} ({delta:+d} líneas)\n{_short_diff()}"
+
+
+@mcp.tool()
+def aegis_patch_file(path: str, old: str, new: str, replace_all: bool = False) -> str:
+    """Reemplazo quirúrgico: sustituye `old` por `new` en el repo (whitelist).
+
+    Argumentos:
+        path        ruta del archivo (relativa al repo o absoluta dentro de él).
+        old         fragmento existente a reemplazar (debe ser único a menos
+                    que replace_all=true).
+        new         texto nuevo.
+        replace_all reemplaza todas las ocurrencias de `old` (default: 1°).
+
+    Si el archivo deja de parsear tras el cambio, se revierte automáticamente.
+    """
+    target = _safe_resolve(path)
+    _no_secrets(old + new)
+    if not target.exists():
+        return f"NO existe: {target}"
+    before = target.read_text()
+    n = before.count(old)
+    if n == 0:
+        listing = "\n".join(before.splitlines()[:60])[:3000]
+        return (f"aegis_patch_file: no se encontró el fragmento en {target}.\n"
+                f"Contenido actual del archivo (para que rehagas la edición exacta):\n"
+                f"---8<---\n{listing}\n---8<---")
+    if n > 1 and not replace_all:
+        return (f"aegis_patch_file: el fragmento aparece {n} veces; pasa replace_all=true "
+                f"o afina `old`.")
+    content = before.replace(old, new) if replace_all else before.replace(old, new, 1)
+    ok, message = _write_guarded(target, content, before)
+    if not ok:
+        return f"parche RECHAZADO en {target}. {message}"
+    replaced = n if replace_all else 1
+    return f"aegis_patch_file OK ({replaced} de {n} ocurrencia(s) reemplazada(s)) en {target}"
+
+
+@mcp.tool()
+def build_apk(api_host: str = "100.101.102.100", force: bool = False) -> str:
+    """Compila el APK debug de Aegis Console apuntando a api_host.
+
+    Antes de compilar valida que el tema se haya recoloreado (si brand sigue
+    siendo el magenta original y force=False, aborta con la ruta correcta).
+    Devuelve también el git diff de mobile/lib (trazabilidad).
+    """
+    brand = current_brand()
+    if not force and brand == LEGACY_BRAND:
+        return (
+            f"El tema aún NO tiene el tono nuevo: brand = {brand}.\n"
+            "Edita primero el archivo host:\n"
+            f"  /RUTA/AL/REPO/mobile/lib/core/theme/dedsec_colors.dart\n"
+            "  (busca `static const Color brand = Color(...)`)\n"
+            "Después vuelve a llamar build_apk. No compilo un APK sin el cambio."
+        )
+    if not MOBILE.exists():
+        return f"No existe el proyecto en {MOBILE}"
+    cmd = [
+        str(FLUTTER + "/flutter"), "build", "apk", "--debug",
+        f"--dart-define=API_HOST={api_host}",
+    ]
+    try:
+        proc = _run(cmd, cwd=MOBILE)
+    except subprocess.TimeoutExpired:
+        return "build_apk agotó el tiempo (600s). Todo el gradle quedó caliente; reinténtalo."
+    tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-12:])
+    ok = proc.returncode == 0 and APK.exists()
+    diff = _short_diff()
+    return (
+        f"build_apk {'OK' if ok else 'FALLÓ'} (exit={proc.returncode}). "
+        f"brand actual={brand}, api_host={api_host}\n"
+        f"APK: {APK}\n"
+        f"{diff}\n"
+        f"--- salida (tail) ---\n{tail}"
+    )
+
+
+@mcp.tool()
+def adb_devices() -> str:
+    """Estado de las conexiones adb (incluye la del teléfono por Tailscale)."""
+    _, out = _adb(["devices"], timeout=30)
+    return out
+
+
+def _adb(args: list[str], timeout: int = 60) -> tuple[int, str]:
+    """Ejecuta adb tolerando timeouts: un teléfono offline no debe romper la tool."""
+    try:
+        proc = _run([ADB + "/adb", *args], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, f"adb {args[0]} agotó {timeout}s (dispositivo inalcanzable)"
+    return proc.returncode, (proc.stdout.strip() or proc.stderr.strip())
+
+
+def _resolve_device(explicit: str = "") -> str:
+    """Elige el dispositivo adb: el explícito, el mDNS, o IP Tailscale:puerto.
+
+    El teléfono aparece por mDNS (mismo Wi-Fi) aunque Tailscale esté caído, así
+    que se prefiere ese nombre estable antes que reconstruir IP:puerto.
+    """
+    if explicit:
+        return explicit
+    _, out = _adb(["devices"], timeout=30)
+    candidates = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name, state = parts[0], parts[1]
+        if state != "device":
+            continue
+        candidates.append(name)
+    for name in candidates:
+        if "_adb-tls-connect" in name:
+            return name
+    for name in candidates:
+        if name.startswith(DEFAULT_MESH_IP):
+            return name
+    if candidates:
+        return candidates[0]
+    port = _mdns_adb_port() or DEFAULT_MESH_PORT
+    return f"{DEFAULT_MESH_IP}:{port}"
+
+
+def _mdns_adb_port() -> str:
+    """Puerto adb actual del teléfono vía mDNS (cambia al reiniciar el debug)."""
+    proc = _run([ADB + "/adb", "mdns", "services"], timeout=20)
+    for line in (proc.stdout or "").splitlines():
+        if "_adb-tls-connect" in line and ":" in line:
+            port = line.rsplit(":", 1)[-1].strip()
+            if port.isdigit():
+                return port
+    return ""
+
+
+@mcp.tool()
+def adb_connect(target: str = "") -> str:
+    """Conecta adb al teléfono por Tailscale. Sin argumentos descubre el puerto.
+
+    El puerto de depuración inalámbrica cambia cada vez que se reinicia en el
+    teléfono, así que se resuelve con mDNS + la IP fija de la tailnet.
+    """
+    if not target:
+        _, out = _adb(["devices"], timeout=30)
+        connected = [ln.split()[0] for ln in out.splitlines()[1:]
+                     if len(ln.split()) >= 2 and ln.split()[1] == "device"]
+        if connected:
+            return f"ya conectado: {', '.join(connected)}"
+        target = f"{DEFAULT_MESH_IP}:{_mdns_adb_port() or DEFAULT_MESH_PORT}"
+    code, out = _adb(["connect", target], timeout=30)
+    return f"connect {target} (exit={code}): {out}"
+
+
+@mcp.tool()
+def install_apk(launch: bool = True, device: str = "") -> str:
+    """Instala el APK compilado en el teléfono (por Mesh) y opcionalmente lo abre.
+
+    Sin `device`, conecta sola (mDNS + Tailscale) antes de instalar.
+    """
+    if not APK.exists():
+        return f"No hay APK: {APK}. Llama primero a build_apk()."
+    adb_connect()
+    device = _resolve_device(device)
+    parts = []
+    code, out = _adb(["-s", device, "install", "-r", str(APK)], timeout=300)
+    parts.append(f"install exit={code}: {out}")
+    if launch and code == 0:
+        scode, sout = _adb(
+            ["-s", device, "shell", "am", "start", "-n", "com.aegis.aegis_console/.MainActivity"],
+            timeout=60,
+        )
+        parts.append(f"am start exit={scode}: {sout}")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def verify_deploy(device: str = "") -> str:
+    """Comprueba que la app está instalada y corriendo en el teléfono."""
+    device = _resolve_device(device)
+    pcode, pid = _adb(
+        ["-s", device, "shell", "pidof", "com.aegis.aegis_console"], timeout=45)
+    _, installed = _adb(["-s", device, "shell", "pm", "list", "packages", "-3"], timeout=45)
+    pid_clean = pid.strip() if pid.isdigit() or (pid.strip().split() or [""])[0].isdigit() else ""
+    running = "corriendo" if pid_clean else "NO está corriendo"
+    return (
+        f"dispositivo={device} | instalada={'aegis_console' in installed} | "
+        f"proceso: {running} | pid={pid_clean or '-'} | pidof_exit={pcode}"
+    )
+
+
+def main() -> None:
+    log.info("aegis-ops MCP listo (file-tools + build/install del host). brand actual=%s", current_brand())
+    mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
