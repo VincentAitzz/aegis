@@ -189,6 +189,24 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
   (`¿Querías decir: ...?`). Un error sin salida convierte una torpeza en un
   callejón; un error con la respuesta a un paso delata el hueco exacto.
 
+### A-015 · El agente redacta documentos que inventan la API
+
+- **Qué pasó**: la demostración de la puerta pidió «15 líneas que expliquen qué
+  hace `verifier.py`». Lo escribió, la puerta dio **verde** (el verificador de
+  este repo es importar el paquete, y el archivo era markdown), y el contenido
+  era ficción: citaba `project.verifier`, `from app.neon import project_neon`,
+  `from db_query import db_query`, una función `verify_project()` que no existe, y
+  afirmaba que el módulo «se ejecuta periódicamente».
+- **La lección de fondo**: **escribir y documentar no es lo mismo que saber.**
+  El modelo es capaz de producir un texto plausible sobre código que nunca leyó.
+  Un verificador que solo comprueba que el archivo exista no detecta eso.
+- **Regla**: no dejes que el agente documente el código que no ha leído. Si
+  documenta, cita `archivo:línea` y cada símbolo que mencione tiene que existir.
+  El doc que entregó se reemplazó a mano por uno que sí cita las funciones.
+- **Corolario de diseño**: el criterio de éxito de un plan tiene que ser
+  **comprobable por máquina** (A-016). «Escribir documentación» no lo es;
+  «importar el paquete y que la puerta dé verde» sí.
+
 ---
 
 ## Reglas de este repo
@@ -224,5 +242,7 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 | 2026-09-27 | unidad "crear verifier.py" (agente) | declaró el archivo "creado y verificado" sin haberlo escrito nunca | A-013 |
 | 2026-09-27 | `app/verifier.py` (**yo**) | `ERROR_RE` sin `IGNORECASE` no contaba los `ERROR:` de los compiladores | — |
 | 2026-09-27 | `tests/test_verifier.py` (**yo**) | mock con `root` como string en vez de `Path` | — |
+| 2026-09-27 | `app/autopilot.py` (**yo**) | respuesta vacía del modelo terminaba el run y se reportaba como "agotó los pasos" | — |
+| 2026-09-27 | `bridge/docs/verificador.md` (agente) | inventó la API: `project_neon`, `verify_project()`, "se ejecuta periódicamente" | A-015 |
 
 

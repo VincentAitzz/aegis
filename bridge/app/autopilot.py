@@ -264,6 +264,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     trace: list[dict[str, Any]] = []
     answer = ""
     repairs = 0
+    fin = "max_steps"
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=300.0,
                                                        write=30.0, pool=5.0)) as client:
         for step in range(1, max_steps + 1):
@@ -287,6 +288,20 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 calls = extract_tool_calls(text)
 
             if not calls:
+                # Una respuesta vacía no es una respuesta: es el modelo fallando.
+                # Termin ahí waste un run entero sin dejar rastro de por qué.
+                if not text.strip() and repairs < MAX_REPAIRS:
+                    repairs += 1
+                    trace.append({"step": step, "action": "repair",
+                                  "text": "respuesta vacía"})
+                    messages.append({"role": "assistant", "content": "(vacío)"})
+                    messages.append({
+                        "role": "user",
+                        "content": "Tu mensaje anterior llegó vacío. Si ya no "
+                                   "necesitas tools, responde con el texto plano de "
+                                   "tu respuesta. Si sí, emite la llamada JSON."
+                                   + "\n" + repair_prompt()})
+                    continue
                 if _mentions_tool(text) and repairs < MAX_REPAIRS:
                     repairs += 1
                     trace.append({"step": step, "action": "repair",
@@ -296,6 +311,9 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                     continue
                 answer = text.strip()
                 trace.append({"step": step, "action": "final", "text": answer[:800]})
+                # Por qué terminó el run. Sin esto, "agotó los pasos" se confundía
+                # con "el modelo respondió" y el motivo real se perdía.
+                fin = "respuesta_vacia" if not answer else "sin_tools"
                 break
 
             messages.append({"role": "assistant", "content": text or "(tool call)"})
@@ -341,13 +359,17 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
         "answer": answer or answer_fallback(trace),
         "steps": len(trace),
         "trace": trace,
+        # El motivo de cierre es un dato, no un detalle: distingue "el modelo no
+        # pidió más tools" de "se acabaron los pasos" de "la puerta lo paró".
+        "fin": fin,
     }
 
 
 def answer_fallback(trace: list[dict[str, Any]]) -> str:
     """Si el modelo se quedó sin respuesta, resume lo realmente ejecutado."""
     if not trace:
-        return "El modelo no propuso ninguna tool; no se ejecutó nada."
+        return ("El modelo no propuso ninguna tool y tampoco devolvió texto: "
+                "no se ejecutó nada.")
     lines = ["El modelo agotó los pasos; traza real de lo ejecutado:"]
     for entry in trace:
         if entry.get("tool"):

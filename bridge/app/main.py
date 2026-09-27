@@ -177,6 +177,11 @@ class AutopilotIn(BaseModel):
     project: Optional[str] = None
     instructions: Optional[str] = None
     remember: bool = True
+    # Con `verificar`, cada escritura pasa por el verificador del proyecto y el
+    # run se detiene si el rojo no mejora. Sin esto el run termina cuando el
+    # modelo deja de pedir tools, que no dice nada del código.
+    verificar: bool = False
+    que: str = "check"
 
 
 class AutopilotOut(BaseModel):
@@ -185,6 +190,10 @@ class AutopilotOut(BaseModel):
     steps: int
     trace: list[dict]
     project: Optional[str] = None
+    # Por qué terminó el run: sin_tools | respuesta_vacia | max_steps | puerta.
+    # "agotó los pasos" y "el modelo respondió" se confundían, y ese dato es el
+    # que mide si el bucle funciona.
+    fin: str = "max_steps"
 
 
 @app.post("/autopilot", response_model=AutopilotOut)
@@ -202,6 +211,10 @@ async def autopilot(body: AutopilotIn) -> AutopilotOut:
     ctx = ""
     if project:
         ctx = await _memory_context(body.prompt)
+    puerta = None
+    if body.verificar:
+        from .verifier import gate as _gate
+        puerta = _gate(project, body.que)
     result = await run_autopilot(
         body.prompt,
         ollama_url=settings.ollama_base_url,
@@ -210,10 +223,19 @@ async def autopilot(body: AutopilotIn) -> AutopilotOut:
         instructions=body.instructions or "",
         project=project,
         memory=ctx,
+        gate=puerta,
     )
     log.info("autopilot: %d pasos, %d tools ejecutadas (proyecto=%s)",
              result["steps"], sum(1 for t in result["trace"] if t.get("tool")),
              project or "-")
+    # La traza es la evidencia. El `answer` del modelo no lo es: se ha medido que
+    # llega a reportar éxito sin haber escrito nada (lessons/aegis.md A-013).
+    for paso in result["trace"]:
+        if paso.get("gate"):
+            telemetry.record("INFO", "autopilot.gate", run_id=f"autopilot-{int(time.time())}",
+                             paso=paso["step"], tool=paso.get("tool"),
+                             **{k: v for k, v in paso["gate"].items()
+                                if k in ("ok", "problemas", "delta", "mismo_error", "stop")})
     if body.remember and get_memory():
         tools_used = [t for t in result["trace"] if t.get("tool")]
         # Una tool puede "funcionar" y aun así rechazar la edición (guardarraíl de
