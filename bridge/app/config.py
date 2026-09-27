@@ -19,6 +19,26 @@ class Settings(BaseSettings):
     agent_worker: str = "worker"
     agent_orchestrator: str = "orchestrator"
 
+    # Modelo que planifica las tools en /autopilot. qwen2.5:7b es el único local
+    # que produce llamadas utilizables (qwen2.5-coder:7b no emite tool_calls).
+    autopilot_model: str = "qwen2.5:7b"
+    autopilot_max_steps: int = 6
+
+    # -- Neon (topología de las bases que gestiona Aegis) --------------------
+    # La connection string NO se guarda: se pide a Neon por API cuando hace falta
+    # (app/neon.py). Aquí solo vive la key, en el entorno y no en el repo.
+    neon_api_key: str = ""
+
+    # -- Observabilidad -----------------------------------------------------
+    log_dir: str = "data/logs"
+
+    # -- Memoria del proyecto ('cerebro') -----------------------------------
+    memory_enabled: bool = True
+    memory_dir: str = "data/memory"
+    memory_recall_k: int = 3
+    memory_graph_backend: str = "sqlite"          # sqlite | graphiti | off
+    embed_model: str = "nomic-embed-text"
+
     @property
     def hermes_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.hermes_api_key}"}

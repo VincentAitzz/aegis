@@ -3,3 +3,16 @@ uvicorn[standard]>=0.30
 httpx>=0.27
 pydantic>=2.7
 pydantic-settings>=2.3
+
+# --- Memoria episódica (capa 3): vector store local embebido ---------------
+# ChromaDB corre in-process; embeddings los da Ollama en 127.0.0.1 (sin model
+# de torch/onnx en el venv). Modelo necesario en Ollama: nomic-embed-text.
+chromadb>=0.5
+
+# --- Fase 2: servidor MCP de memoria para el agente -------------------------
+# Fijado a la API clásica: en mcp 2.x `FastMCP` se renombró a `MCPServer`.
+mcp>=1.0,<2
+
+# --- Cerebro avanzado (grafo temporal con extracción LLM): opt-in -----------
+# graphiti-core>=0.8
+# falkordb
