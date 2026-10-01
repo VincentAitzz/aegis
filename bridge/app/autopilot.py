@@ -25,6 +25,9 @@ from typing import Any
 
 import httpx
 
+from .fichas import context_for
+from .method import method_context
+from .mcp_ops import coerce_args
 from .mcp_ops import mcp as ops_mcp
 
 log = logging.getLogger("aegis.bridge.autopilot")
@@ -89,8 +92,16 @@ def load_lessons(project: str) -> str:
 
 def build_system_prompt(instructions: str = "", project: str = "",
                         memory: str = "") -> str:
-    """Sistema = base + lecciones del proyecto + memoria episodica + el spec."""
+    """Sistema = identidad + método + base + lecciones + memoria + el spec."""
     parts = [SYSTEM_PROMPT]
+    metodo = method_context()
+    if metodo:
+        parts.append(metodo)
+    # La ficha del proyecto va antes que las lecciones: dice de qué trata esto,
+    # y las lecciones solo tienen sentido una vez que se sabe.
+    ficha = context_for(project)
+    if ficha:
+        parts.append(ficha)
     lessons = load_lessons(project)
     if lessons:
         parts.append(
@@ -239,7 +250,7 @@ def _execute(name: str, args: dict[str, Any]) -> str:
         raise ToolNotAllowed(f"tool desconocida: {name}")
     if not isinstance(args, dict):
         raise ValueError(f"argumentos inválidos para {name}: {type(args).__name__}")
-    kwargs = {k: v for k, v in args.items() if v is not None}
+    kwargs = coerce_args(tool, {k: v for k, v in args.items() if v is not None})
     result = tool.fn(**kwargs)
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
 
@@ -247,7 +258,8 @@ def _execute(name: str, args: dict[str, Any]) -> str:
 async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         max_steps: int = MAX_STEPS, instructions: str = "",
                         project: str = "", memory: str = "",
-                        gate: Any = None) -> dict[str, Any]:
+                        gate: Any = None,
+                        on_step: Any = None) -> dict[str, Any]:
     """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza.
 
     `gate` es el corrector de una sola llamada por paso: `await gate(step, tool,
@@ -255,6 +267,10 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     que convierte "el modelo dijo que lo hizo" en "el verificador lo comprobó", y
     sin él el autopilot no tiene forma de saber si lo hizo. Un paso que la puerta
     reprueba se registra igual: el dato es justamente ese.
+
+    `on_step` es `await on_step(step, entry)` y se llama con cada entrada de la
+    traza en cuanto existe. Sin él el run es una caja negra: en un 7B un paso
+    puede tardar medio minuto, y el móvil necesita ver que avanza.
     """
     tools = _tools_schema()
     messages: list[dict[str, Any]] = [
@@ -328,6 +344,8 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 else:
                     entry["ok"] = True
                     entry["result"] = result[:1500]
+                if on_step is not None:
+                    await on_step(step, entry)
                 if gate is not None and entry["ok"]:
                     # La puerta solo juzga lo que la tool aceptó: si la propia tool
                     # falló, su error ya es el veredicto de este paso.

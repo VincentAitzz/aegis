@@ -90,8 +90,16 @@ class ProjectMemory:
         return {"episodes": episodes, "graph": graph}
 
     def render_context(self, results: dict[str, Any], max_chars: int = 1800) -> str:
-        """Formatea los resultados de `recall` para inyectar en instructions."""
-        episodes = results.get("episodes") or []
+        """Formatea los resultados de `recall` para inyectar en instructions.
+
+        Solo se inyectan los episodios que de verdad se resolvieron. El recall
+        devuelve lo más cercano sin mirar el `outcome`, y un `failed` (o un
+        `sin_evidencia`) presentado bajo "resueltos antes" le enseña al modelo un
+        patrón que no funcionó: medido, tres episodios falsos bajaban el tool
+        calling de 7/8 a 0/8. Ver A-016.
+        """
+        episodes = [e for e in (results.get("episodes") or [])
+                    if (e.get("metadata") or {}).get("outcome") == "success"]
         graph = results.get("graph") or []
         if not episodes and not graph:
             return ""
@@ -104,7 +112,7 @@ class ProjectMemory:
                 meta = item.get("metadata") or {}
                 dist = item.get("distance")
                 tag = f" (dist={dist})" if dist is not None else ""
-                lines.append(f"- [{meta.get('outcome', '?')}] {head}{tag}")
+                lines.append(f"- [success] {head}{tag}")
         if graph:
             lines.append("### Conceptos conectados")
             for node in graph[:6]:

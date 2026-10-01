@@ -6,6 +6,7 @@ telemetría con la traza del fallo. Error y stack trace quedan en el log
 estructurado del run (`data/logs/runs/<run_id>.jsonl`).
 """
 
+import json
 import logging
 import re
 
@@ -29,6 +30,39 @@ def _run_state(run_id: str) -> dict:
     return relay_inst.status(run_id) or {}
 
 
+def tools_executed(run_id: str) -> list[str]:
+    """Tools que el run ejecutó de verdad, leídas de su traza.
+
+    El veredicto de un run no lo da el texto del modelo: un 7B responde "OK"
+    sin haber llamado a nada, y guardar eso como `success` envenena el recall
+    (ver A-016). Sin tool ejecutada no hay nada que enseñarle al agente.
+    """
+    path = telemetry.run_path(run_id)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+    names: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line or '"tool.completed"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("event") != "tool.completed":
+            continue
+        data = (event.get("payload") or {}).get("data") or {}
+        tool = data.get("tool")
+        if not tool or data.get("error"):
+            continue
+        if tool not in names:
+            names.append(tool)
+    return names
+
+
 async def build_success_episode(run_id: str) -> dict:
     state = _run_state(run_id)
     try:
@@ -38,15 +72,24 @@ async def build_success_episode(run_id: str) -> dict:
         remote = {}
     final = (remote.get("final_text") or remote.get("output")
              or (remote.get("data") or {}).get("final_response") or "")
+    tools = tools_executed(run_id)
+    if tools:
+        summary = f"tools={tools}; respuesta={final}"
+    else:
+        # Se guarda marcado, pero `recall` no lo inyecta: si no lo inyecta, un
+        # "OK" sin tool deja de ser un ejemplo a imitar.
+        summary = ("SIN EVIDENCIA: el run terminó sin ejecutar ninguna tool; "
+                   f"respuesta del modelo={final}")
     return {
         "run_id": run_id,
         "agent": state.get("agent", ""),
-        "outcome": "success",
+        "outcome": "success" if tools else "sin_evidencia",
+        "tools": tools,
         "prompt": state.get("prompt", ""),
-        "summary": " ".join(final.split())[:400],
-        "text": final[:4000],
+        "summary": " ".join(summary.split())[:400],
+        "text": final[:4000] if tools else "",
         "code": extract_code(final),
-        "error": "",
+        "error": "" if tools else "run sin tool ejecutada",
         "at": "",
     }
 
