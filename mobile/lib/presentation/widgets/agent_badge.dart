@@ -1,4 +1,4 @@
-/// Badge de agente estilo placa de circuito, color por rol.
+/// Badge del agente. Aegis tiene uno solo, así que no hay color por rol.
 library;
 
 import 'package:flutter/material.dart';
@@ -12,8 +12,9 @@ class AgentBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isWorker = agent == 'worker';
-    final color = isWorker ? DedsecColors.ok : DedsecColors.brand;
+    // `autopilot` es un motor, no un agente: se distingue por claridad, no por rol.
+    final esAutopilot = agent == 'autopilot';
+    final color = esAutopilot ? DedsecColors.info : DedsecColors.ok;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -25,7 +26,7 @@ class AgentBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '▣',
+            esAutopilot ? '▤' : '▣',
             style: TextStyle(
               fontFamily: DedsecColors.mono,
               fontSize: 10,
@@ -34,7 +35,7 @@ class AgentBadge extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           Text(
-            agent.toUpperCase(),
+            esAutopilot ? 'AUTOPILOT' : agent.toUpperCase(),
             style: TextStyle(
               fontFamily: DedsecColors.mono,
               color: color,

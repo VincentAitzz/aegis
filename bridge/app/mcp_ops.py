@@ -15,11 +15,14 @@ local: un único usuario, cero secretos aquí.
 """
 
 import ast
+import inspect
 import logging
 import os
 import re
 import subprocess
+import typing
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -180,6 +183,63 @@ def _no_secrets(content: str) -> None:
 
 
 @mcp.tool()
+def project_create(alias: str, area: str, kind: str, nombre: str = "",
+                   alcance: str = "", verificar: str = "",
+                   carpeta: str = "", ya_existe: bool = False) -> str:
+    """Da de alta un proyecto nuevo: carpeta, ficha y registro. Sin tocar Python.
+
+    Es el camino para un encargo nuevo. Deja el proyecto operable por Aegis y
+    devuelve su ficha a medio hacer: **la puerta va a negar la escritura** hasta
+    que las secciones de fondo estén escritas, y eso es lo correcto, porque
+    significa que todavía no se sabe para qué es.
+
+    Argumentos:
+        alias      identificador en minúsculas, sin espacios (ej. `acme-inventario`)
+        area       carpeta del workspace donde va (ver WORKSPACE_AREAS)
+        kind       encargo | producto | herramienta — decide qué secciones
+                   exige la ficha. El tipo se elige según el proyecto, no según
+                   lo que te resulte más fácil de responder.
+        nombre     nombre legible del proyecto
+        alcance    lo que sí entra, si ya lo sabes
+        verificar  cómo se verifica (nota para el registro)
+        carpeta    nombre en disco cuando no coincide con el alias, para dar de
+                   alta algo que ya existe (`Sistema-Gestor-Financiero`)
+        ya_existe  no crear la carpeta: solo registrar lo que ya está
+    """
+    from .alta import alta as _alta, AltaInvalida
+    try:
+        return _alta(alias, area, kind, nombre=nombre, alcance=alcance,
+                     verificar=verificar, carpeta=carpeta, ya_existe=ya_existe)
+    except AltaInvalida as exc:
+        return f"ALTA RECHAZADA: {exc}"
+
+
+@mcp.tool()
+def ficha_read(alias: str) -> str:
+    """Lee la ficha de un proyecto del workspace.
+
+    Devuelve el texto tal cual, con su tipo y su estado. Si el proyecto no tiene
+    ficha, **no falla**: responde diciendo qué secciones habría que escribir, que
+    es justo por lo que se la llama — para proponer una, o para preguntar por
+    lo que falta.
+    """
+    from .fichas import leer_para_agente
+    return leer_para_agente(alias)
+
+
+@mcp.tool()
+def registry_list() -> str:
+    """Qué proyectos puede operar Aegis y qué ficha tiene cada uno.
+
+    Separate de `projects_list`: esa dice qué hay en el disco; esta dice qué está
+    en alta y **qué le falta a cada ficha**. Es el punto de partida para trabajar
+    un proyecto nuevo: aquí se ve que tres proyectos no tienen ficha escrita.
+    """
+    from .alta import resumen_registro
+    return resumen_registro()
+
+
+@mcp.tool()
 def projects_list() -> str:
     """Qué proyectos hay en el workspace y cuáles puede operar Aegis.
 
@@ -188,6 +248,57 @@ def projects_list() -> str:
     """
     from .workspaces import describe_workspace
     return describe_workspace()
+
+
+#: Tipos que un modelo small suele envolver en un objeto por error.
+_SCALARES = (str, int, float, bool)
+
+
+def _matches(value: Any, expected: type) -> bool:
+    """¿Es `value` del tipo que la tool pide?
+
+    `bool` es subclase de `int`, así que sin este cuidado un `True` se colaría
+    como `int` y `1` como `bool`.
+    """
+    if expected is bool:
+        return isinstance(value, bool)
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, expected)
+
+
+def coerce_args(tool: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Desenvuelve un escalar que el modelo mandó dentro de un objeto.
+
+    Un 7B responde `{"repo": {"type": "portafolio"}}` cuando la tool declara
+    `repo: str`. Sin reparar, `PROJECTS.get(dict)` revienta con `TypeError` y el
+    run entero se cae por una llamada mal formada. Con reparar, la tool corre.
+
+    La regla es conservadora a propósito: solo desenvuelve si el objeto tiene
+    una única clave, o si exactamente uno de sus valores es del tipo que la
+    tool pide. Cualquier otra forma se deja intacta para que la validación
+    normal la rechace con su mensaje propio.
+    """
+    if not isinstance(args, dict):
+        return args
+    try:
+        hints = typing.get_type_hints(tool.fn)
+    except Exception:  # noqa: BLE001 — si no se puede tipar, no se inventa
+        return args
+    out = dict(args)
+    for key, value in args.items():
+        expected = hints.get(key)
+        if expected not in _SCALARES or not isinstance(value, dict):
+            continue
+        if len(value) == 1:
+            only = next(iter(value.values()))
+            if _matches(only, expected):
+                out[key] = only
+                continue
+        matches = [candidate for candidate in value.values() if _matches(candidate, expected)]
+        if len(matches) == 1:
+            out[key] = matches[0]
+    return out
 
 
 @mcp.tool()
@@ -485,15 +596,47 @@ def _write_guarded(target: Path, content: str, before: str | None) -> tuple[bool
     )
 
 
+def _denegar_sin_ficha(target: Path) -> str:
+    """La puerta: no se escribe en un proyecto que no se sabe qué es.
+
+    Devuelve "" si la ficha está completa, o el motivo del rechazo si no.
+    No lanza, a propósito: el motivo vuelve al agente como resultado de la tool,
+    se ve en la traza, y puede seguir trabajando en otra cosa. Una excepción
+    aquí sería un error opaco, que es justo lo que A-016 vino a evitar.
+    """
+    from .fichas import exige, FichaIncompleta
+    alias = root_of(target)
+    if alias == "?":
+        return ""
+    try:
+        exige(alias)
+    except FichaIncompleta as exc:
+        return (f"ESCRITURA DENEGADA en {target}. {exc} "
+                f"Esto no es un fallo: es la regla de no construir nada antes de "
+                f"saber para qué. Pregúntale a tu usuario o crea la ficha y vuelve a "
+                f"intentar. Leer el proyecto sí se permite: es parte de entenderlo.")
+    return ""
+
+
 @mcp.tool()
 def aegis_write_file(path: str, content: str) -> str:
     """Escribe contenido COMPLETO en un archivo del repo (whitelist + anti-secretos).
 
     Sobrescribe el archivo entero. Si el resultado no parsea, se revierte solo.
     Para cambios quirúrgicos usa aegis_patch_file.
+
+    Requiere que el proyecto tenga su ficha completa: no se escribe en algo que
+    no se sabe qué es.
     """
     target = _safe_resolve(path)
+    # Orden deliberado: primero los guardarraíles duros (secretos), después la
+    # puerta procedural. Si la puerta corriera antes, una ficha ausente
+    # enmascararía un secreto en el contenido — y el error que vería el
+    # operador hablaría del trámite y no del problema real.
     _no_secrets(content)
+    denegado = _denegar_sin_ficha(target)
+    if denegado:
+        return denegado
     before = target.read_text() if target.exists() else None
     ok, message = _write_guarded(target, content, before)
     if not ok:
@@ -519,6 +662,9 @@ def aegis_patch_file(path: str, old: str, new: str, replace_all: bool = False) -
     """
     target = _safe_resolve(path)
     _no_secrets(old + new)
+    denegado = _denegar_sin_ficha(target)
+    if denegado:
+        return denegado
     if not target.exists():
         return f"NO existe: {target}"
     before = target.read_text()

@@ -169,3 +169,57 @@ class TestSyntaxGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOnStep(unittest.TestCase):
+    """`on_step` es lo que impide que el móvil mire un spinner mudo."""
+
+    def test_el_store_de_runs_se_acota(self):
+        from app.main import _AUTOPILOT_RUNS, _AUTOPILOT_RUNS_MAX, _autopilot_trim
+        _AUTOPILOT_RUNS.clear()
+        for i in range(_AUTOPILOT_RUNS_MAX + 7):
+            _AUTOPILOT_RUNS[f"run{i}"] = {"run_id": f"run{i}"}
+        _autopilot_trim()
+        self.assertEqual(len(_AUTOPILOT_RUNS), _AUTOPILOT_RUNS_MAX)
+        # Se van los MAS ANTIGUOS, no los nuevos.
+        self.assertNotIn("run0", _AUTOPILOT_RUNS)
+        self.assertIn(f"run{_AUTOPILOT_RUNS_MAX + 6}", _AUTOPILOT_RUNS)
+        _AUTOPILOT_RUNS.clear()
+
+    def test_existen_las_rutas_de_segundo_plano(self):
+        from app.main import app
+        pares = {(r.path, tuple(sorted(r.methods))) for r in app.routes
+                 if hasattr(r, "methods")}
+        self.assertIn(("/autopilot/start", ("POST",)), pares)
+        self.assertIn(("/autopilot/{run_id}", ("GET",)), pares)
+        # La ruta síncrona se conserva: no se rompe el contrato existente.
+        self.assertIn(("/autopilot", ("POST",)), pares)
+
+    def test_run_autopilot_acepta_on_step(self):
+        import inspect
+        from app.autopilot import run_autopilot
+        self.assertIn("on_step", inspect.signature(run_autopilot).parameters)
+
+
+@unittest.skipUnless(SLOW, "requiere AEGIS_SLOW_TESTS=1 (llama a Ollama)")
+class TestOnStepReal(unittest.TestCase):
+    def test_cada_paso_se_reporta_antes_de_terminar(self):
+        import asyncio
+
+        from app.autopilot import run_autopilot
+
+        vistos = []
+
+        async def on_step(step, entry):
+            vistos.append((step, entry.get("tool")))
+
+        result = asyncio.run(run_autopilot(
+            "Usa projects_list para listar los proyectos del workspace.",
+            ollama_url="http://127.0.0.1:11434",
+            model="qwen2.5:7b",
+            max_steps=3,
+            on_step=on_step,
+        ))
+        tools_en_traza = [t.get("tool") for t in result["trace"] if t.get("tool")]
+        self.assertTrue(tools_en_traza, f"no pidió tools: {result['trace']}")
+        self.assertEqual([t for _, t in vistos], tools_en_traza)

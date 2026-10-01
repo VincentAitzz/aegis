@@ -24,7 +24,7 @@ cd /RUTA/AL/REPO/bridge
     > ~/.local/bridge.log 2>&1 & )
 
 # 4) Devolución de bueno
-curl -s http://127.0.0.1:8000/health   # espera status ok + agents [worker, orchestrator]
+curl -s http://127.0.0.1:8000/health   # espera status ok + agents [worker]
 ```
 
 Logs:
@@ -52,27 +52,20 @@ Logs:
 ## 2.1. Instalaciones pendientes (el agente las dejó para ti)
 
 ```bash
-# CAPA 1 — Aislamiento (Docker) + imagen del sandbox
-sudo pacman -S docker
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"          # cierra y abre sesión (o newgrp docker)
-./infra/docker/enable-docker-backend.sh  # construye aegis-sandbox y aplica hermes config set
-# reinicia el gateway para que Hermes tome el backend docker: el proceso debe
-# heredar el grupo docker (Gid 956). Si tu shell no lo tiene (=sesión anterior
-# al usermod), arráncalo así:
-newgrp docker -c 'bash infra/docker/start-gateway-docker.sh'   # ver advertencia abajo
-
 # CAPA 3 — Memoria episódica (vectorial)
 bridge/.venv/bin/pip install -r requirements.txt   # instala chromadb; mcp<2 por la API FastMCP
 ollama pull nomic-embed-text                        # modelo de embeddings local
 
 # FASE 2 (opcional) — consulta de memoria por el agente vía MCP
 bridge/.venv/bin/pip install 'mcp>=1.0,<2'
-
-# Nota: si el storage driver de docker no soporta cuota por contenedor
-# (overlay2 sobre XFS+pquota), Hermes avisa y el límite container_disk se
-# ignora. Es benigno: CPU/memoria sí se aplican.
 ```
+
+> **Sin Docker.** El aislamiento por contenedor se retiró el 2026-09-30. Arrancaba
+> un contenedor `aegis-sandbox` en cada run al que el agente no tenía acceso
+> (`terminal` nunca estuvo habilitada en `api_server`) y cuyo `/workspace` era un
+> directorio vacío. `terminal.backend` es `local`: las tools de `aegis-ops` corren
+> en el host, protegidas por la whitelist y los guardarraíiles de escritura de
+> `bridge/app/mcp_ops.py`. El gateway **no necesita** el grupo `docker`.
 
 Verificación de la memoria activa:
 
@@ -261,9 +254,7 @@ cd bridge && .venv/bin/pip install 'mcp>=1.0,<2'
 
 Al reiniciar el gateway, el agente tendrá `memory_search(query, k)` y
 `memory_status()` disponibles como herramientas. El gateway se conecta al MCP
-**al arrancar**: reinícialo después de registrar el servidor. El gateway debe
-correr además con el grupo `docker` (ver §2) para que la terminal del sandbox
-pueda usar el daemon.
+**al arrancar**: reinícialo después de registrar el servidor.
 
 ## 7. Puertos
 

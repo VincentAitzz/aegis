@@ -203,9 +203,97 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 - **Regla**: no dejes que el agente documente el código que no ha leído. Si
   documenta, cita `archivo:línea` y cada símbolo que mencione tiene que existir.
   El doc que entregó se reemplazó a mano por uno que sí cita las funciones.
+
+### A-016 · Una tool que falla en silencio es peor que una tool ausente
+
+- **Qué pasó** (medido el 2026-09-30): `POST /tasks` respondió `status: completed`
+  y `final_text: "OK"` en **5 de 5** runs en los que la tool **nunca se ejecutó**.
+  Hermes rechazaba la llamada con `tool_call requires 'calls'`, el modelo
+  respondía "OK", y el bridge guardaba el episodio como `outcome: success`.
+  18 tool_calls emitidos, 17 rechazados, 0 tools reales.
+- **Por qué no lo detectó nadie**: el modelo **sí** emitía `tool_calls`
+  estructurados. Fallaba el *envoltorio*, no el modelo. Y el run se reportaba
+  como completo, así que ningún test, ni el health, ni la app mostraban nada raro.
+- **La lección de fondo**: un `success` sin evidencia de ejecución es una
+  mentira que se acumula. Y al acumularse se vuelve **la causa** del fallo.
+
+#### El bucle (la mitad que no se vio hasta el final)
+
+Quitar el diferido de `tool_search` arregló la primera capa, pero `/tasks` siguió
+en **0/8**. La segunda capa era la propia memoria contaminada:
+
+1. `hooks.py` marcaba `success` a cualquier `task.done`, sin mirar la traza.
+2. Esos episodios entraban a memoria con `final_text = "OK"`.
+3. El `recall` los inyectaba al run siguiente bajo el rótulo
+   **"Episodios similares resueltos antes"** → `[success] … SOLUCIÓN: OK`.
+4. El modelo leía que la respuesta *era* "OK" y contestaba **sin llamar a nada**.
+5. No había tool → `task.done` → otro falso éxito. Vuelta a empezar.
+
+Ablación sobre el prompt real que Hermes manda (n=8 cada una):
+
+| variante del system prompt | tool calls |
+|---|---|
+| completo, con 3 episodios falsos | **0/8** |
+| completo **sin** el bloque de memoria | **7/8** |
+| memoria con encabezado pero 0 episodios | **6/8** |
+| mínimo (69 chars) | **8/8** |
+
+**Tres episodios falsos bajan el tool calling de 7/8 a 0/8.** Y con la memoria
+limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
+
+#### Los callejones que se recorrieron antes de llegar
+
+- **El tamaño del prompt no era el problema.** Recortar los 5 bloques de guidance
+  dejó 2.280 chars y siguió en **0/8**, porque el bloque de memoria seguía ahí.
+- **El nº de tools tampoco**: 15 tools y 23 tools daban lo mismo.
+- **El prefijo `mcp__` tampoco**: 10/10 con nombre corto, 9/10 con el largo (n=10).
+- **Meter una instrucción fuerte en `instructions` tampoco**: 0/8.
+- Los tres primeros Loeb se habrían "arreglado" con un recorte de prompt, y el
+  fallo habría vuelto a las 24 h sin entenderse.
+
+- **Regla**: el veredicto de un run sale de la **traza** (¿hubo una tool con
+  `ok`?), nunca del texto del modelo. `final_text` es la opinión del agente sobre
+  su propio trabajo. Un run sin tool ejecutada no es `success`: es
+  `sin_evidencia`.
+- **Regla**: la memoria solo se inyecta si el episodio **se resolvió de verdad**.
+  `recall` devuelve lo más cercano sin mirar el `outcome` y lo rotula "resueltos
+  antes": un fallo presentado como solución es instrucción contraria, y el
+  modelo la copia. Al prompt solo suben los `success` con tools nombradas.
+- **Corolario para el médico**: si el síntoma es "parece que funciona pero no
+  hace nada", **lee la traza, no el veredicto**. Y cuando el arreglo no se sostiene,
+  **mide por capas en vez de parchear la primera que se vea**: aquí había dos
+  capas y cada una tapaba a la siguiente.
+- **Corolario de método**: dos instrumentos mentirosos en el mismo día.
+  - `probe-toolcall.sh` dio "fiable" midiendo **una** tool con un prompt mínimo:
+    no puede ver este fallo, porque este fallo necesita el prompt real.
+  - El medidor de `/tasks` dio **0/8** porque `/tasks` es **async** (devuelve
+    `status: started`); esperaba 1,5 s y leía una traza que aún no existía.
+    **Un 0/8 sin verificar el instrumento no es un dato.**
 - **Corolario de diseño**: el criterio de éxito de un plan tiene que ser
   **comprobable por máquina** (A-016). «Escribir documentación» no lo es;
   «importar el paquete y que la puerta dé verde» sí.
+
+### A-017 · Un `.gitignore` demasiado ancho se come código sin avisar
+
+- **Qué pasó** (2026-09-30): `.gitignore` tenía `data/` sin anclar, para excluir
+  el runtime del bridge. Ese patrón también matchea **`mobile/lib/data/`**, que es
+  la capa de datos de la app Flutter. Resultado: `agent_models.dart` y
+  `agent_repository_impl.dart` **nunca estuvieron versionados**, y el móvil **no
+  compilaba desde un clone limpio**. Nadie lo notó porque el árbol de trabajo
+  local sí tenía los ficheros, así que `flutter analyze` pasaba en verde.
+- **La lección de fondo**: un patrón de exclusión sin ancla no es una
+  configuración, es un **oráculo sobre qué existe**. Todo lo que cae bajo ese
+  nombre desaparece del repo sin dejar rastro, y el síntoma (no compila) aparece
+  lejos de la causa (una línea de `.gitignore`).
+- **Regla**: los patrones de exclusión se anclan al path real (`/bridge/data/`),
+  y **se comprueba con `git check-ignore -v`** que lo que quieres excluir sí y lo
+  que no, no.
+- **Corolario de método**: `flutter analyze` en verde **no** demuestra que el
+  repo esté sano: sólo demuestra que *este* directorio está sano. La prueba de
+  que un fichero está versionado es `git ls-files`, no el analizador.
+- **Corolario para el médico**: si algo "funciona en mi máquina" y además toca
+  `data/`, `build/`, `logs/` o `tmp/` en el nombre, **mira `git status` antes de
+  tocar el código**: puede que el fichero no exista para el resto del mundo.
 
 ---
 
@@ -244,5 +332,67 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 | 2026-09-27 | `tests/test_verifier.py` (**yo**) | mock con `root` como string en vez de `Path` | — |
 | 2026-09-27 | `app/autopilot.py` (**yo**) | respuesta vacía del modelo terminaba el run y se reportaba como "agotó los pasos" | — |
 | 2026-09-27 | `bridge/docs/verificador.md` (agente) | inventó la API: `project_neon`, `verify_project()`, "se ejecuta periódicamente" | A-015 |
+| 2026-09-30 | `~/.hermes/config.yaml` (**yo**) | `tools.tool_search` sin definir difería las 13 tools MCP tras el meta-tool `tool_call`; un 7B no construye el array anidado → 0/5 tools ejecutadas | A-016 |
+| 2026-09-30 | `~/.hermes/config.yaml` (**yo**) | `platform_toolsets.api_server` con nombres de servidor donde se esperan toolsets: dejó **todas** las configurables en `enabled=False` | A-016 |
+| 2026-09-30 | `app/hooks.py` (**yo**) | grababa `outcome: success` con solo mirar `task.done`, sin evidencia de tool: 5 falsos éxitos a memoria | A-016 |
+| 2026-09-30 | `app/memory/__init__.py` (**yo**) | `recall` devolvía lo más cercano sin mirar `outcome` y lo rotulaba "Episodios similares resueltos antes": enseñarle un fallo como solución | A-016 |
+| 2026-09-30 | el bucle completo (**yo**) | el falso éxito alimentaba el recall, el recall enseñaba "responde OK sin tool", y el run sin tool volvía a grabarse como éxito | A-016 |
+| 2026-09-30 | `probe-toolcall.sh` (**spec**) | la sonda (1 tool, 60 tokens) dio "fiable" mientras el flujo real fallaba 0/8: medía otra condición | A-016 |
+| 2026-09-30 | el medidor de `/tasks` (**yo**) | dio 0/8 porque `/tasks` es async y yo esperaba 1,5 s: un 0 sin verificar el instrumento no es un dato | A-016 |
+| 2026-09-30 | `infra/docker/` (**arquitectura**) | sandbox por contenedor inalcanzable (`terminal` nunca habilitada) y con `/workspace` vacío: 683 MB y un contenedor por run a cambio de nada | A-016 |
+| 2026-09-30 | `app/autopilot.py` (**yo**) | `repo_verify(repo={"type":"portafolio"})` — escalar envuelto en objeto — reventaba con `TypeError` y tumbaba el run | A-016 |
+| 2026-09-30 | `POST /fichas` (**yo**) | el modelo se comió los `---` del frontmatter al 'copiar' la ficha: escritura exacta va de la persona al bridge | A-019 |
+| 2026-09-30 | `app/fichas.py` (**yo**) | el filtro de comentarios era de una línea y las subsecciones `###` rellenaban su `##`: la puerta se abría sola | A-018 |
+| 2026-09-30 | `.gitignore` (**yo**) | `data/` sin ancla también excluía `mobile/lib/data/`: la capa de datos de la app nunca estuvo versionada y el móvil no compilaba desde un clone | A-017 |
 
+
+
+### A-018 · Una puerta que se abre sola no es una puerta
+
+- **Qué pasó** (2026-09-30): se construyó la puerta de fichas (no se escribe en
+  un proyecto que no se sabe qué es) y **pasó los tests**. Dos agujeros la
+  abrían, y los dos aparecieron el mismo día:
+  1. El filtro de comentarios HTML era de **una sola línea**. Los comentarios
+     largos se escriben en varias, así que a partir de la segunda línea el
+     texto se leía como contenido y la sección contaba como escrita.
+  2. Una sección `##` cuyo único texto estaba en subsecciones `###` contaba como
+     escrita. Bastaba crear un `###` para saltarse el control.
+- **Por qué importa más de lo que parece**: el primer agujero se detectó
+  **usando la puerta**, no leyendo el código. Escribí una ficha con "pendiente"
+  en comentarios, la puerta la dejó pasar, y un 7B iba a trabajar sobre una
+  ficha que no decía nada. Es A-016 en otro sitio: un control que reporta verde
+  sin comprobar lo que dice comprobar.
+- **La lección de fondo**: **una validación nueva es código no probado hasta que
+  tiene un caso que la hace fallar.** Los tests que escribí probaban lo que yo
+  ya sabía. El agujero estaba en el input que yo no se me había ocurrido.
+- **Regla**: por cada guardarraíl, un test con el caso **peor**, no solo el
+  feliz. Para la puerta: comentario multilínea, subsección, marcador, plantilla
+  recién creada, sección vacía. Y probarlos **contra la puerta real**, no contra
+  la función auxiliar.
+- **Corolario**: la puerta no excluye la lectura. Entender un proyecto es leerlo,
+  y una puerta que cierra la lectura solo produce resistencia sin.
+
+
+### A-019 · Si el texto lo aprueba una persona, que no lo escriba un modelo
+
+- **Qué pasó** (2026-09-30): al probar el flujo de fichas desde el móvil, el
+  diseño era "el agente propone la ficha, la persona la revisa, y autopilot la
+  escribe tal cual". Se le pasó el texto a autopilot con la instrucción de
+  copiarlo **exactamente**, y no lo hizo: se **comió los `---` del frontmatter**
+  y le añadió un `## Tools` al final.
+- **Por qué fue grave**: los `---` son lo que declara el `kind`. Sin ellos la
+  ficha queda sin tipo, la puerta responde "tipo inválido", y el trabajo
+  aparentemente hecho no abre nada. Un `write` que devuelve éxito y deja el archivo
+  inservible es peor que un `write` que falla: **no se nota hasta el siguiente
+  intento**.
+- **La lección de fondo**: **toda copia de texto por un modelo es una pérdida de
+  fidelity**. Da igual cuántas veces se lo pidas. Si un texto tiene que quedar
+  *igual*, tiene que escribirlo algo que no lo reescriba.
+- **Regla**: los tres sitios donde el dato tiene que ser exacto —el texto de una
+  ficha, un monto, un identificador— van **de la persona al bridge, sin pasar por
+  el modelo**. El modelo redacta y propone; lo que la persona aprobó se guarda.
+- **Corolario**: al integrar con el móvil, probar **el camino completo** y no el
+  trayecto parcial. Aquí el fallo no estaba en el modelo ni en la puerta: estaba
+  en haber encadenado "texto humano → modelo → archivo", y no se vio hasta que
+  el archivo se leyó.
 

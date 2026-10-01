@@ -16,15 +16,65 @@ class FakeAgentRepository implements AgentRepository {
         hermesOk: true,
         ollamaOk: true,
         models: ['qwen2.5-coder:7b'],
-        agents: ['worker', 'orchestrator'],
+        agents: ['worker'],
       );
 
   @override
   Future<List<String>> models() async => const ['qwen2.5-coder:7b'];
 
   @override
-  Future<AgentTask> createTask({required String agent, required String prompt, String? instructions}) async =>
+  Future<AgentTask> createTask({
+    required String agent,
+    required String prompt,
+    String? instructions,
+    String? project,
+  }) async =>
       AgentTask(runId: 'run_test', agent: agent, status: 'started');
+
+  @override
+  Future<List<ProjectInfo>> projects() async => const [
+        ProjectInfo(alias: 'aegis', kind: 'herramienta', estado: 'completa', verify: ['check', 'test']),
+        ProjectInfo(
+            alias: 'compra-unida',
+            kind: 'encargo',
+            estado: 'sin_ficha',
+            verify: ['check', 'test']),
+        ProjectInfo(
+            alias: 'data-sending',
+            kind: 'herramienta',
+            estado: 'parcial',
+            faltan: ['Invariantes', 'Qué no toca']),
+      ];
+
+  @override
+  Future<ProjectInfo> writeFicha({
+    required String alias,
+    required String contenido,
+  }) async =>
+      const ProjectInfo(alias: 'compra-unida', kind: 'encargo', estado: 'parcial');
+
+  @override
+  Future<String> startAutopilot({
+    required String prompt,
+    String? project,
+    String? instructions,
+    int maxSteps = 6,
+    bool remember = true,
+    bool verify = false,
+  }) async =>
+      'autopilot_test';
+
+  @override
+  Future<AutopilotRun> autopilotStatus(String runId) async => const AutopilotRun(
+        runId: 'autopilot_test',
+        status: 'completed',
+        steps: 1,
+        trace: [
+          AutopilotStep(step: 1, tool: 'projects_list', ok: true, result: 'ok'),
+        ],
+        answer: 'listo',
+        fin: 'sin_tools',
+      );
 
   @override
   Stream<AgentEvent> streamTask(String runId) => const Stream.empty();
@@ -55,8 +105,10 @@ void main() {
 
     expect(find.text('AEGIS CONSOLE'), findsOneWidget);
     expect(find.text('[NUEVO ENCARGO]'), findsOneWidget);
-    expect(find.text('WORKER'), findsOneWidget);
-    expect(find.text('ORQUESTADOR'), findsOneWidget);
+    // Un solo agente: se elige motor, no rol.
+    expect(find.text('HERMES'), findsOneWidget);
+    expect(find.text('AUTOPILOT'), findsOneWidget);
+    expect(find.text('ORQUESTADOR'), findsNothing);
     expect(find.text('EJECUTAR  ▶'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());

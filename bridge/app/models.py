@@ -2,15 +2,34 @@
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+#: Roles que el bridge acepta. Aegis tiene UN agente. `orchestrator` se acepta
+#: solo por compatibilidad con apps viejas: antes ambos valores terminaban en el
+#: mismo modelo (Hermes caía a su default), así que era configuracion muerta
+#: que solo sugeria un equipo que no existia.
+_LEGACY_AGENTS = {"orchestrator"}
+_CANONICAL_AGENT = "worker"
+_KNOWN_AGENTS = {"worker"} | _LEGACY_AGENTS
 
 
 class TaskIn(BaseModel):
-    """Petición de lanzar una tarea en un agente de Hermes."""
-    agent: Literal["worker", "orchestrator"] = "worker"
+    """Petición de lanzar una tarea en el agente de Aegis."""
+    agent: Literal["worker", "orchestrator"] = _CANONICAL_AGENT
     prompt: str = Field(min_length=1, max_length=1_000_000)
     instructions: Optional[str] = None
     title: Optional[str] = None
+    #: Alias del proyecto del workspace. Carga su ficha y su memoria; sin esto
+    #: el agente razona sin saber de qué se trata, que es justo lo que el
+    #: método prohíbe. Ver `app/fichas.py`.
+    project: Optional[str] = None
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def _un_unico_agente(cls, value: Any) -> Any:
+        if isinstance(value, str) and value in _LEGACY_AGENTS:
+            return _CANONICAL_AGENT
+        return value
 
 
 class TaskOut(BaseModel):

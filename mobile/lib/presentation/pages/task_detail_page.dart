@@ -24,11 +24,49 @@ class TaskDetailPage extends ConsumerStatefulWidget {
 
 class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
   final _steer = TextEditingController();
+  bool _escribiendo = false;
+  String? _avisoEscritura;
 
   @override
   void dispose() {
     _steer.dispose();
     super.dispose();
+  }
+
+  /// Guarda la ficha con lo que el agente propuso.
+  ///
+  /// Va directo al bridge, **sin pasar por el modelo**: se comprobó que un 7B
+  /// copiando un texto literal se come los `---` del frontmatter y deja la
+  /// ficha sin tipo. La persona ya revisó el texto; aquí solo se guarda.
+  Future<void> _aceptarPropuesta(String proyecto) async {
+    final session = ref.read(taskSessionProvider);
+    final contenido = (session?.finalText ?? '').trim();
+    if (contenido.isEmpty || _escribiendo) return;
+    setState(() {
+      _escribiendo = true;
+      _avisoEscritura = null;
+    });
+    try {
+      final resultado = await ref.read(agentRepositoryProvider).writeFicha(
+            alias: proyecto,
+            contenido: contenido,
+          );
+      if (!mounted) return;
+      setState(() {
+        _escribiendo = false;
+        _avisoEscritura = resultado.completa
+            ? 'Ficha de $proyecto guardada. La puerta se abre.'
+            : 'Guardada, pero sigue incompleta: faltan '
+                '${resultado.faltan.join(', ')}';
+      });
+      ref.invalidate(projectsProvider);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _escribiendo = false;
+        _avisoEscritura = 'No se pudo escribir: $e';
+      });
+    }
   }
 
   void _sendSteer(String text) {
@@ -88,6 +126,7 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                       _responsePanel(session.finalText, isLive)
                     else
                       _responsePlaceholder(),
+                    _botonAceptar(session, isLive),
                     const SizedBox(height: 8),
                     if (session.pendingApproval != null) ...[
                       const SizedBox(height: 8),
@@ -191,6 +230,69 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
           ),
         ),
       ],
+    );
+  }
+
+  /// "Escribir con autopilot": solo aparece con proyecto elegido, respuesta del
+  /// agente no vacía y run terminado. Es el momento en que el humano ha leído
+  /// lo que Aegis propone y decide si lo acepta.
+  Widget _botonAceptar(AgentSession session, bool isLive) {
+    final proyecto = ref.watch(selectedProjectProvider);
+    if (proyecto.isEmpty || isLive || session.finalText.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final info = ref.watch(projectsProvider).asData?.value;
+    final yaEscribible = info != null &&
+        info.any((p) => p.alias == proyecto && p.escribible);
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_avisoEscritura != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(_avisoEscritura!,
+                  style: TextStyle(
+                      fontFamily: DedsecColors.mono,
+                      fontSize: 10,
+                      color: _avisoEscritura!.startsWith('No') 
+                          ? DedsecColors.danger
+                          : DedsecColors.ok)),
+            ),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _escribiendo
+                  ? null
+                  : () => _aceptarPropuesta(proyecto),
+              icon: _escribiendo
+                  ? const SizedBox(
+                      width: 12, height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.edit_note_rounded, size: 18),
+              label: Text(_escribiendo
+                  ? 'ESCRIBIENDO…'
+                  : yaEscribible
+                      ? 'ESCRIBIR LA FICHA DE $proyecto'
+                      : 'ESCRIBIR LA FICHA DE $proyecto CON AUTOPILOT'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: yaEscribible ? DedsecColors.ok : DedsecColors.info,
+                side: BorderSide(
+                    color: yaEscribible ? DedsecColors.ok : DedsecColors.info,
+                    width: 1.2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Se guarda exactamente este texto, sin que ningún modelo lo toque. '
+            'Revísalo antes: esto es lo que queda escrito.',
+            style: const TextStyle(
+                fontSize: 9, color: DedsecColors.fgFaint, height: 1.3),
+          ),
+        ],
+      ),
     );
   }
 

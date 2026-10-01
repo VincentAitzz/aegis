@@ -29,7 +29,7 @@ bridge/        Puente REST+WS (FastAPI) — también observabilidad (telemetry) 
   app/memory/    'cerebro': grafo conceptual (SQLite/Graphiti) + episódica (ChromaDB)
   app/mcp_memory.py  servidor MCP (fase 2) para consultar memoria desde el agente
 mobile/        App Flutter (Aegis Console)
-infra/         Scripts de aprovisionamiento (tailscale, ollama, dispositivo, docker sandbox)
+infra/         Scripts de aprovisionamiento (tailscale, ollama, hermes, dispositivo)
 docs/          Arquitectura, contrato API y runbook
 ```
 
@@ -42,8 +42,7 @@ docs/          Arquitectura, contrato API y runbook
   worker son **roles lógicos** sobre el mismo 7b. La ruta a 14b queda documentada
   en `docs/architecture.md` para hardware futuro.
 - Memoria: ChromaDB y el grafo corren in-process (~300 MB adicionales); el
-  modelo de embeddings es `nomic-embed-text` (pequeño, ~274 MB). Reservado para
-  limitar `container_memory` del sandbox a 4 GB (ver §Capas).
+  modelo de embeddings es `nomic-embed-text` (pequeño, ~274 MB).
 
 ## Capas de ejecución
 
@@ -52,13 +51,14 @@ El backend local se estructura en tres capas críticas (detalle en
 
 | Capa | Qué hace | Cómo |
 |------|----------|------|
-| **Aislamiento** | el agente compila/testea dentro de un contenedor, jamás en el host | `terminal.backend: docker` + imagen `infra/docker/Dockerfile` |
+| **Aislamiento** | el agente solo toca lo declarado: whitelist de raíces, denylist, escaneo de secretos, rollback de sintaxis | guardarraíiles en `bridge/app/mcp_ops.py`, se apliquen quien llame a la tool |
 | **Observabilidad** | cada evento y cada fallo quedan como log JSON estructurado | `data/logs/bridge.jsonl` + `data/logs/runs/<run_id>.jsonl` con traza |
 | **Memoria** | cada problema resuelto (o fallido) se guarda como episodio y se consulta antes de crear tareas | ChromaDB (semántica) + grafo conceptual + memoria nativa de Hermes |
 
-Activar el aislamiento: `./infra/docker/enable-docker-backend.sh` (tras instalar
-Docker). La memoria degrada sola si falta chroma/embeddings: el grafo (SQLite)
-sigue aportando contexto léxico y se inyecta como `instructions` en cada
+El aislamiento no depende de un contenedor: lo dan los guardarraíiles de
+`bridge/app/mcp_ops.py`, que rejectan cualquier ruta, contenido o escritura fuera
+de lo declarado. La memoria degrada sola si falta chroma/embeddings: el grafo
+(SQLite) sigue aportando contexto léxico y se inyecta como `instructions` en cada
 `POST /tasks`.
 
 ## Servicios
@@ -111,7 +111,9 @@ infra/mobile/install-phone.sh            # installa APK + adb reverse 8000/11434
   (`data/logs/`; telemetría en `GET /health`).
 - ✅ Memoria: episodios éxito/pitfall en grafo (SQLite) + ChromaDB cuando está
   instalado; contexto previo inyectado en cada tarea; servidor MCP `mcp_memory.py`.
-- ⏳ Aislamiento: Docker pendiente de instalación → `infra/docker/enable-docker-backend.sh`.
+- ✅ Aislamiento por guardarraíles en `mcp_ops.py` (el sandbox por contenedor se
+  retiró el 2026-09-30: era inalcanzable para el agente y arrancaba un contenedor
+  por run sin uso).
 - Pendiente: ACL en admin console (`infra/tailnet/acl-policy.json`), firmado de APK.
 
 Ver `docs/architecture.md` (diseño + contrato) y `docs/runbook.md` (operación).

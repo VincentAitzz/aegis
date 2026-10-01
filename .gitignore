@@ -25,7 +25,13 @@ node_modules/
 # Datos y logs
 *.log
 logs/
-data/
+# Anclado al bridge: `data/` a secas también se comía `mobile/lib/data/`, que es
+# código fuente de la app y nunca llegó a versionarse.
+/bridge/data/
+/data/
+# La parte comercial de cada ficha: quién es el cliente, su problema, su banda.
+# Esto no viaja en un push. La técnica sí está versionada, en bridge/fichas/.
+/bridge/fichas-privadas/
 *.db
 *.sqlite*
 

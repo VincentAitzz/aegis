@@ -5,6 +5,7 @@ elige base, ni rama, ni host**. Si eso se pudiera saltar, el error posible
 dejaría de ser "no encontré esa migración" y pasaría a ser "aplicó a producción".
 """
 
+import json
 import os
 import sys
 import unittest
@@ -13,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import neon  # noqa: E402
+from app import projects  # noqa: E402
 from app.projects import PROJECTS  # noqa: E402  (fuente única)
 from app.neon import NeonError  # noqa: E402
 
@@ -97,8 +99,32 @@ class TestRegistryBoundary(unittest.TestCase):
             self.assertIn(cfg.strategy, ("psql", "drizzle"), alias)
 
     def test_only_projects_with_a_database_declare_one(self):
-        """`trazeurs` y `recepcion-persa` no tienen Neon: su id va vacío a propósito."""
+        """Cada proyecto dice explícitamente qué base tiene, si tiene alguna.
+
+        Antes esto era una lista escrita a mano en el test, y por eso ningún
+        proyecto nuevo podía darse de alto sin editar el test. Ahora lo declara
+        el registro con `db`:
+          · `neon`      → tiene que venir el id de proyecto de Neon
+          · otra cosa   → `neon_project` vacío, porque no es una base que Aegis
+                          administre por su costura de Neon (supabase, postgres
+                          propio, lo que sea)
+          · ausente/`null` → se admite **solo** si el registro dice que no se sabe
+        """
         for alias, cfg in PROJECTS.items():
+            if alias in projects._DATOS:
+                entrada = json.loads(
+                    (projects.REGISTRO_DIR / f"{alias}.json").read_text(encoding="utf-8"))
+                motor = entrada.get("db")
+                self.assertIn("db", entrada, f"{alias}: el registro debe declarar 'db'")
+                if motor in (None, ""):
+                    continue                      # declarado, pero desconocido
+                if motor == "neon":
+                    self.assertTrue(cfg.neon_project, alias)
+                else:
+                    self.assertEqual(
+                        cfg.neon_project, "",
+                        f"{alias}: su base es {motor}, no Neon; no debe llevar id de Neon")
+                continue
             if alias in ("trazeurs", "recepcion-persa"):
                 self.assertEqual(cfg.neon_project, "", alias)
             else:

@@ -84,8 +84,25 @@ presentation providers (repos, health, TaskSessionController), pages, widgets
 | POST   | `/tasks/{run_id}/approval` | `{decision: approve\|deny, comment?}`  | `{status, accepted}`          |
 | POST   | `/tasks/{run_id}/steer`    | `{text}`                               | `{run_id, accepted}`          |
 | POST   | `/tasks/{run_id}/stop`     | —                                      | `{run_id, status: stopping}`  |
+| POST   | `/autopilot`               | AutopilotIn                            | `{model, answer, steps, trace, fin}` (síncrono) |
+| POST   | `/autopilot/start`         | AutopilotIn                            | `{run_id, status}` (devuelve ya) |
+| GET    | `/autopilot/{run_id}`      | —                                      | `{run_id, status, steps, trace, answer, fin, error}` |
 
-`agent` ∈ `worker` | `orchestrator` (rutas configuradas en Hermes).
+Aegis tiene **un solo agente**: `agent = "worker"`. Antes también aceptaba
+`orchestrator`, pero ambos valores terminaban en el mismo modelo (Hermes usaba su
+default), así que era configuración muerta que solo sugería un equipo inexistente.
+El bridge normaliza el alias legacy a `worker` para no romper apps viejas.
+
+Se elige **motor**, no rol:
+
+| Motor | Ruta | Para qué | Cómo se ve el avance |
+|---|---|---|---|
+| Hermes | `POST /tasks` | razonar, recordar, resumir | streaming por WS (`text.delta`) |
+| Autopilot | `POST /autopilot/start` | **ejecutar tools** | `GET /autopilot/{run_id}`, traza por paso |
+
+Autopilot es el que ejecuta: el modelo elige QUÉ tool usar y el bridge la corre
+con lista blanca, dejando traza. Es la única vía cuyo resultado se puede citar
+como evidencia.
 
 ### 3.2 WebSocket `/ws`
 
@@ -129,13 +146,25 @@ Tipos de `type`: `task.created`, `status.changed`, `reasoning`, `text.delta`,
 5. **Dedupe con prefijo truncado**: al truncar el payload, la clave cae dentro del
    `run_id` (constante) y elimina todos los deltas salvo el primero.
 6. **Google Android auto-retos**: pasar `--dart-define` en `flutter build` y en `run`.
+7. **`/tasks` es asíncrono**: devuelve `{"status":"started"}`. Si esperas el
+   resultado con un `sleep` corto, lees una traza que aún no existe y mides **0/8**
+   sin que nada esté roto. Un 0 sin verificar el instrumento no es un dato.
+8. **La memoria puede ser la causa, no el efecto**: un `success` sin evidencia se
+   reinyecta al prompt como "episodio similar resuelto" y el modelo copia el
+   patrón. Medido: 3 episodios falsos ⇒ 0/8 tool calls; sin ellos, 7/8. Por eso
+   `hooks.py` exige tool ejecutada en la traza y el `recall` solo inyecta
+   `success` (lección A-016).
+9. **Un prompt grande no es el problema por ser grande**: recortar 10 kB a 2 kB no
+   cambió nada, porque el bloque tóxico eran 788 chars de recall. Ablar por capas
+   antes de parchear la primera que se ve.
 
 ## 6. Ruta futura a 14b
 
 - Opciones: 2 GPUs / más VRAM, o modelo 8b `Q4_K_M`+ `num_ctx` bajo (Hermes exige
   64k mínimo). Documentar el presupuesto KV ~12 GB @64k no permite 14b en 6 GB VRAM.
-- En ese escenario: `model_overrides.orchestrator` → `qwen2.5-coder:14b` y re-run del
-  smoke worker/orchestrator.
+- En ese escenario: un solo agente, sin overrides por rol, y re-run del smoke.
+  Nota: hoy Hermes **sí** ejecuta tools (20/20) con `qwen2.5:7b` una vez purgada
+  la memoria; el límite de 6 GB era el del sandbox por contenedor, ya retirado.
 
 ## 7. Capas críticas de ejecución
 
@@ -144,36 +173,38 @@ El entorno de ejecución se estructura en tres capas: **aislamiento**,
 
 ```
 [Móvil] → REST/WS → [Bridge :8000]
-                        │  POST /tasks
-                        │   ├─ recall(prompt) ──► memoria: episodios + grafo
-                        │   └─ instructions + contexto previo
-                        ▼
-                     [Hermes API :8642]  ──►  [terminal: docker aegis-sandbox]   (capA: aislamiento)
-                        │                        compila / ejecuta / corre tests
-                        │                        ├─ stdout+stderr → devuelve al agente (contexto inmediato)
-                        │                        └─ trazas → logs /api
-                        ▼
-                     events SSE → relay
-                        ├─ telemetry.run_event → data/logs/runs/<run_id>.jsonl   (capB: observabilidad)
-                        └─ on_terminal (task.done|task.failed)
-                             ├─ episodio éxito  → remember()                     (capC: memoria)
-                             └─ pitfall+traza   → remember() + run.failed.detail
+                        ├─ HERMES:  POST /tasks ─► stream WS (razonar)
+                        │      ├─ recall(prompt) ──► memoria: SOLO episodios success
+                        │      └─ instructions + contexto previo
+                        │            ▼
+                        │         [Hermes API :8642] ──► [aegis-ops MCP]  (capA: guardarraíles)
+                        │            ├─ whitelist + rollback de sintaxis
+                        │            └─ trazas → data/logs/runs/<id>.jsonl
+                        │            ▼
+                        │         events SSE → relay ──► telemetry
+                        │
+                        └─ AUTOPILOT: POST /autopilot/start ─► bucle propio
+                                 (el modelo elige QUÉ tool; el bridge la EJECUTA)
+                                      ▼
+                                   traza por paso → GET /autopilot/{run_id}
+
+   Veredicto de un run (ambos motores):  traza  ──► ¿hubo tool con ok?
+     sí → outcome=success  ·  no → outcome=sin_evidencia   ← nunca desde final_text
+   Memoria: solo se inyecta al prompt un `success` con tools nombradas.
 ```
 
-### 7.1 Aislamiento (Docker)
+### 7.1 Aislamiento (guardarraíles, no contenedor)
 
-- Recomendado por Hermes: `terminal.backend: docker`. Así, **cada comando** que
-  el agente ejecuta (escribir el módulo, compilar, correr unit tests) ocurre
-  dentro de un contenedor `aegis-sandbox` construido desde
-  `infra/docker/Dockerfile`, con `docker_mount_cwd_to_workspace` (el cwd se
-  monta en `/workspace`) y `docker_run_as_host_user` (archivos a tu uid).
-- Límites (host ~15 GB RAM + Ollama a 64k): `container_cpu=2`,
-  `container_memory=4096`, `container_disk=24576`, `container_persistent=true`.
-- Actívalo con `./infra/docker/enable-docker-backend.sh` (usa
-  `hermes config set`, no toca el YAML) — ver `docs/runbook.md`.
-- Si el fallo del proceso ocurre en el contenedor, su stderr vuelve al agente
-  como resultado del tool de terminal (contexto inmediato) y además queda en el
-  log estructurado del run para re-alimentar la memoria.
+- **Retirado el 2026-09-30 el sandbox por contenedor.** Arrancaba un contenedor
+  `aegis-sandbox` en cada run que el agente no podía usar: `terminal` nunca estuvo
+  habilitada en `api_server`, y su `/workspace` era un directorio vacío. Coste
+  (683 MB de imagen + arranque por run) sin beneficio.
+- `terminal.backend` es `local`. El aislamiento real lo dan los guardarraíles de
+  `bridge/app/mcp_ops.py`, que se aplican **sin importar quién llame a la tool**:
+  whitelist multi-raíz, denylist (`.git`, `.env*`, binarios), escaneo de secretos
+  y rollback de sintaxis.
+- Consecuencia asumida: `repo_verify` y `build_apk` ejecutan en el host. Es
+  aceptable en una laptop de un solo usuario; no lo sería en un runner compartido.
 
 ### 7.2 Observabilidad (telemetría estructurada)
 
@@ -205,10 +236,20 @@ Ciclo de vida (automatizado en el bridge):
    fenced, error si falló) y llama a `ProjectMemory.remember()`:
    - guarda el episodio en el grafo (SQLite o Graphiti) con sus conceptos,
    - lo indexa por embedding (Chroma + Ollama) cuando está disponible.
+   - **el veredicto lo decide la traza, no el texto**: `hooks.tools_executed()`
+     lee `data/logs/runs/<id>.jsonl` y, si no hay ninguna tool ejecutada sin
+     error, el episodio se graba como `sin_evidencia` (no `success`) y con el
+     texto del modelo descartado. La razón: un falso éxito reinyectado como
+     "episodio similar resuelto" hace que el modelo responda sin llamar a nada
+     (A-016, medido 0/8 → 7/8 al quitarlo).
 2. **Recordar antes de crear** — `POST /tasks` (y WS `create_task`) calcula
    `recall(prompt)` y, si hay contexto, lo inyecta como `instructions` extra
    bajo `## Contexto de experiencia previa`. El modelo (64k de contexto) lo
    asimila sin coste.
+   - **el filtro es en `render_context`**: `recall` devuelve lo semánticamente
+     más cercano sin mirar el `outcome`, así que el filtrado a `success` ocurre
+     justo en la frontera de inyección. Un `failed` presentado bajo "resueltos
+     antes" es instrucción contraria, y el 7B la copia.
 3. **Consultar a demanda (fase 2)** — `app/mcp_memory.py` expone
    `memory_search`/`memory_status` como tools MCP sobre stdio, para que el
    propio agente consulte dentro del run.

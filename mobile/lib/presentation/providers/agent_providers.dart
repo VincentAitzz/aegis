@@ -25,6 +25,26 @@ final modelsProvider = FutureProvider<List<String>>((ref) {
   return ref.watch(agentRepositoryProvider).models();
 });
 
+/// Proyectos del workspace con el estado de su ficha. Es lo que pinta el
+/// selector: un proyecto sin ficha sale en rojo porque Aegis no puede escribir
+/// en él todavía, y eso conviene verlo **antes** de pedirle una misión, no
+/// después de que se niegue.
+final projectsProvider = FutureProvider<List<ProjectInfo>>((ref) {
+  return ref.watch(agentRepositoryProvider).projects();
+});
+
+/// Proyecto elegido en la pantalla de control. Vive aquí para que la pantalla
+/// de control y la de misión hablen del mismo.
+final selectedProjectProvider =
+    NotifierProvider<SelectedProjectController, String>(SelectedProjectController.new);
+
+class SelectedProjectController extends Notifier<String> {
+  @override
+  String build() => '';
+
+  void select(String alias) => state = alias;
+}
+
 // -- Sesión de tarea activa ---------------------------------------------------
 class AgentSession {
   const AgentSession({
@@ -74,9 +94,13 @@ class TaskSessionController extends Notifier<AgentSession?> {
     return null;
   }
 
-  Future<void> createTask({required String agent, required String prompt}) async {
+  Future<void> createTask({
+    required String agent,
+    required String prompt,
+    String? project,
+  }) async {
     final repo = ref.read(agentRepositoryProvider);
-    final task = await repo.createTask(agent: agent, prompt: prompt);
+    final task = await repo.createTask(agent: agent, prompt: prompt, project: project);
     final session = AgentSession(task: task, status: task.status);
     state = session;
     _sub?.cancel();

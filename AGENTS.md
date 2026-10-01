@@ -19,7 +19,7 @@ Consola de operación del negocio freelance, local-first:
 
 - `bridge/` — API FastAPI, memoria, telemetría, los MCP y el autopilot.
 - `mobile/` — cliente Flutter (`aegis_console`).
-- `infra/` — scripts de arranque (`ollama/`, `docker/`, `tailnet/`, `mobile/`).
+- `infra/` — scripts de arranque (`ollama/`, `hermes/`, `tailnet/`, `mobile/`).
 - `docs/` — arquitectura y runbook. **Actualízalos cuando cambie el operarlo.**
 
 **Invariante que no se negocia:** *Aegis nunca es punto único de falla.* Si la
@@ -56,7 +56,36 @@ Motivo técnico: los modelos de 6 GB disponibles (`qwen2.5:7b`) **no emiten
 el texto. El autopilot lo resuelve parseando la intención y ejecutándola. Si
 necesitas tools, va por autopilot.
 
+### Lo que se midió, y cambia la regla
+
+`/tasks` **sí** ejecuta tools de forma fiable una vez limpio el resto:
+**20/20 runs** con tool realmente ejecutada y 0 falsos éxitos, en tres rondas.
+No era el modelo: era la memoria.
+
+El bucle que lo rompía (lección A-016):
+
+1. `hooks.py` marcaba `success` a cualquier `task.done`, sin mirar la traza.
+2. Esos episodios entraban a memoria con `final_text = "OK"`.
+3. El `recall` los reinyectaba como *"Episodios similares resueltos antes"*.
+4. El modelo aprendía que la respuesta era "OK" y contestaba **sin llamar a nada**.
+5. Sin tool → `task.done` → otro falso éxito.
+
+Ablación medida (n=8): con 3 episodios falsos, **0/8** tool calls; sin el
+bloque de memoria, **7/8**. Tres episodios falsos bastaban.
+
+Por eso Hermes se queda, pero con dos reglas que no son opcionales:
+
+- **El veredicto sale de la traza, nunca de `final_text`.** Sin tool ejecutada
+  el resultado es `sin_evidencia`, y así se graba.
+- **Al prompt solo suben episodios `success` con tools nombradas.** Un fallo
+  inyectado como solución es instrucción contraria.
+
+Y el orden importa: **purgar la memoria es parte del arreglo**, no una limpieza
+de final. Con la memoria envenenada no hay nada que medir.
+
 ## 3. Protocolo de delegación
+
+### Desde la consola
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/autopilot \
@@ -64,11 +93,29 @@ curl -s -X POST http://127.0.0.1:8000/autopilot \
   -d '{"project":"portafolio","max_steps":16,"instructions":"<reglas>","prompt":"<tarea>"}'
 ```
 
+Síncrono: devuelve `answer`, `steps`, `trace` y `fin` (por qué terminó). Es lo
+que usa el resto del operarlo y los scripts.
+
+### Desde el móvil, o cuando el run puede tardar
+
+`POST /autopilot` es síncrono y un paso puede tardar medio minuto: para no
+dejar al usuario mirando un spinner, están `POST /autopilot/start` (devuelve ya
+un `run_id`) y `GET /autopilot/{run_id}` (la traza crece paso a paso).
+
+```bash
+RID=$(curl -s -X POST http://127.0.0.1:8000/autopilot/start \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"aegis","prompt":"lista los proyectos"}' | jq -r .run_id)
+curl -s http://127.0.0.1:8000/autopilot/$RID | jq '{status,steps,fin}'
+```
+
 - `project` es lo que carga `bridge/lessons/{project}.md` y el `recall`.
 - `instructions` van en el system prompt; el `prompt` es la tarea.
 - Las rutas del proyecto van con prefijo de alias: `portafolio/src/lib/db.ts`.
 - `repo_verify(what='check'|'test'|'build')` es la única tool de verificación, a
   propósito: un 7B rinde peor con muchas tools que con una.
+- Un escalar envuelto en objeto (`repo: {"type": "portafolio"}`) lo repara
+  `coerce_args`: es la malformación típica del 7B y antes tumbaba el run.
 
 **Antes de delegar, lee `bridge/lessons/{proyecto}.md`.** Si vas a repetir un
 trabajo, las lecciones ya explican dónde se equivocó la última vez.
@@ -95,11 +142,10 @@ desactiva: el motivo de cada veto está en el mensaje.
 # Ollama — no es servicio de sistema
 setsid nohup bash infra/ollama/start-ollama.sh > ~/.local/log/ollama.log 2>&1 &
 
-# Gateway de Hermes — necesita el grupo docker (Gid 956) para el sandbox
-newgrp docker -c 'bash infra/docker/start-gateway-docker.sh'
-#   OJO: el `pkill` del script tarda ~30 s en drenar. Si arrancas antes de que
-#   muera, el nuevo dice "A gateway already owns this host" y se muere. Comprueba
-#   con: pgrep -f '[h]ermes gateway' || newgrp docker -c '...'
+# Gateway de Hermes — no necesita grupo docker
+bash infra/hermes/start-gateway.sh
+#   El script se niega a arrancar si ya hay un gateway vivo. Comprueba con
+#   pgrep -f '[h]ermes gateway'
 
 # Bridge
 cd bridge && bash run.sh          # uvicorn en :8000 con --reload

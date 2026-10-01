@@ -17,7 +17,13 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
 
     agent_worker: str = "worker"
-    agent_orchestrator: str = "orchestrator"
+
+    # Workspace donde viven los proyectos. Es la única raíz desde la que se
+    # puede dar de alta un proyecto nuevo: la de un alta siempre se DERIVA de
+    # área + alias, nunca se escribe a mano en el registro (ver app/projects.py).
+    workspace_dir: str = "/RUTA/AL/WORKSPACE"
+    #: Áreas donde Aegis puede crear un proyecto. Refleja la organización real.
+    workspace_areas: str = "apps,web,mobile"
 
     # Modelo que planifica las tools en /autopilot. qwen2.5:7b es el único local
     # que produce llamadas utilizables (qwen2.5-coder:7b no emite tool_calls).
