@@ -4,7 +4,6 @@ library;
 import 'package:flutter/material.dart';
 
 import '../theme/dedsec_colors.dart';
-import 'aegis_logo.dart';
 import 'blink_cursor.dart';
 
 class BootScreen extends StatefulWidget {
@@ -54,22 +53,27 @@ class _BootUi extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                AegisLogo(size: 26),
-                SizedBox(width: 12),
-                Text(
-                  'A E G I S',
-                  style: TextStyle(
-                    fontFamily: DedsecColors.display,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 6,
-                    color: DedsecColors.fg,
-                  ),
-                ),
-              ],
+            // La marca real, a tamaño grande. Es la única superficie de la app
+            // donde el ASCII se lee: en los AppBar (18–20 px) el casco es ruido y
+            // ahí sigue el glifo vectorial de `AegisLogo`.
+            SizedBox(
+              width: 196,
+              height: 196,
+              child: Image.asset(
+                'assets/brand/aegis_mark.png',
+                filterQuality: FilterQuality.high,
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'A E G I S',
+              style: TextStyle(
+                fontFamily: DedsecColors.display,
+                fontSize: 24,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 6,
+                color: DedsecColors.fg,
+              ),
             ),
             const SizedBox(height: 20),
             Text('> mesh init', style: line),

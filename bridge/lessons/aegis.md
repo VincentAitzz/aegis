@@ -347,6 +347,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 | 2026-09-30 | `tests/test_deploy.py` (**yo**) | `ESTADO.limpiar()` escribía en el fichero real: correr los tests borraba la aprobación del usuario (un 404 del móvil lo delató) | A-021 |
 | 2026-09-30 | `app/mcp_ops.py` (**yo**) | un único `app-debug.apk` para emulador y teléfono, y `api_host` del teléfono con la IP del propio teléfono de reserva: dos fallos silenciosos | A-022 |
 | 2026-09-30 | `app/deploy.py` (**yo**) | la aprobación se daba desde la app que exigía aprobación: instalar por primera vez era imposible | A-023 |
+| 2026-09-30 | `pubspec.yaml` + `flutter_launcher_icons` (**yo**) | `android:` es el nombre del fichero y `image_path` no se toma como foreground: generó los cinco PNG y el ícono no cambió | A-024 |
+| 2026-09-30 | `adaptive_icon_foreground_inset: 12` (**yo**) | la máscara del lanzador le cortaba el cráneo; 12 parecía correcto y no lo era | A-024 |
 | 2026-09-30 | `.gitignore` (**yo**) | `data/` sin ancla también excluía `mobile/lib/data/`: la capa de datos de la app nunca estuvo versionada y el móvil no compilaba desde un clone | A-017 |
 
 
@@ -484,4 +486,14 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
   En cuanto el paquete está presente, la puerta vuelve a ser completa.
 - **Corolario**: al poner una puerta, preguntar "¿se puede pasar por ella la
   primera vez?". Si la respuesta es no, no es una puerta, es un muro.
+
+### A-024 · Dos formas de cambiar el ícono y no cambiarlo
+
+- **Qué pasó** (2026-09-30): al meter el logo de Aegis en la app, `flutter_launcher_icons` dio `✓ Successfully generated launcher icons` y el ícono **seguía siendo el de la plantilla de Flutter**. Dos motivos, los dos silenciosos:
+  1. `android: "launcher_icon"` es el **nombre del fichero** que se genera, no un booleano. El manifest apunta a `@mipmap/ic_launcher`, así que seednesdaygeneraron cinco PNG que nadie miraba.
+  2. Sin `adaptive_icon_foreground`, **no se genera nada adaptativo** y el README lo dice en una nota: `image_path` no se toma como foreground. Faltaba el `mipmap-anydpi-v26/`, que es justo lo que evita que Android 12+ recorte el ícono.
+- **Cómo se detecta**: `aapt2 dump badging app.apk | grep application-icon`. Si sale `res/mipmap-xxxhdpi/ic_launcher.png` en vez de `res/mipmap-anydpi-v26/ic_launcher.xml`, el ícono no es adaptativo y da igual cuántas veces lo regeneres.
+- **El inset hay que mirarlo, no razonarlo**: se puso 12 porque "el 66% central suena bien" y la máscara del lanzador **le cortaba los temporales y la mandíbula**. Se comprobó renderizando la máscara circular con 12, 18 y 24: 18 es el primero en que la silueta cabe entera. Un número que parece de correctitud no se verifica solo.
+- **El emulador no puede verificar el ícono**: el AVD `aegis-a17` no tiene lanzador, usa `com.android.fakesystemapp/launcher.EmptyHomeActivity`. La pantalla de inicio sale negra. "La app se prueba en el emulador" es cierto para la UI y **falso para el ícono del lanzador**: eso solo se ve en el teléfono.
+- **Corolario**: un generador que dice "generado" dice que escribió ficheros, no que cambió lo que se ve. Y un icono solo se juzga **después** de que el sistema lo enmascare.
 

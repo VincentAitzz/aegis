@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- El nombre que sale bajo el ícono en la pantalla de inicio.
+
+         Estaba hardcodeado en el manifest como "aegis_console", el nombre del
+         paquete: un ícono nuevo con "aegis_console" debajo se ve a medio hacer.
+         Va en un recurso y no en el manifest para que cambiarlo sea una cosa,
+         no una edición de XML con riesgo de romperlo. -->
+    <string name="app_name">Aegis</string>
+</resources>

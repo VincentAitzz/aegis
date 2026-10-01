@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Negro del logo: es el fondo del ícono adaptativo, así que el splash y el
+         ícono tienen que ser exactamente el mismo negro o se ve un disco. -->
+    <color name="aegis_black">#FF000000</color>
+
+    <!-- `bg0` de la app (lib/core/theme/dedsec_colors.dart). Es el color de la
+         ventana antes del primer frame de Flutter, para que el paso del splash a
+         la app no se note. -->
+    <color name="aegis_bg">#FF060708</color>
+
+    <!-- Lo declara `flutter_launcher_icons` para el fondo de
+         `mipmap-anydpi-v26/ic_launcher.xml`, y lo vuelve a escribir cada vez que
+         se ejecuta. Es el mismo negro que `aegis_black`: si divergieran, el ícono
+         y el splash enseñarían dos negros distintos. -->
+    <color name="ic_launcher_background">#000000</color>
+</resources>
