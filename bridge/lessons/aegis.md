@@ -349,6 +349,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 | 2026-09-30 | `app/deploy.py` (**yo**) | la aprobación se daba desde la app que exigía aprobación: instalar por primera vez era imposible | A-023 |
 | 2026-09-30 | `pubspec.yaml` + `flutter_launcher_icons` (**yo**) | `android:` es el nombre del fichero y `image_path` no se toma como foreground: generó los cinco PNG y el ícono no cambió | A-024 |
 | 2026-09-30 | `adaptive_icon_foreground_inset: 12` (**yo**) | la máscara del lanzador le cortaba el cráneo; 12 parecía correcto y no lo era | A-024 |
+| 2026-09-30 | `app/mcp_ops.py` (**yo**) | la excepción de "primera vez" estaba en `instalar_en_telefono`, que `install_apk` nunca llega a llamar: en un teléfono nuevo Aegis pedía una aprobación imposible | A-025 |
+| 2026-09-30 | `api_host_para` (**yo**) | devolvía una IP sin comprobar que el teléfono la alcanzara: Tailscale sin sesión y ufw bloqueando la LAN | A-026 |
 | 2026-09-30 | `.gitignore` (**yo**) | `data/` sin ancla también excluía `mobile/lib/data/`: la capa de datos de la app nunca estuvo versionada y el móvil no compilaba desde un clone | A-017 |
 
 
@@ -496,4 +498,18 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 - **El inset hay que mirarlo, no razonarlo**: se puso 12 porque "el 66% central suena bien" y la máscara del lanzador **le cortaba los temporales y la mandíbula**. Se comprobó renderizando la máscara circular con 12, 18 y 24: 18 es el primero en que la silueta cabe entera. Un número que parece de correctitud no se verifica solo.
 - **El emulador no puede verificar el ícono**: el AVD `aegis-a17` no tiene lanzador, usa `com.android.fakesystemapp/launcher.EmptyHomeActivity`. La pantalla de inicio sale negra. "La app se prueba en el emulador" es cierto para la UI y **falso para el ícono del lanzador**: eso solo se ve en el teléfono.
 - **Corolario**: un generador que dice "generado" dice que escribió ficheros, no que cambió lo que se ve. Y un icono solo se juzga **después** de que el sistema lo enmascare.
+
+### A-025 · Dos decisiones en dos sitios: una es código muerto
+
+- **Qué pasó** (2026-09-30): la excepción de "primera instalación no pide autorización" (A-023) estaba en `instalar_en_telefono`. Pero `install_apk` —**la tool que se usa de verdad**— comprobaba la aprobación *antes* de llamar a `instalar_en_telefono`, y si no la había, pedía autorización y volvía. La excepción nunca se activaba por el camino real. En un teléfono recién borrado, Aegis pedía una aprobación que solo se podía dar con la app instalada.
+- **Por qué no lo cazaron los tests**: los tests llamaban a `instalar_en_telefono` directamente, es decir, al camino que nadie usa. Pasaban 224 en verde mientras la puerta estaba cerrada de hecho.
+- **Cómo se arregla**: `es_primera_instalacion(dev)` es la **única** que decide, y la usan los dos sitios. Y el test que importa es el que pasa por `mcp_ops.install_apk`.
+- **Corolario**: cuando una decisión está en dos sitios, uno de los dos está muerto; y los tests se escriben contra el que eliges, no contra el que se usa. Cuando un test pasa sin llegar a la tool, sospecha del test, no del código.
+
+### A-026 · Una dirección razonable no es una dirección comprobada
+
+- **Qué pasó** (2026-09-30): al instalar en el teléfono limpio, `api_host_para("telefono")` devolvía `100.101.102.100` —correcta en el portátil— y el APK se compiló apuntando ahí. El **teléfono no llegaba**: Tailscale instalado pero sin sesión (`tailscaled` ni siquiera corría), y la red local bloqueada por `ufw`. El APK iba a instalar una app que abre, dibuja su HUD y no ve nada: sin error ni aviso. Justo el fallo de A-022, dos iteraciones después.
+- **Cómo se mide**: preguntando al teléfono, con su `nc`: `nc -w 4 100.101.102.100 8000`. Con Tailscale sin sesión daba timeout; conectado, `HTTP/1.1 200 OK` con el health entero. Las tres rutas reales quedaron medidas: tailnet (depende de la sesión), Wi-Fi directo (ufw lo bloquea) y `adb reverse` (funciona siempre que haya adb).
+- **Cómo se arregla**: `dispositivos.telefono_alcanza()` pregunta antes de instalar, y `pasar_puerta_deploy` se niega si el teléfono no llega. Fallar cerrado: si no se puede comprobar, no se instala.
+- **Corolario**: un valor por defecto que "suena" bien (una IP, un host, un puerto) es una hipótesis, no un hecho. Y un sistema que instala cosas en tu casa necesita poder decir **"no he podido comprobar que esto funcione"**.
 

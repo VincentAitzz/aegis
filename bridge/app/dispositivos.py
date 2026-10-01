@@ -261,6 +261,42 @@ def api_host_para(target: str) -> str:
     return host
 
 
+def telefono_alcanza(host: str, puerto: int = 8000, timeout: int = 6) -> tuple[bool, str]:
+    """¿Puede el teléfono abrir TCP contra `host:puerto`? Lo pregunta al teléfono.
+
+    ## Por qué hay que preguntar
+    `api_host_para("telefono")` devuelve una dirección **razonable**, no una
+    comprobada. El caso real de A-022 grew: la tailnet estaba bien en el portátil,
+    Tailscale instalado en el teléfono pero sin sesión, así que un APK de teléfono
+    instalado con esa dirección abría y no veía nada. Ni error ni aviso: la app
+    arranca, dibuja su HUD y está muerta.
+
+    ## Cómo se mide
+    `nc` del teléfono, que es lo único de red que trae de serie: sale 0 si abre
+    la conexión y 1 si se agota el tiempo. Si `nc` no existe se dice, porque "no
+    pude comprobar" y "no llega" no son lo mismo y aquí la diferencia decide si se
+    instala o no.
+    """
+    dev = telefono()
+    if dev is None:
+        return False, "el teléfono no está conectado por adb, así que no puedo " \
+                      "comprobar si lo alcanza. Sin esa comprobación, instalar un " \
+                      "APK con una dirección sin verificar sería instalar a ciegas."
+    code, out = _adb(["-s", dev.serial, "shell",
+                      f"nc -w {timeout} {host} {puerto} </dev/null"],
+                     timeout=timeout + 20)
+    if "inaccessible" in out or "not found" in out:
+        return False, (f"el teléfono no tiene `nc`, así que no pude comprobar si "
+                       f"llega a {host}:{puerto}. Sin esa comprobación, instalar "
+                       "un APK con una dirección sin verificar sería a ciegas.")
+    if code == 0:
+        return True, f"el teléfono abre TCP contra {host}:{puerto}"
+    return False, (f"el teléfono NO llega a {host}:{puerto} (nc exit={code}). "
+                   "Si esperabas la tailnet, Tailscale no está conectado en el "
+                   "teléfono; si esperabas la red local, mira `ufw` en el "
+                   "portátil, que bloquea lo que entra.")
+
+
 def apk_para(base: str) -> Path:
     """El APK de un destino, con nombre propio.
 

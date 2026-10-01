@@ -315,6 +315,34 @@ class TestPrimeraInstalacion(_Piso):
         self.assertIn("aprobación", str(cm.exception))
         adb.assert_not_called()
 
+    def test_la_tool_no_pide_autorizacion_la_primera_vez(self) -> None:
+        """El camino que de verdad se usa.
+
+        La excepción vivía solo en `instalar_en_telefono`, y la tool pedía
+        autorización y volvía sin llegar a instalar: en el teléfono nuevo se
+        quedaba pidiendo una aprobación que era la única forma de instalar.
+        """
+        from unittest import mock as m
+        with m.patch.object(disp, "instalado", return_value=False), \
+             m.patch.object(disp, "_adb", return_value=(0, "Success")), \
+             m.patch.object(disp, "telefono", return_value=TELEFONO), \
+             m.patch.object(disp, "emulador", return_value=EMULADOR), \
+             m.patch.object(disp, "resolver", return_value=TELEFONO), \
+             m.patch.object(deploy, "verificar_analisis", return_value=(True, "ok")), \
+             m.patch.object(deploy, "verificar_tests", return_value=(True, "11/11")), \
+             m.patch.object(deploy, "humo_una_vez", return_value=(True, "humo ok")), \
+             m.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
+             m.patch.object(disp, "telefono_alcanza", return_value=(True, "ok")), \
+             m.patch.object(disp, "apk_para") as apk_para:
+            apk_para.return_value = Path(__file__)
+            from app import mcp_ops
+            salida = mcp_ops.install_apk("telefono", lanzar=False)
+        self.assertIn("instalado", salida)
+        # Ojo: "no hacía falta tu autorización" contiene "falta tu autorización"
+        # como subcadena, así que hay que mirar lo que la tool habría respondido.
+        self.assertNotIn("NO INSTALADO", salida)
+        self.assertNotIn("id de petición", salida)
+
     def test_la_primera_vez_tampoco_permite_lanzar(self) -> None:
         """El caso Dangerous: instalar y abrir de golpe, sin preguntar."""
         with mock.patch.object(disp, "_adb", return_value=(0, "Success")) as adb:
@@ -379,6 +407,12 @@ class TestVerificacionPrevia(_Piso):
         for nombre, m in zip(("verificar_analisis", "verificar_tests",
                               "humo_una_vez"), mocks):
             stack.enter_context(mock.patch.object(deploy, nombre, m))
+        # La puerta también pregunta al teléfono si alcanza al bridge. Por defecto
+        # responde que sí, para que cada test no tenga que mockear la red.
+        stack.enter_context(mock.patch.object(disp, "api_host_para",
+                                              return_value="100.101.102.100"))
+        stack.enter_context(mock.patch.object(disp, "telefono_alcanza",
+                                              return_value=(True, "ok")))
         stack.mocks = mocks
         return stack
 
@@ -429,9 +463,32 @@ class TestVerificacionPrevia(_Piso):
         with mock.patch.object(disp, "telefono", return_value=TELEFONO), \
              mock.patch.object(deploy, "verificar_analisis", side_effect=an), \
              mock.patch.object(deploy, "verificar_tests", side_effect=ts), \
-             mock.patch.object(deploy, "humo_una_vez", side_effect=hu):
+             mock.patch.object(deploy, "humo_una_vez", side_effect=hu), \
+             mock.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
+             mock.patch.object(disp, "telefono_alcanza", return_value=(True, "ok")):
             deploy.pasar_puerta_deploy()
         self.assertEqual(orden, ["analyze", "tests", "humo"])
+
+    def test_un_telefono_que_no_alcanza_el_bridge_no_instala(self) -> None:
+        """La puerta anterior daba por bueno un APK con una dirección sin probar.
+
+        El APK del teléfono lleva la dirección del bridge dentro. Si el móvil no
+        llega, la app instala y abre sin ver nada, que es el peor resultado
+        posible: parece que funcionó.
+        """
+        with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO), \
+             mock.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
+             mock.patch.object(disp, "telefono_alcanza",
+                               return_value=(False, "no llega a 100.101.102.100:8000")):
+            with self.assertRaises(PuertaCerrada) as cm:
+                deploy.pasar_puerta_deploy()
+        self.assertIn("no ve el bridge", str(cm.exception))
+
+    def test_si_alcanza_pasa(self) -> None:
+        with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO), \
+             mock.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
+             mock.patch.object(disp, "telefono_alcanza", return_value=(True, "ok")):
+            self.assertTrue(deploy.pasar_puerta_deploy())
 
     def test_todo_verde_pasa(self) -> None:
         with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO):

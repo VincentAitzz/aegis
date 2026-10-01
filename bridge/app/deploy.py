@@ -397,7 +397,31 @@ def pasar_puerta_deploy(lanzar: bool = False) -> str:
         raise PuertaCerrada(
             "el humo en el emulador no pasa, así que no instalo en tu teléfono. "
             f"Prueba primero ahí, que no interrumpe a nadie:\n  {detalle}")
+    # El APK del teléfono lleva la dirección del bridge dentro. Si el teléfono no
+    # la alcanza, la app instala, abre y no ve nada: sin error y sin aviso.
+    try:
+        host = disp.api_host_para("telefono")
+    except disp.DeviceError as exc:
+        raise PuertaCerrada(f"no sé a qué dirección apunta el APK del teléfono. {exc}")
+    ok, detalle = disp.telefono_alcanza(host)
+    if not ok:
+        raise PuertaCerrada(
+            "instalarlo ahora sería instalar una app que no ve el bridge:\n"
+            f"  {detalle}")
     return dev.serial
+
+
+def es_primera_instalacion(dev) -> bool:
+    """¿La app está o no está en ese teléfono?
+
+    Lo consulta `install_apk` **antes** de decidir si pide autorización, y no solo
+    `instalar_en_telefono`: la tool soltaba una petición de aprobación y volvía
+    sin llegar a instalar, así que la excepción de la primera vez —que existe
+    porque el botón de aprobar vive en la app que aún no está— nunca se activaba
+    por el camino de la tool. Dos sitios decidiendo lo mismo, uno de ellos
+    inalcanzable.
+    """
+    return not disp.instalado(dev)
 
 
 def buscar_aprobacion(lanzar: bool = False) -> dict | None:

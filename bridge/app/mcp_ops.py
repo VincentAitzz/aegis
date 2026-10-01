@@ -876,8 +876,13 @@ def install_apk(target: str = "emulador", lanzar: bool = False,
         return f"NO INSTALADO EN TU TELÉFONO. {exc}"
 
     if not token:
-        from .deploy import buscar_aprobacion
-        if buscar_aprobacion(lanzar=lanzar) is not None:
+        from .deploy import buscar_aprobacion, es_primera_instalacion
+        if es_primera_instalacion(dev):
+            # Primera vez: no hay app corriendo que interrumpir y el botón para
+            # aprobar está dentro de la app que aún no está. Se instala sin
+            # preguntar; la puerta (analyze, tests, humo y ruta) ya pasó.
+            token = ""
+        elif buscar_aprobacion(lanzar=lanzar) is not None:
             # Ya hay una aprobación viva: se instala. El token no lo pide ni lo
             # ve el agente, que es justo lo que quiero — si lo manejara, bastaría
             # con que se lo imprimieran una vez para que la puerta no significara nada.
