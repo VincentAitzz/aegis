@@ -351,6 +351,7 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 | 2026-09-30 | `adaptive_icon_foreground_inset: 12` (**yo**) | la máscara del lanzador le cortaba el cráneo; 12 parecía correcto y no lo era | A-024 |
 | 2026-09-30 | `app/mcp_ops.py` (**yo**) | la excepción de "primera vez" estaba en `instalar_en_telefono`, que `install_apk` nunca llega a llamar: en un teléfono nuevo Aegis pedía una aprobación imposible | A-025 |
 | 2026-09-30 | `api_host_para` (**yo**) | devolvía una IP sin comprobar que el teléfono la alcanzara: Tailscale sin sesión y ufw bloqueando la LAN | A-026 |
+| 2026-09-30 | varios ficheros (**yo**) | caracteres de alfabetos ajenos dentro de palabras, en comentarios y en `lessons/`: se colaron tres veces en un trabajo | A-027 |
 | 2026-09-30 | `.gitignore` (**yo**) | `data/` sin ancla también excluía `mobile/lib/data/`: la capa de datos de la app nunca estuvo versionada y el móvil no compilaba desde un clone | A-017 |
 
 
@@ -512,4 +513,32 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 - **Cómo se mide**: preguntando al teléfono, con su `nc`: `nc -w 4 100.101.102.100 8000`. Con Tailscale sin sesión daba timeout; conectado, `HTTP/1.1 200 OK` con el health entero. Las tres rutas reales quedaron medidas: tailnet (depende de la sesión), Wi-Fi directo (ufw lo bloquea) y `adb reverse` (funciona siempre que haya adb).
 - **Cómo se arregla**: `dispositivos.telefono_alcanza()` pregunta antes de instalar, y `pasar_puerta_deploy` se niega si el teléfono no llega. Fallar cerrado: si no se puede comprobar, no se instala.
 - **Corolario**: un valor por defecto que "suena" bien (una IP, un host, un puerto) es una hipótesis, no un hecho. Y un sistema que instala cosas en tu casa necesita poder decir **"no he podido comprobar que esto funcione"**.
+
+### A-027 · Lo que escribo se cuela en lo que escribo
+
+- **Qué pasó**: al entregar el texto se colaron caracteres de alfabetos ajenos al
+  español, dentro de palabras: un verbo con letras árabes en un docstring de test,
+  dos palabras MIXTAS con ideogramas chinos en un comentario de YAML y en una
+  lección. Todos en el mismo trabajo y todos en el sitio donde más daño hacen,
+  porque `lessons/aegis.md` es lo que el agente se lee para corregir su forma de
+  trabajar.
+
+  Esta lección tampoco los escribe, y a propósito: nombrar el síntoma es la forma
+  más fácil de reproducirlo, y este fichero lo lee el agente.
+- **Por qué no lo vi**: las frases se ven bien en el mensaje del chat, donde el
+  contexto immediateo los hace legibles, y en el fichero ya no: nadie relee un
+  comentario buscando un kanji.
+- **Cómo se arregla**: `tests/test_texto.py` recorre los ficheros de texto del
+  repo y falla si aparece han, hiragana, katakana, hangul, cirílico, griego, árabe,
+  hebreo, devanagari, ancho, mateúsculas o invisibles/bidi. Salvo dos ficheros,
+  `app/autopilot.py` y su test, que llevan marcadores de tool en chino y japonés
+  **a propósito**: es lo que escribe el modelo de 7 GB cuando se le corta una
+  llamada, y hay que poder buscarlos.
+- **El test se detecta a sí mismo**: la primera versión llevaba los caracteres
+  literales en el docstring y en los motivos de la lista blanca, así que fallaba
+  sobre su propio código. Ahora los describe con palabras. Un guardarraíl que no
+  puede mirar su propia fuente es un guardarraíl que no funciona.
+- **Corolario**: si un defecto se repite, no basta con corregirlo, hay que poner algo
+  que lo detecte **antes** del commit. Y un test de texto tiene que poder pasar
+  sobre sí mismo.
 

@@ -43,7 +43,8 @@ class _Piso(unittest.TestCase):
     ## Por qué el fichero se cambia de sitio
     `ESTADO` es un singleton con su ruta real. Con `limpiar()` contra esa ruta,
     correr la suite **borraba las aprobaciones de verdad** del usuario: se
-    واقـعó al denegar una petición que la suite había borrado unos segundos antes,
+    ocurrió al denegar una petición que la suite había borrado unos segundos
+    antes, y el 404 del móvil era el síntoma.
     y el 404 del móvil era el síntoma.
 
     El estado existe para vivir unos minutos entre el MCP y el bridge. Que una
