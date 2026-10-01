@@ -99,27 +99,63 @@ https://login.tailscale.com/admin/acls . Limita nodos Android → `aegis:8000`.
 > Si el tailnet tiene MagicDNS roto por wiring de resolver local, la app aún
 > conecta por IP `100.x`; `aegis.tailXXXXXX.ts.net` es el camino preferido.
 
-## 4. App en el teléfono
+## 4. App: emulador primero, teléfono con puerta
 
-Depuración inalámbrica (puertos giran):
+### 4.0 El emulador (donde se prueba de verdad)
+
+```bash
+bash infra/mobile/emulador.sh arrancar     # AVD aegis-a17
+bash infra/mobile/emulador.sh estado      # android / resolución / dpi
+bash infra/mobile/emulador.sh parar
+```
+
+Android 16 (API 36), 1080x2340, 450 dpi: misma versión y geometría que el
+galaxy a17 real. **La ABI no se replica** — el teléfono es arm64-v8a y esta
+máquina es x86_64 — así que el emulador sirve para UI, red y lógica, no para
+medir rendimiento.
+
+```bash
+build_apk(target='emulador')     # -> app-debug-emulador.apk   (API_HOST=localhost)
+install_apk(target='emulador')   # instala y abre aquí sin preguntar nada
+deploy_smoke()                   # arranca y comprueba que la app HABLA con el bridge
+```
+
+> Un APK por destino, y el destino va en el nombre. Con un único
+> `app-debug.apk` compilar para el teléfono deja el emulador con una app que no
+> ve nada, y es un fallo silencioso (A-022).
+
+### 4.1 Tu teléfono (con permiso)
+
+```bash
+install_apk(target='telefono')   # analyze + tests + humo en emulador
+#   -> sin tu aprobación: NO instala, te avisa y devuelve el id de petición
+#   -> apruebas en el móvil, y vuelves a llamar: ahora sí instala
+```
+
+- Instalación y **lanzar** son pasos separados. Por defecto solo se instala.
+- La aprobación es de **un solo uso** y la gasta la propia tool: el agente nunca
+  ve el token.
+- El aviso al móvil es `adb shell cmd notification post`, no FCM: requiere adb
+  conectado (A-020, A-021).
+- **La primera instalación no pide aprobación**, porque el botón para aprobar está
+  dentro de la app que aún no está. Aun así exige la puerta completa y nunca abre
+  la app (A-023).
+- La app del teléfono necesita la IP de la tailnet **del bridge**, que se pide a
+  `tailscale ip -4`. Si no hay tailnet, `AEGIS_BRIDGE_TAILNET_IP=<ip>`; y si no se
+  puede averiguar, no se compila antes que compilar con una dirección inventada.
+
+Depuración inalámbrica (los puertos giran en cada reinicio):
 
 ```bash
 adb mdns services                       # puerto actual mDNS
-adb connect 192.168.0.5:<puerto>        # o directamente del número de pantalla
+adb connect 192.168.0.5:<puerto>
 adb -s <serial> shell am start -n com.aegis.aegis_console/.MainActivity
 ```
 
-- **Sin malla aún**: `adb reverse tcp:8000 tcp:8000 tcp:11434 tcp:11434` y usar
-  `API_HOST=localhost` → `./infra/mobile/install-phone.sh`.
-- **Con malla**: recompilar con `--dart-define=API_HOST=aegis.<tailnet>.ts.net` y
-  reinstalar. La app muestra el host en la página Conectividad.
-- Si ADB cae tras un reinicio: re-activar "Depuración inalámbrica" en el teléfono
-  (Ajustes → Opciones de desarrollador) y re-conectar con el puerto nuevo.
 - Las tools de `aegis-ops` resuelven el dispositivo solas: `adb_connect()` usa
-  mDNS + la IP de la tailnet, y `install_apk`/`verify_deploy` prefieren el
-  nombre mDNS estable del teléfono. Funcionan con o sin Tailscale (misma Wi-Fi).
+  mDNS + la IP de la tailnet. Funcionan con o sin Tailscale (misma Wi-Fi).
 
-## 4.1. Agente autónomo (`/autopilot`)
+## 4.2. Agente autónomo (`/autopilot`)
 
 Los modelos locales de 6 GB **no emiten `tool_calls` fiables** dentro de los runs
 de Hermes: escriben el JSON de la llamada en el texto (a veces envuelto en

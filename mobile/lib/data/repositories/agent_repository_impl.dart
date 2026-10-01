@@ -11,11 +11,24 @@ import '../../core/network/agent_socket.dart';
 import '../../domain/repositories/agent_repository.dart';
 import '../models/agent_models.dart';
 
+/// De dónde viene esta app: `emulador` o `telefono`.
+///
+/// No es metadato: el emulador y el teléfono llegan al bridge los dos por
+/// `adb reverse`, así que los dos se ven como `127.0.0.1` y son indistinguibles.
+/// Esta cabecera es lo que permite al bridge decir "esto vino del emulador", que
+/// es la prueba de que el humo es real, y responder a la pregunta de fondo:
+/// ¿cuándo tocó Aegis mi teléfono?
+const String _origen = String.fromEnvironment('AEGIS_ORIGIN', defaultValue: 'telefono');
+
 class AgentRepositoryImpl implements AgentRepository {
   AgentRepositoryImpl({required this.config}) : _dio = Dio(BaseOptions(
         connectTimeout: const Duration(seconds: 10),
         receiveTimeout: const Duration(seconds: 10),
-        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'X-Aegis-Origen': _origen,
+        },
       ));
 
   final AppConfig config;
@@ -78,6 +91,20 @@ class AgentRepositoryImpl implements AgentRepository {
       kind: (d['kind'] ?? '') as String,
       estado: d['estado'] == 'completa' ? 'completa' : 'parcial',
       faltan: ((d['faltan'] as List?) ?? const []).cast<String>(),
+    );
+  }
+
+  @override
+  Future<DeployState> deployState() async {
+    final r = await _dio.get<Map<String, dynamic>>('${config.httpBase}/deploys');
+    return DeployState.fromJson(r.data!);
+  }
+
+  @override
+  Future<void> decideDeploy(String id, {required bool aprobar}) async {
+    await _dio.post<Map<String, dynamic>>(
+      '${config.httpBase}/deploys/$id',
+      data: jsonEncode({'decision': aprobar ? 'aprobar' : 'denegar'}),
     );
   }
 

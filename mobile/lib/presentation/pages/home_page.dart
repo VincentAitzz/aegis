@@ -231,6 +231,8 @@ class _HomePageState extends ConsumerState<HomePage> {
             _AutopilotTrace(run: _autopilotRun!),
           ],
           const SizedBox(height: 16),
+          const _DeployBanner(),
+          const SizedBox(height: 16),
           Row(
             children: [
               const Text(
@@ -506,6 +508,118 @@ class _ProjectSelector extends ConsumerWidget {
                     color: color)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+
+/// Aviso de despliegue esperando aprobación.
+///
+/// Mientras esté visible, Aegis **no ha instalado nada**: está parado esperando.
+/// Se dice exactamente qué va a pasar al aprobar, porque aprobar sin saber si la
+/// app se abre encima es justo lo que hay que evitar.
+class _DeployBanner extends ConsumerStatefulWidget {
+  const _DeployBanner();
+
+  @override
+  ConsumerState<_DeployBanner> createState() => _DeployBannerState();
+}
+
+class _DeployBannerState extends ConsumerState<_DeployBanner> {
+  bool _ocupado = false;
+
+  Future<void> _decidir(DeployRequest d, bool aprobar) async {
+    setState(() => _ocupado = true);
+    try {
+      await ref.read(agentRepositoryProvider).decideDeploy(d.id, aprobar: aprobar);
+      ref.read(deploysProvider.notifier).refrescar();
+    } finally {
+      if (mounted) setState(() => _ocupado = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(deploysProvider);
+    if (state == null || !state.hayPendientes) return const SizedBox.shrink();
+    final color = DedsecColors.warn;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 2),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: color, width: 1.6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.smartphone_rounded, size: 16, color: DedsecColors.warn),
+              const SizedBox(width: 8),
+              const Text('DESPLIEGUE ESPERANDO TU OK',
+                  style: TextStyle(
+                      fontFamily: DedsecColors.mono,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: DedsecColors.warn,
+                      letterSpacing: 1.1)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (final d in state.pendientes) ...[
+            Text(d.razon.isEmpty ? 'Sin detalle' : d.razon,
+                style: const TextStyle(
+                    fontFamily: DedsecColors.mono,
+                    fontSize: 11,
+                    color: DedsecColors.fgDim,
+                    height: 1.35)),
+            const SizedBox(height: 4),
+            Text(d.quePasa,
+                style: const TextStyle(
+                    fontFamily: DedsecColors.mono,
+                    fontSize: 10,
+                    color: DedsecColors.fg)),
+            const SizedBox(height: 6),
+            Text(d.id,
+                style: const TextStyle(
+                    fontFamily: DedsecColors.mono,
+                    fontSize: 9,
+                    color: DedsecColors.fgFaint)),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: _ocupado ? null : () => _decidir(d, true),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: DedsecColors.ok,
+                      foregroundColor: DedsecColors.bg0,
+                    ),
+                    child: const Text('APROBAR UNA VEZ'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _ocupado ? null : () => _decidir(d, false),
+                    child: const Text('NO'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Aprobar es de un solo uso: sirve para esta instalación y se gasta. '
+              'Después Aegis tiene que volver a pedir.',
+              style: TextStyle(
+                  fontSize: 9, color: DedsecColors.fgFaint, height: 1.3),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ],
       ),
     );
   }

@@ -22,6 +22,14 @@ abstract interface class AgentRepository {
   /// Proyectos que puede operar Aegis, con el estado de su ficha.
   Future<List<ProjectInfo>> projects();
 
+  /// Despliegues esperando aprobación en el teléfono. Mientras haya algo aquí,
+  /// Aegis **no ha instalado nada**: está esperando a que lo apruebes.
+  Future<DeployState> deployState();
+
+  /// Aprueba (o deniega) una instalación pendiente. Una aprobación es de un
+  /// solo uso: sirve para instalar una vez.
+  Future<void> decideDeploy(String id, {required bool aprobar});
+
   /// Lanza un run de autopilot en segundo plano y devuelve ya su run_id.
   ///
   /// Es la vía que ejecuta tools de verdad: el modelo elige qué tool usar y el

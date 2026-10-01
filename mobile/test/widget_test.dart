@@ -47,6 +47,13 @@ class FakeAgentRepository implements AgentRepository {
       ];
 
   @override
+  Future<DeployState> deployState() async => const DeployState(
+        emulador: true, telefono: true, tokensVivos: 0);
+
+  @override
+  Future<void> decideDeploy(String id, {required bool aprobar}) async {}
+
+  @override
   Future<ProjectInfo> writeFicha({
     required String alias,
     required String contenido,

@@ -342,7 +342,11 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 | 2026-09-30 | `infra/docker/` (**arquitectura**) | sandbox por contenedor inalcanzable (`terminal` nunca habilitada) y con `/workspace` vacío: 683 MB y un contenedor por run a cambio de nada | A-016 |
 | 2026-09-30 | `app/autopilot.py` (**yo**) | `repo_verify(repo={"type":"portafolio"})` — escalar envuelto en objeto — reventaba con `TypeError` y tumbaba el run | A-016 |
 | 2026-09-30 | `POST /fichas` (**yo**) | el modelo se comió los `---` del frontmatter al 'copiar' la ficha: escritura exacta va de la persona al bridge | A-019 |
+| 2026-09-30 | `install_apk` (**yo**) | instalaba y ABRÍA la app en el teléfono sin puerta ni aviso, y el destino lo elegía solo | A-020 |
 | 2026-09-30 | `app/fichas.py` (**yo**) | el filtro de comentarios era de una línea y las subsecciones `###` rellenaban su `##`: la puerta se abría sola | A-018 |
+| 2026-09-30 | `tests/test_deploy.py` (**yo**) | `ESTADO.limpiar()` escribía en el fichero real: correr los tests borraba la aprobación del usuario (un 404 del móvil lo delató) | A-021 |
+| 2026-09-30 | `app/mcp_ops.py` (**yo**) | un único `app-debug.apk` para emulador y teléfono, y `api_host` del teléfono con la IP del propio teléfono de reserva: dos fallos silenciosos | A-022 |
+| 2026-09-30 | `app/deploy.py` (**yo**) | la aprobación se daba desde la app que exigía aprobación: instalar por primera vez era imposible | A-023 |
 | 2026-09-30 | `.gitignore` (**yo**) | `data/` sin ancla también excluía `mobile/lib/data/`: la capa de datos de la app nunca estuvo versionada y el móvil no compilaba desde un clone | A-017 |
 
 
@@ -395,4 +399,89 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
   trayecto parcial. Aquí el fallo no estaba en el modelo ni en la puerta: estaba
   en haber encadenado "texto humano → modelo → archivo", y no se vio hasta que
   el archivo se leyó.
+
+
+### A-020 · Un sistema que interrumpe sin avisar también está roto
+
+- **Qué pasó** (2026-09-30): `install_apk` resolvía el galaxy por mDNS, lo
+  instalaba **y abría la app encima** (`launch=True` por defecto). Ninguna
+  puerta, ningún aviso. Una prueba de Aegis te podía interrumpir a media cosa, y
+  Aegis no lo registraba como nada.
+- **Por qué es la misma lección que A-016**: el síntoma es distinto —aquí no se
+  reportaba un falso éxito, se reportaba un éxito sobre algo que el
+  usuario no pidió—. La causa es la misma: **una acción que el usuario tiene que
+  soportar se estaba haciendo porque técnicamente se podía**. Que algo se pueda ejecutar no es
+  permiso para ejecutarlo.
+- **La regla**: **el teléfono no se elige por descarte**. `resolver()` ya no
+  tiene un valor por defecto que lo alcance; el destino se nombra. Y nombrar el
+  teléfono no basta: hace falta una **autorización de un solo uso**, granted en el
+  móvil, más una verificación que la puerta **corre ella misma** —analyze, tests y
+  un humo en el emulador— porque aceptar el dicho del agente sería repetir A-016.
+- **El detalle que casi se cuela**: el MCP de `aegis-ops` corre como **proceso
+  aparte** del bridge FastAPI. Un registro de "de dónde vino esta llamada" en
+  memoria habría estado siempre vacío desde el lado del MCP, y el humo habría
+  fallado siempre — un fallo que solo se ve con todo desplegado. Va por HTTP.
+- **Corolario sobre identidad en la frontera**: el emulador y el teléfono llegan
+  los dos por `adb reverse` y los dos se ven como `127.0.0.1` en el log. Sin una
+  cabecera que diga de dónde viene cada llamada, "probar en el emulador" y "tocar
+  el teléfono" son la misma línea en el log, y no hay forma de probar que la
+  prueba pasó por el sitio correcto.
+- **Corolario de método**: `adb` anuncia el mismo teléfono por mDNS **dos veces**
+  (marca el duplicado con ` (2)`, y el contador va en medio del serial). Contarlos
+  dos hace que la tool diga que hay dos teléfonos. Parsear `adb devices` a mano
+  es una fuente de bugs garantizada.
+
+### A-021 · Correr los tests borraba la autorización del usuario
+
+- **Qué pasó** (2026-09-30): la suite de `bridge/tests/test_deploy.py` llamaba
+  `ESTADO.limpiar()` en `setUp`, y `ESTADO` es un singleton cuya `RUTA` es la
+  real: `bridge/data/deploy.json`. O sea, **`unittest` borraba las peticiones de
+  despliegue de verdad**. Se Lakovidió porque entre crear la petición y denegarla
+  desde el móvil yo corrí la suite: el móvil respondió 404 y parecía un fallo de
+  la puerta.
+- **El motivo de fondo**: el estado existe para vivir unos minutos entre el MCP y
+  el bridge. Un artefacto de test no puede escribir en el estado de producción, ni
+  para limpiarlo.
+- **Cómo se arregla**: cada test mueve `ESTADO.RUTA` a un `tempfile`. Comprobado:
+  petición real creada, suite entera pasada, petición viva.
+- **Corolario**: cuando dos procesos comparten estado en un fichero, "escribir en
+  el fichero real" es una decisión de diseño, no un detalle, y hay que mirarla en
+  los `setUp`.
+
+
+### A-022 · Un solo APK para dos destinos: dos fallos silenciosos de un plumazo
+
+- **Qué pasó** (2026-09-30): había un único `build/.../app-debug.apk` para el
+  emulador y para el teléfono, y `api_host_para("telefono")` devolvía de reserva
+  `100.101.102.103`... que es la IP **del teléfono**, no la del bridge
+  (`100.101.102.100`).
+- **Por qué es grave**: los dos fallos son silenciosos. Compilar para el teléfono
+  dejaba en el emulador una app que apunta a la IP de la tailnet y no ve nada;
+  instalar en el teléfono el APK del emulador lo dejaba en `localhost`. La app
+  abre, muestra su pantalla, y no se entera de nada. Ninguno rompe, y los dos son
+  indistinguibles de "funciona".
+- **Cómo se arregla**: un APK por destino, con el destino en el nombre
+  (`app-debug-emulador.apk`, `app-debug-telefono.apk`), y `build_apk` mueve ahí la
+  salida. La puerta instala el del teléfono y el humo prueba el del emulador. Y
+  para la IP: se pregunta a `tailscale ip -4`, o se exporta
+  `AEGIS_BRIDGE_TAILNET_IP`; si no se puede saber, se dice, no se devuelve algo
+  plausible.
+- **Corolario**: un valor de reserva "razonable" en una dirección es más peligroso
+  que ninguna: convierte un error visible en un silencio.
+
+
+### A-023 · El botón de aprobación vivía dentro de lo que había que aprobar
+
+- **Qué pasó** (2026-09-30): `install_apk(target="telefono")` exigía una
+  autorización que se daba **pulsando un botón de la app del teléfono**. Sin la
+  app instalada no hay botón: para instalar había que aprobar, y para aprobar
+  había que tenerla instalada. Un deadlock, que solo no se notaba porque ya había
+  un APK viejo en el teléfono.
+- **Qué protege de verdad la puerta**: no interrumpirte **mientras usas la app**. Un
+  paquete que no está instalado no interrumpe nada.
+- **Cómo se arregla**: la **primera** instalación no pide autorización —se exige lo
+  de siempre (destino explícito, analyze, tests, humo) y **nunca** se abre la app.
+  En cuanto el paquete está presente, la puerta vuelve a ser completa.
+- **Corolario**: al poner una puerta, preguntar "¿se puede pasar por ella la
+  primera vez?". Si la respuesta es no, no es una puerta, es un muro.
 

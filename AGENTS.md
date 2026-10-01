@@ -151,6 +151,15 @@ bash infra/hermes/start-gateway.sh
 cd bridge && bash run.sh          # uvicorn en :8000 con --reload
 ```
 
+# App: se prueba en el emulador, no en el teléfono
+bash infra/mobile/emulador.sh arrancar   # AVD aegis-a17: API 36, 1080x2340, 450 dpi
+bash infra/mobile/emulador.sh estado
+bash infra/mobile/emulador.sh parar
+
+La app **se prueba en el emulador**. Tu teléfono solo se toca con la puerta
+completa (analyze + tests + humo en el emulador) y tu aprobación de un solo uso:
+`install_apk(target='telefono')`. Ver `docs/runbook.md` §4.
+
 Teléfono `galaxy-a17` (Tailscale `100.101.102.103`): el **puerto adb cambia** en
 cada reinicio. Las tools lo resuelven solas por mDNS; a mano:
 `adb mdns services` → `adb connect <host>:<puerto>`. Tailscale del teléfono a

@@ -193,6 +193,40 @@ El entorno de ejecución se estructura en tres capas: **aislamiento**,
    Memoria: solo se inyecta al prompt un `success` con tools nombradas.
 ```
 
+### 7.0 Dónde se prueba la app (y por qué no en tu teléfono)
+
+El emulador de `infra/mobile/emulador.sh` replica el galaxy a17: **Android 16
+(API 36), 1080x2340, 450 dpi**, la misma versión y geometría reales (medidas
+con adb). Lo que **no** se replica es la ABI: el teléfono es arm64-v8a y esta
+máquina es x86_64.
+
+- `install_apk` apunta al emulador por defecto. `resolver()` **no tiene** un valor
+  por defecto que alcance el teléfono: el destino se nombra, siempre.
+- Instalar en el teléfono pasa por `app/deploy.py`: verificación (analyze, tests
+  y humo en emulador), **autorización de un solo uso** aprovada en el móvil, y un
+  aviso al teléfono. Instalar y abrir son pasos separados, y por defecto solo se
+  instala.
+- El humo no basta con que la app arranque: exige que el bridge reciba una
+  llamada marcada como del emulador. Sin la cabecera `X-Aegis-Origen`, el
+  emulador y el teléfono serían la misma línea en el log —los dos llegan por
+  `adb reverse`— y no habría forma de probar que la prueba fue donde debía.
+- `app/dispositivos.py` y `app/deploy.py` viven aparte de `mcp_ops.py`: son
+  lógica de dispositivos con frontera de seguridad, no guardarraíles de ruta.
+
+- **Un APK por destino**, y el destino en el nombre del fichero
+  (`app-debug-emulador.apk`, `app-debug-telefono.apk`). Flutter deja siempre
+  `app-debug.apk`, así que `build_apk` lo mueve. La razón no es de limpieza: son
+  binarios distintos (`localhost` frente a la IP de la tailnet) y cruzarlos produce
+  una app que **arranca y no ve nada**, sin error ni aviso.
+- **La IP del bridge no se inventa.** Se pregunta a `tailscale ip -4`, o se exporta
+  `AEGIS_BRIDGE_TAILNET_IP`. Una IP de reserva "razonable" en una dirección es peor
+  que ninguna: antes `telefono` caía por defecto en la IP del propio teléfono.
+
+> **Dos procesos, un estado.** El MCP de `aegis-ops` corre aparte del bridge
+> FastAPI. Por eso el registro de orígenes va por HTTP y el estado de
+> despliegue a un fichero: en memoria, el botón de aprobar del móvil nunca
+> habría visto la petición y el humo siempre habría fallado.
+
 ### 7.1 Aislamiento (guardarraíles, no contenedor)
 
 - **Retirado el 2026-09-30 el sandbox por contenedor.** Arrancaba un contenedor

@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -228,6 +228,85 @@ async def escribir_ficha(alias: str, body: FichaIn) -> dict:
         "faltan": ficha.faltan(),
         "path": str(target),
     }
+
+
+#: De dónde vino la última llamada de cada origen (emulador / teléfono).
+#:
+#: Existe porque el emulador y el teléfono llegan los dos por `adb reverse` y
+#: los dos aparecen como `127.0.0.1` en el log: sin esto no hay forma de
+#: distinguir quién es quién, ni de responder a la pregunta que de verdad importa
+#: —¿cuándo tocó Aegis mi teléfono?— con datos en vez de conjeturas.
+_ULTIMO_ORIGEN: dict[str, float] = {}
+
+
+@app.middleware("http")
+async def _registrar_origen(request: Request, call_next):
+    origen = request.headers.get("x-aegis-origen")
+    if origen:
+        _ULTIMO_ORIGEN[origen] = time.time()
+    return await call_next(request)
+
+
+class DeployDecision(BaseModel):
+    decision: str = "aprobar"     # aprobar | denegar
+
+
+class DeployOut(BaseModel):
+    id: str
+    estado: str
+    razon: str = ""
+    lanzar: bool = False
+    token: Optional[str] = None
+
+
+@app.get("/deploys")
+async def deploys_listar() -> dict:
+    """Despliegues esperando tu aprobación. Lo consulta el móvil.
+
+    Mientras haya algo aquí, Aegis **no ha instalado nada** en tu teléfono: está
+    esperando a que alguien lo apruebe. Eso es lo que hace que no te entere a
+    posteriori.
+    """
+    from .deploy import snapshot
+    return snapshot()
+
+
+@app.post("/deploys/{pet_id}", response_model=DeployOut)
+async def deploy_aprobar(pet_id: str, body: DeployDecision) -> DeployOut:
+    """Aprueba o deniega una instalación pendiente.
+
+    Aprobar devuelve un **token de un solo uso**: sirve para una instalación y
+    se gasta. No es una autorización permanente.
+    """
+    from .deploy import aprobar, PuertaCerrada
+    try:
+        r = aprobar(pet_id, body.decision)
+    except PuertaCerrada as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    p = pendientes_por_id(pet_id)
+    return DeployOut(id=pet_id, estado=r["estado"], razon=p.get("razon", ""),
+                     lanzar=bool(p.get("lanzar")), token=r.get("token"))
+
+
+def pendientes_por_id(pet_id: str) -> dict:
+    from .deploy import ESTADO
+    return ESTADO.peticion(pet_id)
+
+
+@app.get("/origen")
+async def origen() -> dict:
+    """Última llamada de cada origen, para que se vea quién tocó qué."""
+    return {"ultimo": _ULTIMO_ORIGEN, "ahora": time.time()}
+
+
+def _hubo_llamada_de(origen: str, desde: float) -> bool:
+    """¿El bridge recibió una llamada marcada como de este origen desde `desde`?
+
+    Lo usa el humo del emulador: instalar y arrancar no prueba nada si la app no
+    habla con el bridge. Y no vale con mirar el access log, porque ahí el
+    emulador y el teléfono son el mismo `127.0.0.1`.
+    """
+    return _ULTIMO_ORIGEN.get(origen, 0.0) >= desde
 
 
 @app.get("/proyectos")

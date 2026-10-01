@@ -261,3 +261,57 @@ class BridgeHealth {
         agents: (json['agents'] as List?)?.cast<String>() ?? const [],
       );
 }
+/// Una petición de despliegue esperando aprobación.
+class DeployRequest {
+  const DeployRequest({
+    required this.id,
+    required this.estado,
+    this.razon = '',
+    this.lanzar = false,
+  });
+
+  final String id;
+  final String estado; // pendiente | aprobada | denegada
+  final String razon;
+  final bool lanzar;
+
+  factory DeployRequest.fromJson(Map<String, dynamic> json) => DeployRequest(
+        id: (json['id'] ?? '') as String,
+        estado: (json['estado'] ?? 'pendiente') as String,
+        razon: (json['razon'] ?? '') as String,
+        lanzar: json['lanzar'] == true,
+      );
+
+  /// Qué va a pasar exactamente al aprobar. Se dice entero porque aprobar sin
+  /// saber si la app se abre encima es justo lo que hay que evitar.
+  String get quePasa => lanzar
+      ? 'Se instalará y SE ABRIRÁ la app en tu teléfono.'
+      : 'Se instalará la app. NO se abrirá.';
+}
+
+/// Estado de la puerta de despliegue.
+class DeployState {
+  const DeployState({
+    required this.emulador,
+    required this.telefono,
+    this.pendientes = const [],
+    this.tokensVivos = 0,
+  });
+
+  final bool emulador;
+  final bool telefono;
+  final List<DeployRequest> pendientes;
+  final int tokensVivos;
+
+  factory DeployState.fromJson(Map<String, dynamic> json) => DeployState(
+        emulador: json['emulador'] == true,
+        telefono: json['telefono'] == true,
+        pendientes: ((json['pendientes'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(DeployRequest.fromJson)
+            .toList(),
+        tokensVivos: (json['tokens_vivos'] as num?)?.toInt() ?? 0,
+      );
+
+  bool get hayPendientes => pendientes.isNotEmpty;
+}

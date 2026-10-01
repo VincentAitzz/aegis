@@ -33,6 +33,56 @@ final projectsProvider = FutureProvider<List<ProjectInfo>>((ref) {
   return ref.watch(agentRepositoryProvider).projects();
 });
 
+/// Despliegues esperando aprobación.
+///
+/// Con un `StreamProvider` y un `while(true)`, al desmontar la pantalla
+/// quedaba un `Timer` vivo y el test fallaba con *"A Timer is still pending"*.
+/// Aquí el temporizador es del `Notifier` y se cancela en `dispose()`, que es lo
+/// que corresponde: el refresco muere con quien lo pidió.
+///
+/// Con algo pendiente se mira a menudo, porque es una decisión del usuario en
+/// curso. Sin nada pendiente, de tanto en tanto: una alerta permanente se vuelve
+/// fondo.
+class DeploysController extends Notifier<DeployState?> {
+  Timer? _temporizador;
+
+  /// Urgencia del próximo tick. Vive aquí, no en `state`: `build()` programa el
+  /// primer tick *antes* de devolver el estado, y leerlo ahí es usar el provider
+  /// sin inicializar.
+  bool _urgente = false;
+
+  @override
+  DeployState? build() {
+    _programar();
+    ref.onDispose(() => _temporizador?.cancel());
+    return null;
+  }
+
+  void _programar() {
+    _temporizador?.cancel();
+    _temporizador = Timer(
+      Duration(seconds: _urgente ? 3 : 20), _refrescar);
+  }
+
+  Future<void> _refrescar() async {
+    try {
+      final nuevo = await ref.read(agentRepositoryProvider).deployState();
+      state = nuevo;
+      _urgente = nuevo.hayPendientes;
+    } catch (e) {
+      state = DeployState(emulador: false, telefono: false);
+      _urgente = false;
+    }
+    _programar();
+  }
+
+  /// Fuerza una lectura: se usa tras aprobar o denegar, para no esperar al tick.
+  void refrescar() => _refrescar();
+}
+
+final deploysProvider =
+    NotifierProvider<DeploysController, DeployState?>(DeploysController.new);
+
 /// Proyecto elegido en la pantalla de control. Vive aquí para que la pantalla
 /// de control y la de misión hablen del mismo.
 final selectedProjectProvider =

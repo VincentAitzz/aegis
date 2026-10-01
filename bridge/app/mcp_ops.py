@@ -686,19 +686,37 @@ def aegis_patch_file(path: str, old: str, new: str, replace_all: bool = False) -
 
 
 @mcp.tool()
-def build_apk(api_host: str = "100.101.102.100", force: bool = False) -> str:
-    """Compila el APK debug de Aegis Console apuntando a api_host.
+def build_apk(target: str = "emulador", force: bool = False) -> str:
+    """Compila el APK debug para un destino.
+
+    ## target
+
+    - `emulador` (por defecto): apunta a `localhost`, que llega al bridge por
+      `adb reverse`, y se marca `AEGIS_ORIGIN=emulador` para que el bridge sepa
+      de dónde viene la llamada.
+    - `telefono`: apunta a la IP de la tailnet y se marca como `telefono`.
+
+    Confundir los dos produce una app que **arranca pero no ve nada**, que es el
+    fallo más difícil de detectar en una prueba. Por eso el destino no se
+    adivina: va explícito.
 
     Antes de compilar valida que el tema se haya recoloreado (si brand sigue
     siendo el magenta original y force=False, aborta con la ruta correcta).
-    Devuelve también el git diff de mobile/lib (trazabilidad).
     """
+    from .dispositivos import DeviceError, api_host_para, apk_para, TARGETS
+    base = target.split(":")[0]
+    if base not in TARGETS:
+        return f"target inválido: {target!r}. Usa {TARGETS}."
+    try:
+        api_host = api_host_para(target)
+    except DeviceError as exc:
+        return f"NO COMPILADO. {exc}"
     brand = current_brand()
     if not force and brand == LEGACY_BRAND:
         return (
             f"El tema aún NO tiene el tono nuevo: brand = {brand}.\n"
             "Edita primero el archivo host:\n"
-            f"  /RUTA/AL/REPO/mobile/lib/core/theme/dedsec_colors.dart\n"
+            f"  {ROOT}/mobile/lib/core/theme/dedsec_colors.dart\n"
             "  (busca `static const Color brand = Color(...)`)\n"
             "Después vuelve a llamar build_apk. No compilo un APK sin el cambio."
         )
@@ -707,18 +725,29 @@ def build_apk(api_host: str = "100.101.102.100", force: bool = False) -> str:
     cmd = [
         str(FLUTTER + "/flutter"), "build", "apk", "--debug",
         f"--dart-define=API_HOST={api_host}",
+        f"--dart-define=AEGIS_ORIGIN={base}",
     ]
     try:
         proc = _run(cmd, cwd=MOBILE)
     except subprocess.TimeoutExpired:
         return "build_apk agotó el tiempo (600s). Todo el gradle quedó caliente; reinténtalo."
     tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-12:])
-    ok = proc.returncode == 0 and APK.exists()
+    # Flutter deja el APK en app-debug.apk siempre. Se mueve al nombre del
+    # destino para que instalar en el teléfono no pueda tomar el binario que
+    # apunta a localhost, ni el humo tomar el que apunta a la tailnet.
+    destino = apk_para(base)
+    movido = False
+    if proc.returncode == 0 and APK.exists():
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(APK.read_bytes())
+        APK.unlink()
+        movido = destino.exists()
+    ok = proc.returncode == 0 and movido
     diff = _short_diff()
     return (
         f"build_apk {'OK' if ok else 'FALLÓ'} (exit={proc.returncode}). "
         f"brand actual={brand}, api_host={api_host}\n"
-        f"APK: {APK}\n"
+        f"APK: {destino}\n"
         f"{diff}\n"
         f"--- salida (tail) ---\n{tail}"
     )
@@ -726,9 +755,16 @@ def build_apk(api_host: str = "100.101.102.100", force: bool = False) -> str:
 
 @mcp.tool()
 def adb_devices() -> str:
-    """Estado de las conexiones adb (incluye la del teléfono por Tailscale)."""
-    _, out = _adb(["devices"], timeout=30)
-    return out
+    """Qué dispositivos ve adb, con cuál es el emulador y cuál es tu teléfono.
+
+    Etiquetado a propósito: con los dos conectados, la salida cruda de adb no
+    los distingue, y es donde más fácil es instalar en el que no es.
+    """
+    from .dispositivos import estado_humano, DeviceError
+    try:
+        return estado_humano()
+    except DeviceError as exc:
+        return f"no pude listar: {exc}"
 
 
 def _adb(args: list[str], timeout: int = 60) -> tuple[int, str]:
@@ -740,34 +776,19 @@ def _adb(args: list[str], timeout: int = 60) -> tuple[int, str]:
     return proc.returncode, (proc.stdout.strip() or proc.stderr.strip())
 
 
-def _resolve_device(explicit: str = "") -> str:
-    """Elige el dispositivo adb: el explícito, el mDNS, o IP Tailscale:puerto.
+def _resolve_device(target: str = "emulador") -> str:
+    """El serial del dispositivo para `target`.
 
-    El teléfono aparece por mDNS (mismo Wi-Fi) aunque Tailscale esté caído, así
-    que se prefiere ese nombre estable antes que reconstruir IP:puerto.
+    **Ya no hay auto-selección.** Antes esto devolvía el galaxy por mDNS o
+    Tailscale, y `install_apk` lanzaba la app encima: una prueba de Aegis te
+    podía interrumpir sin avisar. Ahora el emulador es el destino por defecto y
+    el teléfono hay que nombrarlo, y aun así pasa por la puerta de despliegue.
+
+    Se mantiene el nombre para no romper llamadas existentes; lo que cambió es
+    lo que devuelve.
     """
-    if explicit:
-        return explicit
-    _, out = _adb(["devices"], timeout=30)
-    candidates = []
-    for line in out.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        name, state = parts[0], parts[1]
-        if state != "device":
-            continue
-        candidates.append(name)
-    for name in candidates:
-        if "_adb-tls-connect" in name:
-            return name
-    for name in candidates:
-        if name.startswith(DEFAULT_MESH_IP):
-            return name
-    if candidates:
-        return candidates[0]
-    port = _mdns_adb_port() or DEFAULT_MESH_PORT
-    return f"{DEFAULT_MESH_IP}:{port}"
+    from .dispositivos import resolver, DeviceError
+    return resolver(target).serial
 
 
 def _mdns_adb_port() -> str:
@@ -800,39 +821,145 @@ def adb_connect(target: str = "") -> str:
 
 
 @mcp.tool()
-def install_apk(launch: bool = True, device: str = "") -> str:
-    """Instala el APK compilado en el teléfono (por Mesh) y opcionalmente lo abre.
+def install_apk(target: str = "emulador", lanzar: bool = False,
+                token: str = "") -> str:
+    """Instala el APK. **Por defecto en el emulador**, nunca en tu teléfono.
 
-    Sin `device`, conecta sola (mDNS + Tailscale) antes de instalar.
+    ## target
+
+    - `emulador` (por defecto): el AVD que replica tu galaxy a17. Ahí van todas
+      las pruebas. No te interrumpe.
+    - `telefono`: pasa por la puerta. Necesita verificación en verde **y** un
+      token de autorización de un solo uso que se aprueba desde la app. Sin
+      token **no instala**: deja la petición pendiente y te avisa.
+
+    ## lanzar
+
+    Instalar y abrir son cosas distintas. Por defecto `lanzar=False`: instalar
+    sin abrir la app molesta mucho menos, y aun así puedes abrirla tú.
+
+    ## La diferencia con antes
+
+    Antes esto apuntaba al teléfono por mDNS y abría la app encima, sin avisar.
+    Ahora el teléfono no se elige solo y nunca se abre sin que alguien lo autorice.
     """
-    if not APK.exists():
-        return f"No hay APK: {APK}. Llama primero a build_apk()."
-    adb_connect()
-    device = _resolve_device(device)
-    parts = []
-    code, out = _adb(["-s", device, "install", "-r", str(APK)], timeout=300)
-    parts.append(f"install exit={code}: {out}")
-    if launch and code == 0:
-        scode, sout = _adb(
-            ["-s", device, "shell", "am", "start", "-n", "com.aegis.aegis_console/.MainActivity"],
-            timeout=60,
-        )
-        parts.append(f"am start exit={scode}: {sout}")
-    return "\n".join(parts)
+    from .deploy import (PuertaCerrada, instalar_en_telefono,
+                         pasar_puerta_deploy, pedir_deploy)
+    from .dispositivos import apk_para, resolver, DeviceError
+
+    destino = apk_para(target.split(":")[0])
+    if not destino.exists():
+        return (f"No hay APK para '{target}': {destino}. Compílalo antes con "
+                f"build_apk(target='{target}').")
+    try:
+        dev = resolver(target)
+    except DeviceError as exc:
+        return f"NO INSTALADO. {exc}"
+
+    # El emulador: siempre pasa. Para eso está.
+    if dev.emulador:
+        code, out = _adb(["-s", dev.serial, "install", "-r", str(destino)], timeout=600)
+        if code != 0:
+            return f"install en el emulador falló (exit={code}): {out[:200]}"
+        partes = [f"instalado en el emulador {dev.serial}"]
+        if lanzar:
+            scode, _ = _adb(
+                ["-s", dev.serial, "shell", "am", "start", "-n",
+                 "com.aegis.aegis_console/.MainActivity"], timeout=90)
+            partes.append(f"abierto (exit={scode})")
+        return "\n".join(partes)
+
+    # El teléfono: la puerta va antes de tocar nada.
+    try:
+        serial = pasar_puerta_deploy(lanzar=lanzar)
+    except PuertaCerrada as exc:
+        return f"NO INSTALADO EN TU TELÉFONO. {exc}"
+
+    if not token:
+        from .deploy import buscar_aprobacion
+        if buscar_aprobacion(lanzar=lanzar) is not None:
+            # Ya hay una aprobación viva: se instala. El token no lo pide ni lo
+            # ve el agente, que es justo lo que quiero — si lo manejara, bastaría
+            # con que se lo imprimieran una vez para que la puerta no significara nada.
+            token = ""
+        else:
+            peticion = pedir_deploy(
+                razon=f"APK verificado, listo para instalar en {serial}",
+                lanzar=lanzar)
+            return (
+                "NO INSTALADO, y es lo correcto: falta tu autorización.\n"
+                f"  id de petición: {peticion['id']}\n"
+                f"  {peticion.get('aviso', '')}\n"
+                "Te he avisado al móvil. Ábrelo, aprueba y vuelve a llamar a "
+                "install_apk(target='telefono'): con la aprobación a la vista, "
+                "esta vez instala. Si no lo apruebas, aquí no se instala nada.")
+
+    try:
+        return instalar_en_telefono(dev, token, lanzar=lanzar)
+    except PuertaCerrada as exc:
+        return f"NO INSTALADO EN TU TELÉFONO. {exc}"
 
 
 @mcp.tool()
-def verify_deploy(device: str = "") -> str:
-    """Comprueba que la app está instalada y corriendo en el teléfono."""
-    device = _resolve_device(device)
-    pcode, pid = _adb(
-        ["-s", device, "shell", "pidof", "com.aegis.aegis_console"], timeout=45)
-    _, installed = _adb(["-s", device, "shell", "pm", "list", "packages", "-3"], timeout=45)
-    pid_clean = pid.strip() if pid.isdigit() or (pid.strip().split() or [""])[0].isdigit() else ""
-    running = "corriendo" if pid_clean else "NO está corriendo"
+def deploy_estado() -> str:
+    """Estado de la puerta de despliegue: emulador, teléfono y autorizaciones.
+
+    Se mira antes de intentar instalar en el teléfono, para saber si lo que
+    falta es el emulador, el teléfono, la verificación o tu aprobación.
+    """
+    import json as _json
+
+    from .deploy import snapshot
+    st = snapshot()
+    st["emulador_arriba"] = st.pop("emulador")
+    st["telefono_conectado"] = st.pop("telefono")
+    st["tokens_vivos"] = (
+        "ninguno: hay que aprobar una instalación desde el móvil" if not st["tokens_vivos"]
+        else st["tokens_vivos"])
+    if st["pendientes"]:
+        st["que_hacer"] = ("hay peticiones esperando: aprueba en la app y vuelve a "
+                           "llamar a install_apk con el token que te dé")
+    else:
+        st["que_hacer"] = ("para instalar en el teléfono: llámalo con "
+                           "target='telefono', y te devolverá un id de petición "
+                           "para aprobar desde la app")
+    return _json.dumps(st, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def deploy_smoke() -> str:
+    """Comprueba, en el emulador, que el APK arranca y habla con el bridge.
+
+    Esto es lo que la puerta exige antes de tocar tu teléfono. Instala en el
+    emulador, lo abre, y verifica que el bridge recibió una llamada marcada como
+    'emulador' — porque instalar y arrancar no prueba nada si la app no habla
+    con el bridge.
+    """
+    from .deploy import humo_emulador
+
+    ok, detalle = humo_emulador()
+    return ("OK · " + detalle) if ok else ("FALLO · " + detalle)
+
+
+@mcp.tool()
+def verify_deploy(target: str = "emulador") -> str:
+    """Comprueba que la app está instalada y corriendo. **En el emulador** por
+    defecto; para el teléfono hay que nombrarlo.
+    """
+    from .dispositivos import resolver, DeviceError
+    try:
+        dev = resolver(target)
+    except DeviceError as exc:
+        return f"no pude comprobar nada: {exc}"
+    pcode, pid = _adb(["-s", dev.serial, "shell", "pidof", "com.aegis.aegis_console"],
+                      timeout=60)
+    _, installed = _adb(["-s", dev.serial, "shell", "pm", "list", "packages", "-3"],
+                        timeout=60)
+    pid_clean = pid.strip() if (pid.strip().split() or [""])[0].isdigit() else ""
+    vivo = "corriendo" if pid_clean else "NO está corriendo"
     return (
-        f"dispositivo={device} | instalada={'aegis_console' in installed} | "
-        f"proceso: {running} | pid={pid_clean or '-'} | pidof_exit={pcode}"
+        f"{dev.etiqueta}={dev.serial} | instalada={'aegis_console' in installed} | "
+        f"proceso: {vivo} | pid={pid_clean or '-'} | pidof_exit={pcode}"
     )
 
 
