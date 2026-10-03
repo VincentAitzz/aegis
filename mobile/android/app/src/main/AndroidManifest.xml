@@ -1,8 +1,46 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- `POST_NOTIFICATIONS` es obligatorio desde Android 13 (SDK 33) y esta app
+         apunta a 36. Sin él, `NotificationManager.notify()` no hace nada y no hay
+         error: la notificación simplemente no aparece.
+
+         ## Por qué lo declara la app y no el shell
+         Antes el aviso lo posteaba `com.android.shell` con `cmd notification
+         post`. Funcionaba en el emulador y fallaba en un Samsung real: el
+         `appop` de la app era `ignore` y el aviso no traía ni el icono ni el
+         canal de Aegis. Una notificación que postea otro no es una notificación
+         tuya, y no se puede abrir en algo tuyo. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="@string/app_name"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!-- ## Por qué cleartext está declarado
+             No es un descuido de seguridad: **es lo que la app ya hacía**.
+
+             Dart habla con el bridge en `http://` sobre la malla privada desde
+             el principio, y lo sigue haciendo: la app muestra «puente:
+             contesta» contra un `http://` sin TLS. Funciona porque los sockets de
+             `dart:io` no pasan por la comprobación de cleartext de Java.
+
+             El overlay nativo y el receptor de avisos sí usan
+             `HttpURLConnection`, que **sí la comprueba**, y ahí se comía un
+             `IOException: Cleartext HTTP traffic not permitted`. Los dos caminos
+             al mismo puente, con políticas distintas, y solo uno lo sabía.
+
+             Un `networkSecurityConfig` acotando `localhost`, `10.0.2.2` y la IP
+             de la tailnet sería más estrecho, pero `API_HOST` lo fija quien compila
+             y el rango de Tailscale (100.64.0.0/10) no se puede escribir en
+             `<domain>`. Un allowlist que se queda corto en cuanto cambia la
+             dirección es peor que la regla honesta: falla en el teléfono y no en
+             la prueba.
+
+             Declarar la verdad —«esta app habla en claro por una malla privada»—
+             deja la política del sistema y la del código diciendo lo mismo. Lo que
+             protege esto no es el TLS: es que el bridge exige `X-Aegis-Token` en
+             lo que de verdad importa, y que tu tailnet no es la red pública. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -25,6 +63,46 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- El cuadro de decisión, encima de lo que estés usando.
+
+             ## Por qué una activity aparte y no un diálogo dentro de MainActivity
+             Abrir la app para preguntar "¿puedo instalar?" **interrumpe**: te saca
+             de lo que estabas haciendo. Con una ventana translúcida el diálogo
+             aparece sobre la app que tuvieras y al cerrar el diálogo sigues
+             donde estabas. Eso es lo que hace `Theme.AegisOverlay`.
+
+             `noHistory` para que al cerrar no quede en el retroceso, y
+             `excludeFromRecents` para que no aparezca en el historial de apps:
+             es una ventana, no una app. -->
+        <activity
+            android:name=".OverlayActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.AegisOverlay"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="false"/>
+
+        <!-- El que publica la notificación de Aegis.
+
+             `exported="true"` porque el puente la despierta con `am broadcast`
+             desde adb, que es otro proceso y otro usuario. No es una puerta
+             abierta de nada: el receptor **no acepta datos del broadcast**,
+             va al bridge a preguntar qué hay pendiente. Que alguien lo dispare
+             solo provoca que se lea `/deploys` y se avise, que es idempotente y
+             no concede nada. El permiso vive en la respuesta del bridge, no en el
+             intent. -->
+        <receiver
+            android:name=".NotificacionReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.aegis.aegis_console.AVISAR"/>
+            </intent-filter>
+        </receiver>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

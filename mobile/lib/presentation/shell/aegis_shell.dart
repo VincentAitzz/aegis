@@ -36,6 +36,9 @@ class _AegisShellState extends ConsumerState<AegisShell> {
   Widget build(BuildContext context) {
     final alias = ref.watch(seccionActualProvider);
     final puente = ref.watch(puenteVivoProvider);
+    // El glifo habla por sí solo: el estado sale de `/actividad`, no de que
+    // alguien se acuerde de mirar si hay un run en marcha.
+    final glifo = estadoDelGlifo(ref.watch(actividadProvider), puente: puente);
     final indice = kSecciones.indexWhere((s) => s.alias == alias);
     final i = indice < 0 ? 0 : indice;
     final activa = kSecciones[i];
@@ -54,7 +57,7 @@ class _AegisShellState extends ConsumerState<AegisShell> {
           children: [
             Column(
               children: [
-                _Marca(bridgeVivo: puente),
+                _Marca(bridgeVivo: puente, estado: glifo),
                 Expanded(
                   child: IndexedStack(
                     index: i,
@@ -68,6 +71,7 @@ class _AegisShellState extends ConsumerState<AegisShell> {
             ),
             const IgnorePointer(child: HudOverlay()),
             if (!puente) const _AvisoSinPuente(),
+            const _AvisoSinPermiso(),
           ],
         ),
         bottomNavigationBar: _Barra(
@@ -97,9 +101,14 @@ class _Seccion extends StatelessWidget {
 
 /// La cabecera: glifo, nombre, y el LED que dice si hay alguien al otro lado.
 class _Marca extends StatelessWidget {
-  const _Marca({required this.bridgeVivo});
+  const _Marca({required this.bridgeVivo, required this.estado});
 
   final bool bridgeVivo;
+
+  /// Lo que está haciendo Aegis: celeste en reposo, magenta hablando. Se calcula
+  /// una vez arriba, en `estadoDelGlifo`, y se pasa. Si lo calculara cada widget,
+  /// dos partes de la cabecera podrían discrepar.
+  final EstadoAegis estado;
 
   @override
   Widget build(BuildContext context) {
@@ -111,7 +120,7 @@ class _Marca extends StatelessWidget {
       ),
       child: Row(
         children: [
-          AegisMark(size: 20, vivo: bridgeVivo),
+          AegisMark(size: 20, vivo: bridgeVivo, estado: estado),
           const SizedBox(width: 9),
           const Text(
             'AEGIS',
@@ -189,7 +198,10 @@ class _Pestana extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = activa ? AegisPalette.brand : AegisPalette.fgFaint;
+    // La pestaña activa es **estructura**: hueso, no el color de marca. Si el
+    // celeste dijera «estás aquí» y además «estoy vivo», el mismo color estaría
+    // diciendo dos cosas.
+    final color = activa ? AegisPalette.hueso : AegisPalette.fgFaint;
     return InkWell(
       onTap: onTap,
       child: Semantics(
@@ -207,7 +219,7 @@ class _Pestana extends StatelessWidget {
               height: 2,
               width: activa ? 20 : 0,
               decoration: BoxDecoration(
-                color: AegisPalette.brand,
+                color: AegisPalette.hueso,
                 borderRadius: BorderRadius.circular(1),
               ),
             ),
@@ -259,6 +271,64 @@ class _AvisoSinPuente extends ConsumerWidget {
                 const Expanded(
                   child: Text(
                     'Sin puente. Toca para reintentar.',
+                    style: TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 11,
+                      color: AegisPalette.bg0,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Cuando hay algo esperando tu OK pero el sistema no deja avisarte.
+///
+/// ## Por qué sale solo y no al abrir la app
+/// El permiso de notificaciones es el caso raro de la app: sin él, Aegis
+/// puede quedarse esperando una decisión que solo tú puedes tomar, y no te
+/// enteras. Un aviso que aparece **justo cuando hay algo pendiente** y se
+/// guarda en cuanto lo concedes es exactamente lo contrario de molestar.
+///
+/// ## Por qué se calla en cuanto lo concedes
+/// Si no se fuera, quedaría una tira diciendo "no te avisamos" sobre una app que
+/// ya te está avisando. Se calla por el permiso, no por un flag: lo que decide
+/// es el estado real del sistema.
+class _AvisoSinPermiso extends ConsumerWidget {
+  const _AvisoSinPermiso();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final permiso = ref.watch(permisoNotificacionesProvider);
+    final deploys = ref.watch(deploysProvider);
+    final pendiente = (permiso.value ?? true) || deploys?.hayPendientes != true;
+
+    if (pendiente) return const SizedBox.shrink();
+
+    return Positioned(
+      top: 52,
+      left: 0,
+      right: 0,
+      child: Material(
+        color: AegisPalette.brand,
+        child: InkWell(
+          onTap: () => pedirAvisos(ref),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 16),
+            child: Row(
+              children: [
+                const Icon(Icons.notifications_off_outlined,
+                    size: 14, color: AegisPalette.bg0),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Aegis espera tu OK y el móvil no le deja avisarte. Toca para '
+                    'permitirlo.',
                     style: TextStyle(
                       fontFamily: AegisPalette.mono,
                       fontSize: 11,

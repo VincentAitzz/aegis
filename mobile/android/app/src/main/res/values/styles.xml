@@ -16,4 +16,31 @@
     <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
         <item name="android:windowBackground">@color/aegis_bg</item>
     </style>
+
+    <!-- La ventana del cuadro de decisión: transparente, para que se vea la app que
+         tenías detrás.
+
+         ## Por qué no `Theme.Dialog`
+         Un diálogo del sistema pone su propio fondo, su propia sombra y un marco
+         centrado que no controlas. Aquí lo que se quiere es exactamente lo
+         contrario: que la ventana **no** opine sobre el aspecto, y que el aspecto
+         lo ponga la tarjeta de dentro (ver `OverlayActivity.kt`, que es
+         neobrutalista a propósito: bordes gruesos, sombra dura, cero degradados).
+
+         `windowIsTranslucent` + `windowBackground` transparente = lo que hay
+         detrás se ve intacto. `backgroundDimEnabled` oscurece un poco para que la
+         tarjeta destaque, pero sin cortar el toque de la app de debajo.
+
+         `windowNoTitle` y sin fondo propio: si el sistema pinta el fondo de la
+         ventana, aparece un rectángulo negro alrededor de la tarjeta y se pierde
+         justo el efecto que se busca. -->
+    <style name="Theme.AegisOverlay" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.72</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+    </style>
 </resources>

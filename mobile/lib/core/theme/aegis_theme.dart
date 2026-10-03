@@ -44,7 +44,7 @@ abstract final class AegisTheme {
       colorScheme: const ColorScheme.dark(
         primary: AegisPalette.brand,
         onPrimary: Color(0xFF1A1206),
-        secondary: AegisPalette.info,
+        secondary: AegisPalette.brand,
         onSecondary: Color(0xFF03121A),
         surface: AegisPalette.bg2,
         onSurface: AegisPalette.fg,
@@ -110,9 +110,13 @@ abstract final class AegisTheme {
         focusedErrorBorder: _border(AegisPalette.danger, 1.4),
       ),
       filledButtonTheme: FilledButtonThemeData(
+        // **Hueso, no el color de marca.** Un botón tiene que ser «esto es lo
+        // que puedes hacer», y el glifo tiene que ser «esto es que estoy
+        // vivo». Si los dos fueran celeste, el color estaría en dos turnos a la
+        // vez y dejaría de avisar de nada. Ver `AegisPalette.hueso`.
         style: FilledButton.styleFrom(
-          backgroundColor: AegisPalette.brand,
-          foregroundColor: const Color(0xFF1A1206),
+          backgroundColor: AegisPalette.hueso,
+          foregroundColor: AegisPalette.bg0,
           disabledBackgroundColor: AegisPalette.line,
           disabledForegroundColor: AegisPalette.fgFaint,
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
@@ -122,7 +126,7 @@ abstract final class AegisTheme {
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: AegisPalette.brand,
+          foregroundColor: AegisPalette.hueso,
           disabledForegroundColor: AegisPalette.fgFaint,
           side: const BorderSide(color: AegisPalette.line),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

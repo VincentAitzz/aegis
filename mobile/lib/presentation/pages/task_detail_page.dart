@@ -222,7 +222,7 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
 
   Widget _statusChip(String status, bool isLive) {
     final (label, color) = switch (status) {
-      'running' => ('RUNNING', AegisPalette.brand),
+      'running' => ('RUNNING', AegisPalette.voz),
       'completed' => ('COMPLETED', AegisPalette.ok),
       'failed' => ('FAILED', AegisPalette.danger),
       'stopped' => ('STOPPED', AegisPalette.warn),
@@ -290,9 +290,9 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                       ? 'ESCRIBIR LA FICHA DE $proyecto'
                       : 'ESCRIBIR LA FICHA DE $proyecto CON AUTOPILOT'),
               style: OutlinedButton.styleFrom(
-                foregroundColor: yaEscribible ? AegisPalette.ok : AegisPalette.info,
+                foregroundColor: yaEscribible ? AegisPalette.ok : AegisPalette.brand,
                 side: BorderSide(
-                    color: yaEscribible ? AegisPalette.ok : AegisPalette.info,
+                    color: yaEscribible ? AegisPalette.ok : AegisPalette.brand,
                     width: 1.2),
               ),
             ),

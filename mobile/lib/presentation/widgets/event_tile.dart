@@ -71,10 +71,10 @@ class EventTile extends StatelessWidget {
   }
 
   (String, Color) get _marker => switch (event.type) {
-        'task.created' => ('●', AegisPalette.info),
+        'task.created' => ('●', AegisPalette.brand),
         'text.delta' => ('▸', AegisPalette.fg),
-        'reasoning' => ('◈', AegisPalette.info),
-        'tool.started' => ('>', AegisPalette.info),
+        'reasoning' => ('◈', AegisPalette.brand),
+        'tool.started' => ('>', AegisPalette.brand),
         'tool.completed' => ('✓', AegisPalette.ok),
         'approval.request' => ('▲', AegisPalette.warn),
         'approval.resolved' => ('◆', AegisPalette.warn),

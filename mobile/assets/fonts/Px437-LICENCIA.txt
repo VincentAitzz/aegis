@@ -1,0 +1,36 @@
+Px437 IBM VGA 8x16
+==================
+
+Fuente:  Ultimate Oldschool PC Font Pack
+Origen:  https://int10h.org/oldschool-pc-fonts/
+Autor:   VileR (2015-2016)
+Fichero: Px437_IBM_VGA8.ttf
+Licencia: CC-BY-SA-4.0-Int  (https://creativecommons.org/licenses/by-sa/4.0/)
+
+Qué es
+------
+Reconstrucción en TrueType de los glifos de la fuente de texto de 8x16 de la
+VGA/MCGA de IBM, tal y como se veían en el modo texto 80x25 de un PC. Se usa
+**solo** para el arte ASCII de la marca (la calavera) y para los adornos de caja
+de dibujo CP437.
+
+Por qué esta y no otra
+----------------------
+Un ASCII art con fuente monoespaciada moderna no se ve como VGA: el interlineado
+no es 8x16 y los caracteres no tienen el peso de un mapa de bits. Esta fuente
+**es** el mapa de bits, y el arte se lee como lo que es.
+
+Obligaciones de la licencia
+--------------------------
+CC-BY-SA-4.0-Int pide crédito y que las adaptaciones se compartan igual. Aquí:
+
+- Se da el crédito, en este fichero y en `assets/brand/README.md`.
+- El fichero se distribuye **sin modificar**. Es una obra aparte dentro del
+  proyecto: empaquetar una fuente con licencia copyleft **no** cambia la licencia
+  del resto de la app, que no deriva de ella.
+- Si algún día se modifica este `.ttf`, la versión modificada tiene que salir con
+  la misma licencia. Por eso está aquí sin tocar, y no «retocado un poco».
+
+El sufijo «-Int» es la variante de Creative Commons que añade que no se puede
+usar el nombre del autor para sugerir que aprueba el uso. Por eso este fichero
+habla de la fuente y no de la empresa que la distribuye.

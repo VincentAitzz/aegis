@@ -1,0 +1,93 @@
+# La calavera de Aegis, hecha de texto.
+#
+# Generada por `mobile/bin/extrae-calavera.py` desde
+# `assets/brand/aegis_mark_source.jpg`. La estructura (líneas, anchura,
+# dónde se corta cada una) sale de MEDIR la imagen. El contenido usa el
+# vocabulario real del dibujo —títulos, fechas, PIANOCONCERTO,
+# THEMERCHANTOFVENICE, STRINGQUARTET— colocado para que la masa de texto
+# caiga donde caía.
+#
+# No es una transcripción, y no puede serlo: a 9,7 px por carácter un `O`
+# y un `0` ocupan los mismos píxeles. Lo que el ojo lee —la silueta, la
+# frente, las cuencas, los dientes, el borde rasgado— sí es el del
+# original, y eso está medido: `bin/verifica-calavera.py` da IoU 0,807,
+# con el 91,4 % de las celdas del JPG cubiertas y un 12,6 % de celdas de
+# más. Ese script es el que dice si esto sigue siendo la calavera.
+
+                       -.:STRINGQUA`                             
+                    :-OP.5(1973-1975)O:^                         
+                  ,'PIANOCONCERTONO.2,OP.4,                      
+                 ~STRINGQUARTETNO.1INAMAJORPI^                   
+               `THEMERCHANTOFVENICESONATAFORPIA-                 
+             :AJOMR,OP.5OP.1(1959)OP.2(1961-OP.3'                
+            ,PIANOFORKONCERTOAJOMRINAMAJORMVSWWO0P;              
+           ^mMXW1PWVMO1PxOWPXN1NmXKONCERTOKONCERTON              
+          -KKKKKKKKKXXXXXXXNNNNNmmmmKKKKXXXXOOOOoooo~            
+         'ooooNNNNkkkkXXOOmmNNkkxx09876543210THEMERCHA           
+        ;kkxx09876543210THEMERCHANTOFVENICE(1968-1982)P          
+       .543210THEMERCHANTOFVENICE(1968-1982)PIANOCONCER,         
+      PIANOCONCERTONO.1(1957)SONATAFORPIANO(1958)SONATAF         
+     `SONATAFORPIANO(1958)SONATAFORGLARINETOP.3(1969-1970        
+    :PIANOCONCERTONO.1(1957)SONATASONATAFORGLARINETANDPIA        
+   ;`INVENTIONSFORPIANO,OP.2PIANOCONCERTONO.1(1957)STRINGQ       
+   .:GLARINETANDPIANO,OP.1PIANOCONCERTONO.2THEMERCHANTOFVE       
+  ^;`KONCERTO,OP.4(1966MVS(1961-1962)AJOMR,OP.5OP.1(1959)O       
+  ~,'~OP.5(1973-PIANOCONCERTOPIANOFORKONCERTOAJOMRINAMAJORM      
+ .:-.:-.:WWO0PmWWWP.5mMXW1PWVMO1PxOWPXN1NmXKONCERTOKONCERTO      
+ ^;`^;`^;`NNNNNNNNNmmmmmmmmmmKKKKKKKKKXXXXXXXNNNNNmmmmKKKKX,     
+^;`^;`^;`^;XXXXOOOOooooNNNNkkkkXXOOmmNNkkxx09876543210THEME      
+~,'~,'~,'~,'mmNNkkxx09876543210THEMERCHANTOFVENICE(1968-198      
+`^;`^;`^;`^;76543210THEMERCHANTOFVENICE(1968-1982)PIANOCONCE     
+:-.:-.:-.:-.0THEMERCHANTOFVENICE(1968-1982)PIANOCONCERTONO.1     
+;`^;`^;`^;`^;STRINGQUARTETNO.1INAMAJOR,OP.3(1969-1970)PIANOC     
+.:-.:-.:-.:-.THEMERCHANTOFVENICE(1968-1982)PIANOSTRINGQUARTE     
+-.:-.:-.:-.:-.:-.:-.:SONATAFORGLARINETANDPIANOSTRINGQUARTETNO    
+`^;`^;`^;`^;`^;`^;`^;`OP.3(1969-1970)PIANOCONINVENTIONSFORWRX    
+:-.:-.:-.:-.:-.:-.:-.:PIANOCONCERTONO.1INAMAJOR,OP.3(1969KONC    
+ ;`^;`^;`^;`^;`^;`^;`^;`OP.3(1969-OP.4(1966-OP.5(1973-PIANOCONC  
+.:-.:-.:-.:-.:-.:-.:-.:INAMAJORMVSWWO0PmWWWP.5mMXW1PWVMO1PxOWP   
+~,'~,'~,'~,'~,'~,'~,'~,N1NmXKONCERTOKONCERTONNNNNNNNNmmmmmmmmm'  
+ `^;`^;`^;`^;`^;`^;`^;`^mmmmKKKKXXXXOOOOooooNNNNkkkkXXOOmm;~:^'  
+ :-.:-.:-.:-.:-.:-.:-.:-XXOOmmNNkkxx09876543210THEMERCHANTOFVENI 
+ .:-.:-.:-.:-.:-.:-.:-.9876543210THEMERCHANTOFVENIC~:^'.`,-;~:^  
+ ~,'~,'~,'~,'~,'~,'~,'~210THEMERCHANTOFVENICE(1968-1982)P`,-;~:  
+ `^;`^;`^;`^;`^;`^;`^;`PIANOCONCERTONO.2,OP.4(1966-1971)INVENTI  
+ ,'~,'~,'~,'~,'~,'~,'PIANOCONCERTONO.2,OP.4(1966-1971)STRINVENT  
+ .:-.:-.:-.:-.:-.:-.:-OPERA,THEMERCHANTOFVENMICEPIANOCONCERTO(1  
+  ~,'~,'~,'~,'~,'~,'~,'~,'~,'~,'PIANOCONCERTONO.2,OP.4AJOMR,OP.  
+  `^;`^;`^;`^;`^;`^;`^;`^;`^;`^;SONATAFORPIANO(1958)STRINGQUART  
+  :-.:-.:-.:-.:-.:-.:-.:-.:-.:-.OP.1(1959)OP.2(1961-OP.3(1969-O  
+  ,'~,'~,'~,'~,'~,'~,'~,'~,'~,'~KONCERTOAJOMRINAMAJORMVSWWO0PmW  
+   ~,'~,'~,'~,'~,'~,'~,WVMO1PxOWPXN1NmXKONCERTOKONCERTONNNNNNNNN 
+    '~,'~,'~,'~,'~,'~,'XXXXXXXNNNNNmmmmKKKKXXXXOOOOooooNNNNkkkkX 
+    ;`^;`^;`^;`^;`^;`^;NNNNkkkkXXOOmmNNkkxx09876543210THEMERCHANT
+   ,'~,'~,'~,'~,'~,'~,'xx09876543210THEMERCHANTOFVENICE(1968-198,
+   ^;`^;`^;`^;`^;`^;`^;43210THEMERCHANTOFVENICE(1968-1982)PIANOCO
+   -.:-.:-.:-.:-.:-.:-.SONATAFORGLARINETANDPIANO,OP.1(1959)STRING
+   `^;`^;`^;`^;`^;`^;`^;OP.3(1969-1970)PIANOCONCERTONO.2OP.5(1973
+   ;`^;`^;`^;`^;`^;`^;`SONATAFORGLARINETANDPIANO,OP.1PIANOCONCER;
+    .:-.:-.:-.:-.:-.:-.:PIANOCONCERTONO.1(1957)STRINGQUARTETNO.1.
+     ;`^;`^;`^;`^;`^PIANOCONCERTONO.2THEMERCHANTOFVENICESONATAFOR
+          -.:MVS(1961-1962)AJOMR,OP.5OP.1(1959)OP.2(1961-OP.3(19 
+        :-.:-.:-.:-PIANOCONCERTOPIANOFORKONCERTOAJOMRINAMAJ:^'.` 
+        ;`^;`^;`^;`^mWWWP.5mMXW1PWVMO1PxOWPXN1NmXKONCERTOKO,-;~: 
+       ;`^;`^;`^;`^;`mmmmmmmmmmKKKKKKKKKXXXXXXXNNNNNmmmmKKK^'.`  
+       :-.:-.:-.:-.:-.:-OOOOooooNNNNkkkkXXOOmmNNkkxx0987654-     
+       `^;`^;`^;`^;`^;`^;`^;NNkkxx09876543210THEMERCHANTOF'      
+       '~,'~,'~,'~,'~,'~,'~,'6543210THEMERCHANTOFVENICE(19       
+        .:-.:-.:-.:-.:-.:-.:THEMERCHANTOFVENICE(1968-1982).      
+         ;`^;`^;`^;`^;`^;`^;`^;`^PIANOCONCERTONO.1(1957)SO       
+                       ~,'~STRINGQUARTETNO.1INAMAJOR,OP.3P       
+                            ,'~,'~,'~STRINGQUARTETNO.2INAM:      
+                               :-.:INVENTIONSFORWRXk1GLARI,      
+                               .:-INAMAJOR,OP.3(1969KONCERT      
+                               ^;`^OP.4(1966-OP.5(1973-PIAN      
+                               -.:-MVSWWO0PmWWWP.5mMXW1PWV'      
+                                ;`KONCERTOKONCERTONNNNNNNNN      
+                                ^KKKKXXXXOOOOooooNNNNkkkkX.      
+                                 ^;`OOmmNNkkxx09876543210TH      
+                                     -.:876543210THE`,-;~:^      
+                                    .:-.:-.:10:^'.`,             
+                                    '~,'~INVEN                   
+                                     ,'~,INVEN                   
+                                         -.PIA                   

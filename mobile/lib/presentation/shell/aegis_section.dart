@@ -20,9 +20,12 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../pages/agenda_page.dart';
 import '../pages/ajustes_page.dart';
 import '../pages/ahora_page.dart';
+import '../pages/memoria_page.dart';
 import '../pages/misiones_page.dart';
+import '../pages/proyectos_page.dart';
 import '../providers/agent_providers.dart';
 
 /// Un apartado de la app.
@@ -80,6 +83,30 @@ final List<AegisSection> kSecciones = [
     icon: Icons.playlist_add_check_outlined,
     iconActivo: Icons.playlist_add_check,
     pantalla: (_) => const MisionesPage(),
+  ),
+  AegisSection(
+    alias: 'agenda',
+    label: 'Agenda',
+    icon: Icons.event_note_outlined,
+    iconActivo: Icons.event_note,
+    requierePuente: false,
+    pantalla: (_) => const AgendaPage(),
+  ),
+  AegisSection(
+    alias: 'memoria',
+    label: 'Memoria',
+    icon: Icons.psychology_outlined,
+    iconActivo: Icons.psychology,
+    requierePuente: false,
+    pantalla: (_) => const MemoriaPage(),
+  ),
+  AegisSection(
+    alias: 'proyectos',
+    label: 'Proyectos',
+    icon: Icons.folder_outlined,
+    iconActivo: Icons.folder,
+    requierePuente: false,
+    pantalla: (_) => const ProyectosPage(),
   ),
   AegisSection(
     alias: 'ajustes',

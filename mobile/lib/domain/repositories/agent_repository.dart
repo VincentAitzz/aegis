@@ -2,9 +2,13 @@
 library;
 
 import '../../data/models/agent_models.dart';
+import '../../data/models/asistente_models.dart';
 
 abstract interface class AgentRepository {
   Future<BridgeHealth> health();
+
+  /// Si Aegis está hablando ahora mismo. Lo pinta el glifo.
+  Future<Actividad> actividad();
 
   Future<List<String>> models();
 
@@ -69,4 +73,58 @@ abstract interface class AgentRepository {
   Future<void> steer(String runId, String text);
 
   Future<void> stop(String runId);
+
+  // -- Lo que Aegis sabe y lo que recuerda -----------------------------------
+  //
+  // Hasta aquí el móvil veía siete rutas de un bridge que tenía quince: la
+  // memoria existía —con 35 nodos, 588 aristas y episodios reales— y no había
+  // forma de mirarla. Un asistente que no puede decir lo que recuerda se
+  // comporta como si no tuviera memoria, que es exactamente lo que pasa si el
+  // recuerdo es cierto y no se enseña.
+
+  /// Lo que Aegis recuerda, en metadatos. Nunca el texto de lo que hablamos.
+  Future<Memoria> memoria({String consulta, int limite});
+
+  /// El historial de runs, leído del disco del bridge. No de la sesión de la
+  /// app: esa se pierde al cerrarla.
+  Future<List<RunHistorial>> runs({int limite, String proyecto});
+
+  /// El estado de la autonomía: el modo, qué proyectos puede tocar sin
+  /// preguntar, y qué está esperando tu OK ahora mismo.
+  Future<Autonomia> autonomia();
+
+  /// Cambia el nivel de autonomía. No existe modo que dispense de preguntar.
+  Future<String> modoAutonomia(String modo);
+
+  /// Marca un proyecto como "puedes escribir aquí".
+  ///
+  /// El bridge **niega** los que no tienen verificador declarado, y con razón:
+  /// permiso de escritura sobre algo que no se puede verificar es autonomía sin
+  /// forma de saber si salió bien.
+  Future<List<String>> marcarProyecto(String alias, {required bool escribir});
+
+  /// Lo que Aegis quiere hacer y no se atreve a hacer solo.
+  Future<List<Aprobacion>> aprobaciones();
+
+  /// Aprueba. Devuelve el token, que lo gasta el propio bridge.
+  Future<void> resolverAprobacion(String id, {required bool aprobar});
+
+  /// **Por qué** denegas. Es lo que hace que la confianza crezca: no es que
+  /// Aegis aprenda a tener cuidado, es que tú se lo dijiste una vez.
+  Future<void> denegarConMotivo(String id, String motivo);
+
+  // -- Tus cosas -----------------------------------------------------------
+  Future<List<Nota>> notas({String proyecto});
+
+  Future<Nota> crearNota({String titulo, String cuerpo, String proyecto});
+
+  Future<void> borrarNota(String id);
+
+  Future<List<Tarea>> tareas({String estado, String proyecto});
+
+  Future<Tarea> crearTarea({required String titulo, String notas, String proyecto, String para});
+
+  Future<Tarea> actualizarTarea(String id, {String titulo, String notas, String para, String estado});
+
+  Future<void> borrarTarea(String id);
 }

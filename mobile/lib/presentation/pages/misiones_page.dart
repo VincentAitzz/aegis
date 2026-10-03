@@ -120,7 +120,7 @@ class _MisionFila extends StatelessWidget {
             color: activa ? AegisPalette.bg2 : AegisPalette.bg1,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
-              color: activa ? AegisPalette.brand.withValues(alpha: .5) : AegisPalette.line,
+              color: activa ? AegisPalette.hueso.withValues(alpha: .6) : AegisPalette.line,
             ),
           ),
           child: Row(

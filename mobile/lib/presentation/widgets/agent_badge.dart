@@ -14,7 +14,7 @@ class AgentBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     // `autopilot` es un motor, no un agente: se distingue por claridad, no por rol.
     final esAutopilot = agent == 'autopilot';
-    final color = esAutopilot ? AegisPalette.info : AegisPalette.ok;
+    final color = esAutopilot ? AegisPalette.voz : AegisPalette.ok;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(

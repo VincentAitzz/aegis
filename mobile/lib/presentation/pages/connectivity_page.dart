@@ -50,12 +50,12 @@ class ConnectivityPage extends ConsumerWidget {
                     if (host.usesMeshHostname) ...[
                       const Text(
                         '▲',
-                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.info),
+                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.brand),
                       ),
                       const SizedBox(width: 5),
                       const Text(
                         'privada · MagicDNS',
-                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.info),
+                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.brand),
                       ),
                     ] else ...[
                       const Text(

@@ -4,6 +4,7 @@
 // suyo se desincroniza: en cuanto uno cambia el `health()` para probar el caso
 // sin puente, el otro sigue esperando un bridge sano y falla sin decir por qué.
 import 'package:aegis_console/data/models/agent_models.dart';
+import 'package:aegis_console/data/models/asistente_models.dart';
 import 'package:aegis_console/domain/repositories/agent_repository.dart';
 
 class FakeAgentRepository implements AgentRepository {
@@ -31,6 +32,29 @@ class FakeAgentRepository implements AgentRepository {
   final bool fallaHealth;
 
   final DeployState despliegues;
+
+  // Lo que los tests del asistente necesitan poder mover sin red.
+  Memoria memoriaFake = const Memoria();
+  List<RunHistorial> runsFake = const [];
+  Autonomia autonomiaFake = const Autonomia();
+  List<Aprobacion> aprobacionesFake = const [];
+  List<String> denegacionesFake = [];
+  Set<String> marcadosFake = {};
+  List<Nota> notasFake = [];
+  List<Tarea> tareasFake = [];
+
+  /// Lo que el repo falso dice que Aegis hace. Por defecto, quieto: los tests
+  /// que no hablan de esto no tienen que saber de él.
+  ///
+  /// Se puede cambiar en caliente porque hay tests que **dependen** de que el
+  /// glifo se encienda: si el falso no lo permitiera, nadie probaría que el
+  /// magenta sale cuando tiene que salir. Por eso el campo se llama distinto
+  /// del método: un repo puede tener un campo y un método del mismo nombre en
+  /// Dart, pero aquí sería el mismo nombre en dos sitios y colisiona.
+  Actividad estado = const Actividad();
+
+  @override
+  Future<Actividad> actividad() async => estado;
 
   @override
   Future<BridgeHealth> health() async {
@@ -116,4 +140,85 @@ class FakeAgentRepository implements AgentRepository {
 
   @override
   Future<void> stop(String runId) async {}
+
+  // -- lo que Aegis sabe (fake) --------------------------------------------
+
+  @override
+  Future<Memoria> memoria({String consulta = '', int limite = 20}) async =>
+      memoriaFake;
+
+  @override
+  Future<List<RunHistorial>> runs({int limite = 20, String proyecto = ''}) async =>
+      runsFake;
+
+  @override
+  Future<Autonomia> autonomia() async => autonomiaFake;
+
+  @override
+  Future<String> modoAutonomia(String modo) async => modo;
+
+  @override
+  Future<List<String>> marcarProyecto(String alias, {required bool escribir}) async {
+    marcadosFake = {...marcadosFake};
+    escribir ? marcadosFake.add(alias) : marcadosFake.remove(alias);
+    return marcadosFake.toList();
+  }
+
+  @override
+  Future<List<Aprobacion>> aprobaciones() async => aprobacionesFake;
+
+  @override
+  Future<void> resolverAprobacion(String id, {required bool aprobar}) async {
+    aprobacionesFake = [...aprobacionesFake.where((a) => a.id != id)];
+  }
+
+  @override
+  Future<void> denegarConMotivo(String id, String motivo) async {
+    denegacionesFake = [...denegacionesFake, motivo];
+  }
+
+  // -- tus cosas (fake) ----------------------------------------------------
+
+  @override
+  Future<List<Nota>> notas({String proyecto = ''}) async => notasFake;
+
+  @override
+  Future<Nota> crearNota({String titulo = '', String cuerpo = '', String proyecto = ''}) async {
+    final n = Nota(id: 'nota-fake', titulo: titulo, cuerpo: cuerpo, proyecto: proyecto);
+    notasFake = [n, ...notasFake];
+    return n;
+  }
+
+  @override
+  Future<void> borrarNota(String id) async {
+    notasFake = notasFake.where((n) => n.id != id).toList();
+  }
+
+  @override
+  Future<List<Tarea>> tareas({String estado = '', String proyecto = ''}) async => tareasFake;
+
+  @override
+  Future<Tarea> crearTarea({
+    required String titulo,
+    String notas = '',
+    String proyecto = '',
+    String para = '',
+  }) async {
+    final t = Tarea(id: 'tarea-fake', titulo: titulo, notas: notas,
+        proyecto: proyecto, para: para);
+    tareasFake = [t, ...tareasFake];
+    return t;
+  }
+
+  @override
+  Future<Tarea> actualizarTarea(String id,
+      {String? titulo, String? notas, String? para, String? estado}) async {
+    return tareasFake.firstWhere((t) => t.id == id,
+        orElse: () => Tarea(id: id, titulo: titulo ?? ''));
+  }
+
+  @override
+  Future<void> borrarTarea(String id) async {
+    tareasFake = tareasFake.where((t) => t.id != id).toList();
+  }
 }

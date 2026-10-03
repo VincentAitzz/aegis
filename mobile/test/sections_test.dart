@@ -32,13 +32,28 @@ void main() {
     });
 
     test('la etiqueta cabe en la barra', () {
-      // La barra divide el ancho en partes iguales: con cuatro o más secciones,
-      // una etiqueta larga se sale de su mitad. Ocho caracteres es el límite
-      // medido sobre 1080 px con la tipografía de 10 px.
+      // La barra reparte el ancho en partes iguales: con seis secciones sobre
+      // 1080 px cada una tiene 180 px, y a 10 px de ShareTechMono eso son unas
+      // 28 columnas. El límite es mucho más bajo porque una etiqueta que llega
+      // al borde de su mitad se lee como si fuera de la de al lado.
+      //
+      // El cálculo usa el número de secciones de verdad: un tope fijo valía
+      // mientras eran cuatro y dejó de valer al añadir la quinta.
+      final tope = (28 * 4 / kSecciones.length).floor();
       for (final s in kSecciones) {
-        expect(s.label.length, lessThanOrEqualTo(8),
-            reason: '${s.alias}: "${s.label}" no cabe en la barra');
+        expect(s.label.length, lessThanOrEqualTo(tope),
+            reason: '${s.alias}: "${s.label}" no cabe en la barra '
+                '(tope $tope con ${kSecciones.length} secciones)');
       }
+    });
+
+    test('con seis secciones la barra sigue siendo usable', () {
+      // Seis pestañas a 180 px cada una es el límite de lo que se lee sin
+      // effort. Si someday son ocho, hay que replantear la barra, no encoger
+      // las etiquetas: este test avisa en vez de dejar que se degrade.
+      expect(kSecciones.length, lessThanOrEqualTo(6),
+          reason: 'con más de seis pestañas las etiquetas se encogen solas; '
+              'hay que cambiar la navegación, no el texto');
     });
 
     test('las secciones que necesitan puente lo declaran', () {

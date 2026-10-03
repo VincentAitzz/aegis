@@ -77,6 +77,13 @@ flutter:
   # Lo único que se empaqueta de `assets/` son las tipografías, de abajo.
 
   fonts:
+    # La VGA va aparte y **solo para el arte ASCII**. Es una obra con licencia
+    # copyleft (CC-BY-SA-4.0-Int, VileR): el crédito y las condiciones están en
+    # `assets/fonts/Px437-LICENCIA.txt`, y el fichero va sin tocar, porque una
+    # adaptación tendría que salir con la misma licencia.
+    - family: Px437VGA
+      fonts:
+        - asset: assets/fonts/Px437_IBM_VGA8.ttf
     - family: ShareTechMono
       fonts:
         - asset: assets/fonts/ShareTechMono-Regular.ttf

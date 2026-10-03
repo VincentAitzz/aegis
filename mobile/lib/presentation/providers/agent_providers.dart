@@ -6,6 +6,9 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/network/permiso_notificaciones.dart';
+import '../../core/widgets/aegis_mark.dart';
+import '../../data/models/asistente_models.dart';
 import '../../data/models/agent_models.dart';
 import '../../data/repositories/agent_repository_impl.dart';
 import '../../domain/repositories/agent_repository.dart';
@@ -237,4 +240,147 @@ class RecentTasksController extends Notifier<List<String>> {
     list.insert(0, runId);
     state = list.take(12).toList();
   }
+}
+
+// -- Lo que Aegis sabe, y lo que puede hacer sin preguntar --------------------
+//
+// Los providers van aquí y no en las pantallas porque **dos pantallas necesitan
+// lo mismo**: la cabecera de Ahora quiere saber si hay algo pendiente, y la
+// sección Proyectos quiere la lista para poder marcarla. Con un provider
+// compartido, aprobar una cosa en un sitio la desaparece del otro sin que
+// ninguna se entere: antes.
+/// Qué espera tu OK ahora mismo. Se refresca cada vez que se abre la app y
+/// cuando se resuelve algo.
+final aprobacionesProvider = FutureProvider<List<Aprobacion>>((ref) async {
+  return ref.watch(agentRepositoryProvider).aprobaciones();
+});
+
+/// El estado de la autonomía: el modo y los proyectos marcados.
+///
+/// El repo fake y el real devuelven lo mismo, así que las pantallas no saben si
+/// hay red o no. Esa es la razón de que exista un provider y no una llamada
+/// directa desde cada widget.
+final autonomiaProvider = FutureProvider<Autonomia>((ref) async {
+  return ref.watch(agentRepositoryProvider).autonomia();
+});
+
+/// Lo que Aegis recuerda.
+///
+/// `autoDispose` a propósito: no tiene sentido conservar en memoria lo que Aegis
+/// recuerda para una pantalla que no se está viendo, y el repo de por sí ya está
+/// en caché por HTTP.
+final memoriaProvider = FutureProvider<Memoria>((ref) async {
+  return ref.watch(agentRepositoryProvider).memoria();
+});
+
+final runsProvider = FutureProvider<List<RunHistorial>>((ref) async {
+  return ref.watch(agentRepositoryProvider).runs();
+});
+
+final notasProvider = FutureProvider<List<Nota>>((ref) async {
+  return ref.watch(agentRepositoryProvider).notas();
+});
+
+final tareasProvider = FutureProvider<List<Tarea>>((ref) async {
+  return ref.watch(agentRepositoryProvider).tareas();
+});
+
+/// Si Aegis está hablando, y si el puente sigue vivo.
+///
+/// ## Por qué esto sondea y `healthProvider` no
+/// Porque son cosas distintas. `/health` va por la **salud**: si el bridge está en
+/// pie. Se leía al arrancar y al tocar el aviso, y por eso el LED de la cabecera
+/// decía «en línea» en el momento de arrancar y mentía a partir del minuto
+/// siguiente, sin ninguna forma de enterarse.
+///
+/// `/actividad` va por la **vitalidad**: si hay texto saliendo ahora. Eso sí
+/// cambia cada pocos segundos, y un dato que cambia cada pocos segundos necesita
+/// perguntarse cada pocos segundos.
+///
+/// ## La cadencia
+/// 1,2 s mirando, 6 s si lleva tres mirando sin nada. La ventana del bridge es
+/// de 2,5 s, así que a 1,2 s no se pierde ni un parpadeo entre deltas; y cuando
+/// lleva tres vueltas callado no hay nada que ver y 6 s no se notan. El otro
+/// Importante es el: subir a 2,6 s perdería el final de cada frase, y el
+/// glifo se quedaría encendido después de que Aegis haya callado —que es
+/// exactamente la mentira que este indicator no puede decir.
+class ActividadController extends Notifier<Actividad> {
+  static const _viva = Duration(milliseconds: 1200);
+  static const _triste = Duration(seconds: 6);
+  static const _calladoPara = 3;
+
+  Timer? _temporizador;
+  int _vueltasCallado = 0;
+
+  @override
+  Actividad build() {
+    _programar(const Duration(milliseconds: 0));
+    ref.onDispose(() => _temporizador?.cancel());
+    return const Actividad();
+  }
+
+  void _programar(Duration dentro) {
+    _temporizador?.cancel();
+    _temporizador = Timer(dentro, _preguntar);
+  }
+
+  Future<void> _preguntar() async {
+    try {
+      final a = await ref.read(agentRepositoryProvider).actividad();
+      state = a;
+      _vueltasCallado = a.hablando ? 0 : _vueltasCallado + 1;
+    } catch (_) {
+      // Sin bridge no hay nadie hablando, y tampoco hay quien lo diga: se
+      // deja el estado como estaba y se reintenta. Un error aquí **no** es un
+      // fallo de la app, es Aegis sin portátil, que es lo normal.
+    }
+    _programar(_vueltasCallado >= _calladoPara ? _triste : _viva);
+  }
+
+  /// Fuerza una lectura: tras mandar una misión, para no esperar al tick.
+  void refrescar() => _preguntar();
+}
+
+final actividadProvider =
+    NotifierProvider<ActividadController, Actividad>(ActividadController.new);
+
+/// El estado del glifo, en los tres términos en que lo pinta.
+///
+/// ## Por qué un solo sitio
+/// Porque el glifo aparece en la cabecera, en el arranque, en Misiones, en
+/// Memoria, en el detalle de una misión y en la notificación. Si cada uno
+///|tradujera `Actividad` a su manera, un día uno queda celeste con el agente
+/// hablando y el resto en reposo, y no se nota hasta que se comparan dos
+/// pantallas.
+EstadoAegis estadoDelGlifo(Actividad a, {required bool puente}) {
+  if (!puente) return EstadoAegis.sinPuente;
+  return a.hablando ? EstadoAegis.hablando : EstadoAegis.reposo;
+}
+
+/// Si el sistema ya permite avisarte.
+final permisoNotificacionesProvider = FutureProvider<bool>((ref) async {
+  return PermisoNotificaciones.concedido();
+});
+
+/// Pide el permiso de avisos y vuelve a comprobar.
+///
+/// Se invalida a mano porque el diálogo del sistema es asíncrono: cuando vuelve
+/// el resultado, no hay ninguna invalidación automática, y sin ella el badge
+/// seguiría diciendo "sin permiso" con el permiso ya dado.
+Future<void> pedirAvisos(WidgetRef ref) async {
+  await PermisoNotificaciones.pedir();
+  ref.invalidate(permisoNotificacionesProvider);
+}
+
+/// Refresca lo que Aegis sabe. Se llama después de aprobar, denegar, marcar o
+/// escribir: si no, la pantalla siguiente muestra el estado anterior y parece
+/// que la acción no surtió efecto.
+void refrescarAsistente(WidgetRef ref) {
+  ref.invalidate(aprobacionesProvider);
+  ref.invalidate(autonomiaProvider);
+  ref.invalidate(memoriaProvider);
+  ref.invalidate(runsProvider);
+  ref.invalidate(notasProvider);
+  ref.invalidate(tareasProvider);
+  ref.invalidate(healthProvider);
 }

@@ -354,7 +354,7 @@ class _MarcaInfo extends StatelessWidget {
           Row(
             children: [
               _Muestra('marca', AegisPalette.brand),
-              _Muestra('info', AegisPalette.info),
+              _Muestra('info', AegisPalette.brand),
               _Muestra('ok', AegisPalette.ok),
               _Muestra('aviso', AegisPalette.warn),
               _Muestra('error', AegisPalette.danger),

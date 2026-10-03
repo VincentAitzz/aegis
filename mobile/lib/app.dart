@@ -22,6 +22,13 @@ class AegisApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final salud = ref.watch(healthProvider);
+    // El arranque y la cabecera pintan el **mismo** glifo. Si cada uno sacara su
+    // color por su cuenta, un día uno se contradicen y no hay forma de saber
+    // cuál mintió.
+    final glifo = estadoDelGlifo(
+      ref.watch(actividadProvider),
+      puente: salud.when(data: (h) => h.ok, loading: () => true, error: (_, _) => false),
+    );
 
     return MaterialApp(
       title: 'Aegis',
@@ -31,6 +38,7 @@ class AegisApp extends ConsumerWidget {
       home: BootScreen(
         saludo: _saludo(salud),
         lineas: _lineas(salud),
+        estado: glifo,
         child: const AegisShell(),
       ),
     );

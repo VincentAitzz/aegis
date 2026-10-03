@@ -18,9 +18,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/aegis_palette.dart';
+import '../../core/widgets/aegis_mark.dart';
 import '../../core/widgets/hud_panel.dart';
 import '../../core/widgets/status_led.dart';
 import '../../data/models/agent_models.dart';
+import '../../data/models/asistente_models.dart';
 import '../providers/agent_providers.dart';
 
 class AhoraPage extends ConsumerStatefulWidget {
@@ -117,6 +119,10 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
       children: [
+        const _Saludo(),
+        const SizedBox(height: 16),
+        const _Aprobaciones(),
+        const SizedBox(height: 16),
         _SelectorProyecto(
           seleccionado: ref.watch(selectedProjectProvider),
           onChanged: (a) =>
@@ -214,7 +220,7 @@ class _Motor extends StatelessWidget {
         Row(
           children: [
             StatusLed(
-              color: autopilot ? AegisPalette.brand : AegisPalette.info,
+              color: autopilot ? AegisPalette.voz : AegisPalette.brand,
               size: 7,
             ),
             const SizedBox(width: 8),
@@ -402,10 +408,22 @@ class _TrazaAutopilot extends StatelessWidget {
           ],
           for (final paso in run.trace) ...[
             const SizedBox(height: 8),
+            // La narración va **encima** del marcador técnico, no debajo: lo que
+            // Aegis dice es lo que se lee, y el nombre de la herramienta es el
+            // dato que se comprueba. Al revés, la pantalla se lee como un log.
+            if (paso.text != null && paso.text!.trim().isNotEmpty) ...[
+              Text(paso.text!,
+                  style: const TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 12,
+                      height: 1.5,
+                      color: AegisPalette.fg)),
+              const SizedBox(height: 3),
+            ],
             Text('paso ${paso.step} · ${paso.summary}',
                 style: TextStyle(
                     fontFamily: AegisPalette.mono,
-                    fontSize: 11,
+                    fontSize: 10.5,
                     height: 1.4,
                     color: paso.failed ? AegisPalette.danger : AegisPalette.ok)),
             if (paso.result != null)
@@ -444,6 +462,276 @@ class _TrazaAutopilot extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Lo que Aegis dice al despertar.
+///
+/// ## Por qué sale de datos y no es un texto fijo
+/// Un saludo con datos inventados es peor que no tener saludo: dice "ayer miré
+/// tres proyectos" y no los miró. Aquí sale de lo que el bridge recuerda y de lo
+/// que está esperando tu OK, y **si no hay nada que decir, no dice nada**.
+///
+/// ## Por qué no lo escribe un modelo
+/// Porque sería una frase sobre datos que un 7B puede deformar sin que nadie se
+/// entere. Es una frase sobre hechos que ya están en la respuesta del endpoint:
+/// componerla es contar.
+class _Saludo extends ConsumerWidget {
+  const _Saludo();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final aprobaciones = ref.watch(aprobacionesProvider);
+    final tareas = ref.watch(tareasProvider);
+
+    final pendiente = switch (aprobaciones) {
+      AsyncData(:final value) => value.length,
+      _ => 0,
+    };
+    final vencidas = switch (tareas) {
+      AsyncData(:final value) => value.where((t) => t.vencida).length,
+      _ => 0,
+    };
+
+    final String texto;
+    final Color color;
+    if (pendiente > 0) {
+      texto = 'Tengo $pendiente cosa'
+          '${pendiente == 1 ? '' : 's'} que necesito que decidas antes de seguir.';
+      color = AegisPalette.warn;
+    } else if (vencidas > 0) {
+      texto = '$vencidas tarea${vencidas == 1 ? '' : 's'} '
+          '${vencidas == 1 ? 'ha' : 'han'} vencido.';
+      color = AegisPalette.danger;
+    } else {
+      // Nada pendiente: se dice lo mínimo y se deja trabajar. Un saludo que
+      // siempre dice algo es un saludo que acaba ignorándose.
+      texto = 'Listo. Dime qué hago.';
+      color = AegisPalette.fgDim;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+      decoration: BoxDecoration(
+        color: AegisPalette.bg1,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AegisPalette.line),
+      ),
+      child: Row(
+        children: [
+          AegisMark(size: 17),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Text(
+              texto,
+              style: TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 12,
+                height: 1.45,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// La bandeja de permisos.
+///
+/// ## Por qué va aquí y no en Ajustes
+/// Es lo único que **bloquea** a Aegis: un run está parado esperando. Una
+/// decisión que bloquea el trabajo se pone delante de donde se empieza a
+/// trabajar, no en un menú que hay que recordar abrir.
+///
+/// ## Por qué el motivo va entero
+/// «Aprobar sin saber si la app se abre encima es justo lo que hay que
+/// evitar». Por eso el texto de Aegis se muestra completo y el botón de denegar
+/// **pide un motivo**: ese motivo es lo que Aegis leerá la próxima vez.
+class _Aprobaciones extends ConsumerWidget {
+  const _Aprobaciones();
+
+  Future<void> _denegar(BuildContext context, WidgetRef ref, Aprobacion a) async {
+    final motivo = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AegisPalette.bg1,
+        title: const Text('¿Por qué no?',
+            style: TextStyle(
+                fontFamily: AegisPalette.display,
+                fontSize: 17,
+                letterSpacing: 2,
+                color: AegisPalette.fg)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              a.motivo,
+              style: const TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 11,
+                height: 1.5,
+                color: AegisPalette.fgDim,
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              'Lo leo la próxima vez. Sin motivo, denegar es solo un "no" que no '
+              'se puede aplicar a la siguiente situación parecida.',
+              style: TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 10,
+                height: 1.5,
+                color: AegisPalette.fgFaint,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: motivo,
+              autofocus: true,
+              maxLines: 3,
+              decoration: const InputDecoration(hintText: 'Porque…'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: AegisPalette.danger,
+                foregroundColor: AegisPalette.bg0),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Decir que no'),
+          ),
+        ],
+      ),
+    );
+    final texto = motivo.text.trim();
+    motivo.dispose();
+    if (ok != true) return;
+    await ref.read(agentRepositoryProvider).denegarConMotivo(
+          a.id,
+          texto.isEmpty ? 'No me has dado un motivo.' : texto,
+        );
+    refrescarAsistente(ref);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final estado = ref.watch(aprobacionesProvider);
+    return estado.maybeWhen(
+      orElse: () => const SizedBox.shrink(),
+      data: (lista) {
+        if (lista.isEmpty) return const SizedBox.shrink();
+        return Column(
+          children: [
+            for (final a in lista)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AegisPalette.warn.withValues(alpha: .10),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: AegisPalette.warn.withValues(alpha: .6), width: 1.5),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.pan_tool_outlined,
+                              size: 15, color: AegisPalette.warn),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'ME HE PARADO',
+                            style: TextStyle(
+                              fontFamily: AegisPalette.mono,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1.4,
+                              color: AegisPalette.warn,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            'paso ${a.paso}',
+                            style: const TextStyle(
+                              fontFamily: AegisPalette.mono,
+                              fontSize: 10,
+                              color: AegisPalette.fgFaint,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        // El markdown del puente se quita aquí: en pantalla son
+                        // asteriscos sueltos, y sin ellos la frase se entiende
+                        // igual.
+                        a.motivo.replaceAll('**', ''),
+                        style: const TextStyle(
+                          fontFamily: AegisPalette.mono,
+                          fontSize: 12,
+                          height: 1.55,
+                          color: AegisPalette.fg,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'No he hecho nada todavía.',
+                        style: TextStyle(
+                          fontFamily: AegisPalette.mono,
+                          fontSize: 10,
+                          color: AegisPalette.warn.withValues(alpha: .9),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => _denegar(context, ref, a),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AegisPalette.danger,
+                                side: BorderSide(
+                                    color: AegisPalette.danger.withValues(alpha: .6)),
+                              ),
+                              child: const Text('No'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: () async {
+                                await ref
+                                    .read(agentRepositoryProvider)
+                                    .resolverAprobacion(a.id, aprobar: true);
+                                refrescarAsistente(ref);
+                              },
+                              style: FilledButton.styleFrom(
+                                  backgroundColor: AegisPalette.ok,
+                                  foregroundColor: AegisPalette.bg0),
+                              child: const Text('Sí, adelante'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
