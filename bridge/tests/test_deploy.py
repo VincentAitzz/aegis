@@ -1409,3 +1409,69 @@ class TestLaIpDelPuenteEnElTelefono(_Piso):
                 mock.patch("app.config.get_settings",
                            return_value=mock.Mock(bridge_tailnet_ip="192.168.0.50")):
             self.assertEqual(disp.tailnet_ip(), "192.168.0.50")
+
+
+class TestElApkCorrespondeAlCodigo(_Piso):
+    """La puerta tiene que poder decir «este binario es viejo».
+
+    ## El fallo medido que esto previene
+    Se aprobó e instaló en el teléfono un APK de dos días antes del código que se
+    estaba tocando. Todo lo que la puerta comprobaba era cierto —la huella
+    casaba, era un binario verificado— y aun así lo instalado no era lo que se
+    creías. Es A-016 con otro disfraz: **una puerta que comprueba una cosa y
+    responde por otra**.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tmp = Path(tempfile.mkdtemp(prefix="aegis-sello-"))
+
+    def _proyecto(self, tmp: Path) -> Path:
+        """Un proyecto Flutter mínimo, con un APK dentro de `build/`."""
+        raiz = tmp / "mobile"
+        (raiz / "lib").mkdir(parents=True)
+        (raiz / "build" / "app" / "outputs" / "flutter-apk").mkdir(parents=True)
+        (raiz / "pubspec.yaml").write_text("name: x\n", encoding="utf-8")
+        (raiz / "lib" / "main.dart").write_text("void main() {}\n", encoding="utf-8")
+        return raiz / "build" / "app" / "outputs" / "flutter-apk" / "app-debug.apk"
+
+    def test_sin_sello_no_se_afirma_nada(self) -> None:
+        """Un APK compilado a mano queda sin comprobar, no «verificado»."""
+        apk = self._proyecto(self.tmp)
+        apk.write_bytes(b"x")
+        self.assertEqual(deploy.apk_desactualizado(apk), "")
+
+    def test_sello_al_day_no_dice_nada(self) -> None:
+        apk = self._proyecto(self.tmp)
+        apk.write_bytes(b"x")
+        deploy.escribir_sello(apk)
+        self.assertEqual(deploy.apk_desactualizado(apk), "")
+
+    def test_cambio_de_codigo_lo_detecta(self) -> None:
+        apk = self._proyecto(self.tmp)
+        apk.write_bytes(b"x")
+        deploy.escribir_sello(apk)
+        (self.tmp / "mobile" / "lib" / "main.dart").write_text("void main() {}\n//x\n",
+                                                              encoding="utf-8")
+        motivo = deploy.apk_desactualizado(apk)
+        self.assertIn("no corresponde al código", motivo)
+        self.assertIn("build_apk", motivo)
+
+    def test_un_toque_sin_cambio_no_da_falso_positivo(self) -> None:
+        """Con comparar solo fechas, un `touch` bloquearía la instalación.
+
+        Medido: un fichero de `lib/` tenía `mtime` nueva sin cambiar de
+        contenido, y el guard por fecha se negativesó. Con firma no pasa, porque
+        lo que se mira es el contenido y el tamaño.
+        """
+        apk = self._proyecto(self.tmp)
+        apk.write_bytes(b"x")
+        deploy.escribir_sello(apk)
+        f = self.tmp / "mobile" / "lib" / "main.dart"
+        f.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+        import os
+        os.utime(f, (f.stat().st_atime + 500, f.stat().st_mtime + 500))
+        self.assertEqual(deploy.apk_desactualizado(apk), "")
+
+    def test_un_apk_fuera_de_un_proyecto_no_se_juzga(self) -> None:
+        self.assertEqual(deploy.apk_desactualizado(Path(__file__)), "")

@@ -424,6 +424,136 @@ def _huella_binario(p: Path) -> str:
     return f"{st.st_size}-{int(st.st_mtime)}"
 
 
+def _raiz_del_movil(apk: Path) -> Path | None:
+    """La raíz del proyecto Flutter al que pertenece este APK, o None.
+
+    Se deduce **del propio APK** y no de una constante: `build/app/outputs/
+    flutter-apk/…` solo existe dentro de un proyecto, así que es la forma de
+    saber de qué código habla el binario. Con una ruta que no está dentro de un
+    proyecto no hay nada que comparar, y ese "no sé" se devuelve como "" en
+    vez de como un fallo.
+    """
+    try:
+        partes = apk.resolve().parts
+    except OSError:
+        return None
+    for i, p in enumerate(partes[:-1]):
+        if p == "mobile" and partes[i + 1] == "build":
+            return Path(*partes[: i + 1])
+    return None
+
+
+def _firma_del_codigo(raiz: Path) -> str:
+    """Huella del código fuente del que sale un APK: ruta, tamaño y fecha.
+
+    ## Por qué una firma y no comparar fechas
+    Se probó primero con fechas y dio un falso positivo medido: un fichero de
+    `lib/` tenía `mtime` posterior al APK **sin haber cambiado de contenido**
+    (`git status` limpio). Bloquear una instalación por eso sería teachat el
+    teléfono cada dos compilaciones, y una puerta que avisa en falso trains:
+    la siguiente vez miras el aviso por encima.
+
+    ## Qué entra
+    `pubspec.yaml`, `lib/**` y `android/app/src/main/**`: lo que cambia lo que
+    acaba dentro del APK. `build/**` no entra, porque el propio binario está
+    ahí y se compararía consigo mismo.
+
+    ## Por qué el **contenido** y no la fecha
+    La primera versión metía `mtime` y `st_size` por abaratar la cuenta, y el
+    falso positivo siguió apareciendo: un `touch` cambia la fecha sin cambiar una
+    letra del código. Aquí se lee el fichero entero, que son unos cientos de
+    kilobytes y se tarda menos que el `adb` que viene después. Barato y cierto.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    files: list[Path] = []
+    pub = raiz / "pubspec.yaml"
+    if pub.exists():
+        files.append(pub)
+    for sub in ("lib", "android/app/src/main"):
+        d = raiz / sub
+        if d.is_dir():
+            files.extend(f for f in d.rglob("*") if f.is_file())
+    for f in sorted(files, key=lambda x: str(x)):
+        h.update(str(f.relative_to(raiz)).encode("utf-8"))
+        h.update(b":")
+        try:
+            h.update(f.read_bytes())
+        except OSError:
+            h.update(b"<ilegible>")
+        h.update(b"\n")
+    return h.hexdigest()[:16]
+
+
+def sello_de(apk: Path) -> Path:
+    """Dónde vive el sello de un APK: al lado, con otro nombre."""
+    return apk.with_name(apk.name + ".sello")
+
+
+def escribir_sello(apk: Path) -> str:
+    """Deja el sello que dice de qué código salió este APK. Lo llama la compilación.
+
+    Solo la compilación puede escribirlo, y por eso es fiable: si el sello no
+    coincide con el código actual, el binario es de antes de algún cambio. Sin
+    sello no se afirma nada — un APK compilado a mano queda sin comprobar, que es
+    distinto de estar verificado.
+    """
+    raiz = _raiz_del_movil(apk)
+    if raiz is None:
+        return ""
+    firma = _firma_del_codigo(raiz)
+    try:
+        sello_de(apk).write_text(firma + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("no pude escribir el sello de %s: %s", apk.name, exc)
+    return firma
+
+
+def apk_desactualizado(p: Path | None = None) -> str:
+    """Por qué el APK no representa el código de ahora, o "" si no hay motivo.
+
+    ## El fallo que esto previene, medido
+    Se aprobó e instaló en el teléfono un APK de **dos días antes** del código que
+    se estaba tocando. La puerta lo dio por bueno: la huella casaba (era *un*
+    binario, y verificado), y el mensaje decía «APK verificado, listo para
+    instalar». Todo lo que la puerta comprobaba era cierto, y aun así lo
+    instalado no era lo que se creías.
+
+    Es la clase de fallo que este repo ya pagó por otro lado (A-016: el veredicto
+    salía de `final_text`): **una puerta que comprueba una cosa y responde por
+    otra**. La huella dice «es el mismo fichero que aprobaste»; no dice «es el
+    código de ahora».
+
+    ## Qué se mira, y por qué no se recompila aquí
+    El **sello** que dejó la compilación, contra la firma del código de ahora. Sin
+    sello no se dice nada: no se puede comprobar, y no se presume. Y no se
+    recompila, porque un "instalar" que compila es un "compilar e instalar"
+    disfrazado, y el fallo de una compilación rota aparecería como fallo de
+    instalación. La puerta **dice la verdad y deja la decisión fuera**.
+    """
+    apk = p or APK_TELEFONO
+    if not apk.exists():
+        return ""          # que lo diga el otro aviso, el del "no hay APK"
+    raiz = _raiz_del_movil(apk)
+    if raiz is None:
+        return ""          # una ruta que no es de un proyecto no se juzga
+    try:
+        sello = sello_de(apk).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""          # compilado a mano: sin sello, sin veredicto
+    if not sello:
+        return ""
+    firma = _firma_del_codigo(raiz)
+    if sello == firma:
+        return ""
+    return (
+        f"El APK no corresponde al código de ahora: se compiló de otra fuente. "
+        f"Compílalo antes con build_apk(target='telefono') y vuelve a pedir. "
+        f"(sello {sello} · código {firma})"
+    )
+
+
 def pedir_deploy(razon: str, lanzar: bool = False) -> dict:
     """Deja la petición pendiente y avisa. No instala nada.
 
@@ -434,6 +564,12 @@ def pedir_deploy(razon: str, lanzar: bool = False) -> dict:
     se aprueba desde ahí. Antes iba al emulador porque la notificación vieja no
     tenía a dónde ir y solo podía estorbar.
     """
+    # Antes de dejar la petición: si el binario es viejo, decirlo **antes** de
+    # pedir el OK. Pedir permiso para instalar el código de hace dos días es
+    # gastar la atención de alguien en algo que no quiere.
+    if desactualizado := apk_desactualizado():
+        raise PuertaCerrada(desactualizado)
+
     pet_id = f"deploy-{uuid.uuid4().hex[:10]}"
     peticion = {
         "id": pet_id, "estado": "pendiente", "razon": razon[:300],
@@ -870,6 +1006,8 @@ def instalar_en_telefono(dev, token: str = "", lanzar: bool = False) -> str:
     # autorizar— y el mensaje útil es "compílalo", no "pide una aprobación". Al
     # revés, la puerta respondía a «no hay APK» con «no hay aprobación», que
     # manda a aprobar algo que todavía no se puede instalar.
+    if desactualizado := apk_desactualizado():
+        raise PuertaCerrada(desactualizado)
     if not APK_TELEFONO.exists():
         raise PuertaCerrada(
             f"no hay APK del teléfono ({APK_TELEFONO}). El que se prueba en el "

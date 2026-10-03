@@ -1297,3 +1297,25 @@ blanco, deformados y con resolución mala.
   primero se sospecha del informe: es el que no tiene por qué tener razón.
 - **De paso**: la IP del bridge para el APK del teléfono tenía el mismo problema
   (`AEGIS_BRIDGE_TAILNET_IP`), y cuando se declara tiene que llegar a la puerta.
+
+## A-061 — Una puerta que comprueba una cosa y responde por otra
+
+- **Qué pasó** (2026-10-03): se aprobó e instaló en el teléfono un APK de **dos
+  días antes** del código que se estaba tocando. La puerta dio el visto bueno:
+  la huella casaba («APK verificado, listo para instalar») y el resto de
+  comprobaciones estaban en verde. Todo lo que la puerta comprobaba era cierto, y
+  aun así lo instalado no era lo que se creías. **Yo mismo lo instalé creyendo
+  que era el nuevo**, leyendo un mensaje de éxito.
+- **Por qué la huella no lo cubre**: `_huella_binario` es `tamaño-mtime`, y sirve
+  para responder «¿es el mismo fichero que aprobaste?». Eso es distinto de «¿es
+  el código de ahora?». Son preguntas parecidas y no son la misma.
+- **Y un falso positivo por el camino**: comparar «el código es más nuevo que el
+  APK» con `mtime` dio positivo con un fichero de `lib/` **sin cambios** (`touch`
+  o lo que fuera). Bloquear una instalación por eso es peor que no comprobar:
+  entrena a mirar el aviso por encima. La comprobación que quedó es una **firma
+  de contenido** que escribe la propia compilación (`<apk>.sello`).
+- **Regla**: **quien compila es quien dice de qué código salió el binario.** Ni la
+  fecha del fichero, ni el nombre del APK, ni el `_huella_binario`: el sello.
+  Y cuando no hay sello, no se afirma nada —«no comprobado» no es «verificado».
+- **La frase que resume el resto de esta lección**: una puerta que dice «listo»
+  tiene que poder responder «¿listo para qué?». Si no puede, no está lista.

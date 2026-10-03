@@ -895,6 +895,13 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
         elif movido:
             anotado = "sin token (AEGIS_API_KEY vacia: los endpoints nuevos daran 401)"
     ok = proc.returncode == 0 and movido
+    # El sello de código va **antes** del resumen, y solo si la compilación
+    # terminó bien: es lo que después permite que la puerta diga «este APK no
+    # corresponde al código de ahora». Lo escribe quien compila porque es el
+    # único que sabe de qué fuente salió el binario (A-061).
+    if ok:
+        from .deploy import escribir_sello
+        escribir_sello(destino)
     diff = _short_diff()
     return (
         f"build_apk {'OK' if ok else 'FALLÓ'} (exit={proc.returncode}). "
