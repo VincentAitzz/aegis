@@ -5,8 +5,31 @@ problemas. Máquina: CachyOS (Arch), usuario `demo`, sin sudo automático.
 
 ## 1. Arranque tras un reinicio
 
-Ollama y el gateway de Hermes **no** son servicios de sistema; hay que levantarlos
-a mano en este orden (Tailscale sí usa `systemd` y arranca solo).
+Ollama y el gateway de Hermes **no** son servicios de sistema (Tailscale sí usa
+`systemd` y arranca solo). Aun así, no hay que levantarlos a mano: hay un script
+que los levanta, espera su salud real y los apaga comprobando que mueren.
+
+```bash
+bash infra/stack.sh arrancar     # Ollama :11434, gateway :8642, bridge :8000
+bash infra/stack.sh estado       # salud de los tres + qué puede escribir Aegis
+bash infra/stack.sh parar        # los tres, verificado
+```
+
+`estado` es la pregunta que importa antes de delegarle algo a Aegis:
+
+```
+== Aegis ==
+  ollama   :11434  ok   pid 64941   6 modelos
+  gateway  :8642   ok   pid 65227   hermes 0.21.4
+  bridge   :8000   ok   pid 65403   worker
+  autonomy: solo · escribiendo: aegis
+```
+
+La cuarta línea dice si hay un modo y un proyecto marcados; sin ella, un
+`project` nuevo en alta y sin verificador falla en la primera escritura sin
+explicación.
+
+Lo que hace el script por dentro, si algún día hay que hacerlo a mano:
 
 ```bash
 # 1) Ollama con contexto 64k (imprescindible para Hermes)
@@ -27,15 +50,59 @@ cd /RUTA/AL/REPO/bridge
 curl -s http://127.0.0.1:8000/health   # espera status ok + agents [worker]
 ```
 
-Logs:
+Dos avisos que el script se encarga de evitar y que al hacerlo a mano muerden:
+
+- **El gateway drena ~30 s.** Arrancar el nuevo antes de que muera el anterior
+  hace que el nuevo muere con `A gateway already owns this host`.
+- **Apagar no es `pkill`.** `pkill -f 'ollama serve'` se comprobó que **no mata
+  nada**, y además quedan hijos vivos (el `llama-server` de un modelo cargado
+  sobrevive al `ollama serve`). El script mata por PID, al grupo de proceso, y
+  comprueba que el puerto quedó libre antes de decir que paró.
+
+Logs (los del script; los manuales, en el bloque de arriba, van a otros sitios):
 
 | Servicio | Log                                   |
 |----------|---------------------------------------|
-| Ollama   | `~/.local/ollama.log`                 |
-| Hermes   | `~/.hermes/logs/gateway.log`          |
-| Bridge   | `~/.local/bridge.log`                 |
+| Ollama   | `~/.local/log/aegis/ollama.log`       |
+| Hermes   | `~/.local/log/aegis/gateway.log`      |
+| Bridge   | `~/.local/log/aegis/bridge.log`       |
 | Bridge (JSON) | `bridge/data/logs/bridge.jsonl`  |
 | Bridge (por run) | `bridge/data/logs/runs/<run_id>.jsonl` |
+
+### 1.1 Trazabilidad desde la terminal
+
+Todo lo que Aegis hace queda escrito, y se lee sin la app. Sirve igual para un
+run lanzado desde el móvil que para uno lanzado por curl: el run no sabe de
+dónde vino.
+
+```bash
+# En vivo: todo lo que va haciendo el bridge, a una línea por evento
+tail -f bridge/data/logs/bridge.jsonl
+
+# Solo los runs, legibles
+jq -r 'select(.event=="tool.completed") | "\(.payload.tool) ok=\(.payload.ok) paso=\(.payload.step)"' \
+    bridge/data/logs/runs/<run_id>.jsonl
+
+# La lista de runs, con qué herramienta usaron y cómo acabaron
+TOKEN=$(grep '^AEGIS_API_KEY=' bridge/.env | cut -d= -f2-)   # no se imprime
+curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/runs | jq '.runs[] | {run_id, proyecto, estado, pasos, herramientas, error}'
+
+# Un run entero, con su respuesta y por qué terminó
+curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/runs/<run_id> | jq '.run'
+curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/runs/<run_id> \
+    | jq '.eventos[] | select(.event=="task.done") | .payload'
+
+# Qué está haciendo ahora mismo (lo que ve la cabecera del móvil)
+curl -s localhost:8000/actividad | jq
+```
+
+El JSONL por run es la traza real: un evento por tool llamada, con su resultado y
+su `ok`. `ok: false` con el motivo es lo que hay que leer antes de creer que un
+run salió bien; y el `fin` dice por qué terminó (`max_steps`, `esperando_ok`,
+`sin_evidencia`…), no solo si terminó.
+
+Para ver un run mientras crece —en vez de a posteriori— se lanza con
+`POST /autopilot/start` y se lee `GET /autopilot/<run_id>` (ver §4.2).
 
 ## 2. Credenciales y secretos
 

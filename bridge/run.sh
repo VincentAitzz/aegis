@@ -18,4 +18,11 @@ if [[ ! -f .env ]]; then
   echo "⚠️  Creé .env desde .env.example — edita HERMES_API_KEY (ver ~/.hermes/.env)."
 fi
 
-PYTHONPATH=app .venv/bin/uvicorn app.main:app --host "${BRIDGE_BIND:-0.0.0.0}" --port "${BRIDGE_PORT:-8000}" --reload
+# El --reload es de desarrollo y solo si se pide. `infra/stack.sh arrancar` lo
+# apaga (BRIDGE_RELOAD=0): en operación normal el vigilante recarga el bridge a
+# mitad de un run, que es peor que tener que reiniciar a mano.
+RELOAD=()
+[[ "${BRIDGE_RELOAD:-1}" == "1" ]] && RELOAD=(--reload)
+
+PYTHONPATH=app .venv/bin/uvicorn app.main:app \
+    --host "${BRIDGE_BIND:-0.0.0.0}" --port "${BRIDGE_PORT:-8000}" "${RELOAD[@]}"

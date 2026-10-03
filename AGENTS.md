@@ -162,17 +162,33 @@ desactiva: el motivo de cada veto está en el mensaje.
 ## 5. Operación (verificar antes de asumir)
 
 ```bash
-# Ollama — no es servicio de sistema
-setsid nohup bash infra/ollama/start-ollama.sh > ~/.local/log/ollama.log 2>&1 &
-
-# Gateway de Hermes — no necesita grupo docker
-bash infra/hermes/start-gateway.sh
-#   El script se niega a arrancar si ya hay un gateway vivo. Comprueba con
-#   pgrep -f '[h]ermes gateway'
-
-# Bridge
-cd bridge && bash run.sh          # uvicorn en :8000 con --reload
+bash infra/stack.sh arrancar     # Ollama :11434 + gateway :8642 + bridge :8000
+bash infra/stack.sh estado       # salud de los tres + qué puede escribir Aegis
+bash infra/stack.sh parar        # los tres, y comprueba que mueren
 ```
+
+`estado` es lo que hay que mirar antes de delegar: la última línea dice el modo
+de autonomía y qué proyectos están marcados para escritura.
+
+Dos cosas que el script hace y que a mano fallaron de verdad:
+
+- **Apagar no es `pkill`.** Comprobado: `pkill -f 'ollama serve'` no mata nada, y
+  quedan hijos vivos (`llama-server` sobrevive al `ollama serve`). El script mata
+  por PID, al grupo de proceso, y verifica que el puerto quedó libre.
+- **El gateway drena ~30 s.** Arrancar el nuevo antes de que muera el anterior lo
+  mata con `A gateway already owns this host`.
+
+Lo que hay dentro, por si hay que hacerlo a mano:
+
+```bash
+setsid nohup bash infra/ollama/start-ollama.sh > ~/.local/log/aegis/ollama.log 2>&1 &
+bash infra/hermes/start-gateway.sh
+cd bridge && bash run.sh          # uvicorn en :8000; --reload con BRIDGE_RELOAD=1
+```
+
+Y la traza se lee desde la terminal, venga el run del móvil o de curl:
+`tail -f bridge/data/logs/bridge.jsonl`, o el JSONL del run en
+`bridge/data/logs/runs/<run_id>.jsonl`. Ver `docs/runbook.md` §1.1.
 
 # App: se prueba en el emulador, no en el teléfono
 bash infra/mobile/emulador.sh arrancar   # AVD aegis-a17: API 36, 1080x2340, 450 dpi

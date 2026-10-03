@@ -1157,3 +1157,26 @@ blanco, deformados y con resolución mala.
 - **Regla**: cuando una puerta bloquee algo y se demuestre que lo bloquea **por
   falso**, la respuesta no es abrirla. Es encontrar qué parte del gesto pedido no
   necesitaba la puerta. Aquí, todo menos instalar.
+
+## A-054 — Apagar Aegis con `pkill` no lo apaga
+
+- **Qué pasó** (2026-10-03): al terminar la sesión de trabajo, `pkill -f 'ollama
+  serve'` y `pkill -f 'hermes gateway run'` **no mataron nada**, y no se notó
+  hasta que un `curl` posterior a un puerto distinto confirmó que seguían vivos.
+  Lo que pasó: los dos comandos dejaron traces de que sí se pararon, y
+  además quedó un `llama-server` de un modelo cargado **más vivo que su propio
+  `ollama serve`**. Hubo que caer a `kill` por PID.
+- **Por qué falla `pkill` aquí**: los tres servicios se lanzan con `setsid`, así
+  que el patrón `-f` tiene que seguir casando con la línea de comandos *exacta*
+  del proceso, y `pkill` devuelve 0 aunque no mate a nadie que importe. Sin
+  verificación posterior, un apagado es una intención, no un hecho.
+- **Regla**: **un apagado que no comprueba que el proceso murió no está hecho.**
+  Matar por PID (y al grupo de proceso, que es lo que se lleva los hijos),
+  esperar, y después **comprobar el puerto**. Si el puerto sigue ocupado, es un
+  fallo con salida no cero, no un mensaje de «parado».
+- **Y la lección de fondo, que es la que más veces se repite**: el operarlo de
+  este repo estaba repartido en tres sitios, con tres rutas de log distintas y
+  ningún `stop`. Ahora hay `infra/stack.sh` con `arrancar | parar | estado`, y
+  **`estado` incluye si Aegis puede escribir** — que es lo que hay que mirar
+  antes de delegarle algo. Ante una tarea de operación, primero: `bash
+  infra/stack.sh estado`, y el script. No tres `pkill` improvisados.
