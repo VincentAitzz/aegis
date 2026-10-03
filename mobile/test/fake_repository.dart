@@ -49,6 +49,7 @@ class FakeAgentRepository implements AgentRepository {
   List<String> tokensGastados = [];
   List<String> fasesLanzadas = [];
   List<String> promptsLanzados = [];
+  List<String> ejecutadasFake = [];
 
   /// Lo que el repo falso dice que Aegis hace. Por defecto, quieto: los tests
   /// que no hablan de esto no tienen que saber de él.
@@ -204,6 +205,20 @@ class FakeAgentRepository implements AgentRepository {
       ),
     ];
     return 'token_${peticion.id}';
+  }
+
+  @override
+  Future<EjecucionAprobada> ejecutarAprobacion(String id) async {
+    ejecutadasFake.add(id);
+    // El falso **no ejecuta nada**: la tool es la que escribe, y aquí solo se
+    // anota. Un fake que "hace" lo que se le pide acaba mintiendo en el test.
+    final p = aprobacionesFake.where((a) => a.id == id).toList();
+    aprobacionesFake = [...aprobacionesFake.where((a) => a.id != id)];
+    return EjecucionAprobada(
+      tool: p.isEmpty ? 'project_create' : p.first.tool,
+      ok: p.isNotEmpty,
+      resultado: p.isEmpty ? '' : 'Alta de prueba',
+    );
   }
 
   @override

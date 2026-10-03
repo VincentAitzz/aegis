@@ -1238,3 +1238,40 @@ blanco, deformados y con resolución mala.
   disco** (`_DATOS`) y deja lo declarado en código, que es frontera de seguridad.
   Si un test falla solo porque existe un proyecto real con ese nombre, el test
   está mal: se arregla el test, no el proyecto.
+
+## A-058 — «Ejecutar lo aprobado» no es «relanzar el run»
+
+- **Qué pasó** (2026-10-03): cerrar el círculo de una aprobación desde el móvil
+  exigía relanzar el run con el token, y el token valida la llamada, no el run.
+  Medido con `project_create`: de cuatro intentos, **uno solo** casó. La causa no
+  fue la puerta, fue que el 7B emite la misma tool con argumentos distintos según
+  el intento (A-056). Cada desajuste devolvía una petición nueva: el flujo era
+  «aprobar, relanzar, fallar, aprobar otra vez».
+- **La distinción que faltaba**: aprobar no es aprobar *un run*, es aprobar **una
+  llamada con unos argumentos**. Así que existe `POST /aprobaciones/{id}/ejecutar`,
+  que corre esa llamada tal cual, sin modelo en medio, y gasta el token. Es más
+  fiel a la aprobación, no menos: lo que se ejecuta es lo que se leyó.
+- **Lo que NO es un atajo**: solo tools de nivel 3 (las únicas que generan
+  aprobación), de un solo uso, pasando por sus propios guardarraíles, exigiendo
+  `X-Aegis-Token`, y dejando rastro en
+  `data/logs/runs/aprobacion-{id}.jsonl` con el **mismo formato** que un run.
+- **Relanzar no se quita**: sigue siendo lo correcto cuando lo que quieres es que
+  el run **siga** (dar de alta el proyecto *y* seguir trabajando). Solo deja de
+  ser la única manera de cobrar un permiso.
+- **Y una trampa de la interfaz, medida al implementarlo**: ejecutar borra la
+  tarjeta de la cola, y con ella **la prueba de lo que pasó**. El resultado tiene
+  que vivir fuera de la tarjeta, o el botón se queda mudo justo cuando más
+  hace falta saber si salió.
+
+## A-059 — Una tool que deniega no lanza: «hecho» sobre «RECHAZADO»
+
+- **Qué pasó** (2026-10-03): `POST /aprobaciones/{id}/ejecutar` respondía `ok:
+  true` con un `result` que decía `ALTA RECHAZADA: 'acme' ya está registrado`. Las
+  tools de Aegis devuelven el motivo como **texto**, no como excepción.
+- **Por qué importa tanto**: es el falso éxito de A-016 una capa más abajo. La
+  guía dice que el veredicto no salga de lo que el modelo cuenta; aquí salía de lo
+  que la tool cuenta, que es la misma trampa.
+- **Regla**: cuando el `ok` de una capa se construye a partir de lo que devuelve
+  una función que **deniega sin lanzar**, mira el motivo antes de decir que se
+  hizo. La lista de motivos es corta y explícita a propósito: mejor un `ok`
+  demasiado optimista en un caso raro que un `ok` que adivina.

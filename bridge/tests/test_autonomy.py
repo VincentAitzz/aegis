@@ -19,6 +19,7 @@ de producción. Un test que usara el global de verdad podría dejar a este equip
 sin permiso para escribir y nadie lo vería hasta que Aegis se callara.
 """
 
+import json
 import sys
 import tempfile
 import unittest
@@ -487,6 +488,134 @@ class TestElTokenNoSeQuemaPorUnDesajuste(_Piso):
         d2 = autonomy.decide("project_create", {"alias": "acme"},
                              run_id="r1", paso=2, almacen_=self.a, token=token)
         self.assertTrue(d2.ok, d2.motivo)
+
+
+class TestEjecutarLoAprobado(_Piso):
+    """Ejecutar la llamada aprobada, sin modelo en medio.
+
+    ## Por qué no es solo "relanzar"
+    El token valida la llamada, no el run. Relanzar obliga a que el modelo vuelva
+    a emitir **la misma** tool con **los mismos** argumentos, y medido con
+    `project_create` eso pasaba de cuatro intentos en uno. Aquí se ejecuta lo que
+    está en la fila: lo que leíste antes de decir que sí.
+
+    ## Lo que se comprueba
+    Que ejecuta lo aprobado, que **gasta** el permiso, que no ejecuta una tool que
+    no es de nivel 3 (sería saltarse su propia puerta) y que deja rastro.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        from fastapi.testclient import TestClient
+        from app import alta as alta_mod
+        from app import fichas as fichas_mod
+        from app import main as main_mod
+        from app import projects as projects_mod
+        import tempfile
+        from pathlib import Path as _P
+
+        # Un workspace de mentira. Sin esto el test creaba un proyecto de verdad
+        # en ~/Workspace: ejecutar una aprobación **es** escribir, y eso en un
+        # test deja basura que luego parece un fallo del alta (A-057).
+        ws = _P(tempfile.mkdtemp())
+        (ws / "apps").mkdir()
+        (ws / "registro").mkdir()
+        for mod, attr, valor in ((alta_mod, "REGISTRO_DIR", ws / "registro"),
+                                 (fichas_mod, "FICHAS_DIR", ws / "fichas"),
+                                 (fichas_mod, "PRIVADAS_DIR", ws / "priv"),
+                                 (projects_mod, "REGISTRO_DIR", ws / "registro")):
+            patcher = mock.patch.object(mod, attr, valor)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        settings = mock.patch("app.config.get_settings", return_value=mock.Mock(
+            workspace_dir=str(ws), workspace_areas="apps,web,mobile"))
+        settings.start()
+        self.addCleanup(settings.stop)
+        codigo = {a: p for a, p in projects_mod.PROJECTS.items()
+                  if a not in projects_mod._DATOS}
+        projects_mod.PROJECTS.clear()
+        projects_mod._DATOS.clear()
+        self.addCleanup(lambda: (projects_mod.PROJECTS.clear(),
+                                 projects_mod.PROJECTS.update(codigo),
+                                 projects_mod._DATOS.clear()))
+        self.ws = ws
+
+        self._antes = autonomy.ALMACEN
+        autonomy.ALMACEN = self.a
+        self.addCleanup(lambda: setattr(autonomy, "ALMACEN", self._antes))
+        self.mod = main_mod
+        self.client = TestClient(main_mod.app)
+        self.cab = {"X-Aegis-Token": main_mod.settings.aegis_api_key}
+
+    def _pedir(self, tool="project_create", args=None):
+        pid = autonomy.decide(tool, args or {"alias": "acme", "area": "apps",
+                                             "kind": "producto"},
+                              run_id="r1", paso=1, almacen_=self.a).peticion
+        self.a.resolver(pid, "aprobar")
+        return pid
+
+    def test_ejecuta_la_llamada_aprobada(self):
+        pid = self._pedir()
+        r = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
+        self.assertEqual(r.status_code, 200, r.text)
+        cuerpo = r.json()
+        self.assertTrue(cuerpo["ok"], cuerpo.get("error"))
+        self.assertEqual(cuerpo["tool"], "project_create")
+        # Se ejecutó DE VERDAD: el alta se ve en el registro del workspace de
+        # mentira. Afirmar sobre el texto del resultado solo probaría la cadena.
+        entrada = json.loads((self.ws / "registro" / "acme.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(entrada["alias"], "acme")
+
+    def test_una_denegacion_de_la_tool_no_se_pinta_como_hecho(self):
+        """La tool dice que no y devuelve texto, sin lanzar. Si esto se pintara
+        como 'hecho', estaríamos repitiendo el falso éxito de A-016."""
+        pid = self._pedir(args={"alias": "otro", "area": "/etc", "kind": "producto"})
+        r = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+        self.assertIn("área", r.json()["error"])
+
+    def test_el_permiso_se_gasta_y_no_se_repite(self):
+        pid = self._pedir()
+        self.assertEqual(self.client.post(
+            f"/aprobaciones/{pid}/ejecutar", headers=self.cab).status_code, 200)
+        r2 = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
+        self.assertEqual(r2.status_code, 409)
+        self.assertIn("ya se usó", r2.json()["detail"])
+
+    def test_una_peticion_pendiente_no_se_ejecuta(self):
+        pid = autonomy.decide("project_create", {"alias": "acme"},
+                              run_id="r1", paso=1, almacen_=self.a).peticion
+        r = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
+        self.assertEqual(r.status_code, 409)
+
+    def test_una_tool_que_no_es_de_nivel_3_no_pasa(self):
+        """Ejecutar por aquí una tool normal sería saltarse la puerta que decidió
+        su nivel, y esa puerta existe."""
+        p = self.a.pedir(run_id="r1", paso=1, tool="ficha_read",
+                         args={"alias": "acme"}, motivo="m")
+        self.a.resolver(p, "aprobar")
+        r = self.client.post(f"/aprobaciones/{p}/ejecutar", headers=self.cab)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("nivel 3", r.json()["detail"])
+
+    def test_deja_rastro_en_el_jsonl(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path as _P
+        tmp = _P(tempfile.mkdtemp())
+        with mock.patch.object(self.mod, "_runs_dir", lambda: tmp):
+            pid = self._pedir()
+            self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
+            lineas = (_P(tmp) / f"aprobacion-{pid}.jsonl").read_text(
+                encoding="utf-8").strip().splitlines()
+        eventos = [_json.loads(x)["event"] for x in lineas]
+        self.assertIn("tool.completed", eventos)
+        self.assertIn("task.done", eventos)
+        # El run al que pertenecía la petición queda dicho: sin esto, el JSONL
+        # parece de otro sitio.
+        self.assertTrue(any(_json.loads(x)["at_run"] == "r1" for x in lineas))
 
 
 class TestElPermisoNoSePierde(_Piso):

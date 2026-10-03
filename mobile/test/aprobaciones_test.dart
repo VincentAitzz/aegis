@@ -104,6 +104,12 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
+    // El motivo sale en el cuerpo de la pantalla, debajo de la tarjeta: hay que
+    // bajarla para que exista siquiera, porque la `ListView` construye lo que
+    // se ve. Un error que solo se lee si haces scroll, en un móvil, es un error
+    // que no se lee.
+    await tester.drag(find.byType(ListView), const Offset(0, -260));
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.textContaining('Para relanzar hace falta el encargo'), findsOneWidget);
     expect(repo.tokensGastados, isEmpty,
         reason: 'sin prompt no hay run que relanzar, y el token no se gasta');
@@ -129,6 +135,34 @@ void main() {
     expect(repo.tokensGastados, hasLength(1));
     expect(repo.promptsLanzados, hasLength(1));
     expect(repo.promptsLanzados.single, 'da de alta el proyecto acme');
+  });
+
+
+  testWidgets('ejecutar lo aprobado no relanza nada', (tester) async {
+    final repo = await montar(tester, repoConPeticion());
+    await tester.tap(find.text('Sí, adelante'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    await tester.tap(find.text('Ejecutar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // Esto es lo que lo distingue de Relanzar: no hay run nuevo, no hay token y
+    // no hay modelo. Se ejecutó la llamada que estaba aprobada.
+    expect(repo.ejecutadasFake, ['ok-1']);
+    expect(repo.tokensGastados, isEmpty);
+    expect(repo.promptsLanzados, isEmpty);
+    // Y el resultado se ve, en vez de un "hecho" sin texto que lo confirme.
+    expect(find.textContaining('Alta de prueba'), findsOneWidget);
+  });
+
+  testWidgets('lo aprobado explica cuál de los dos botones es cuál', (tester) async {
+    await montar(tester, repoConPeticion());
+    await tester.tap(find.text('Sí, adelante'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.textContaining('Ejecutar hace justo lo que aprobaste'), findsOneWidget);
   });
 
   testWidgets('la fase elegida viaja con el encargo', (tester) async {

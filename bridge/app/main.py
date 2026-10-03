@@ -1381,6 +1381,144 @@ async def aprobacion_motivo(pet_id: str, body: FichaIn,
     return {"id": p["id"], "estado": p["estado"], "motivo": p["razon_denegacion"]}
 
 
+#: Prefijos con los que una tool **dice que no** sin lanzar. Las tools de Aegis
+#: devuelven el motivo como texto, y ese texto es el que hay que mirar: un
+#: "hecho" en la interfaz sobre un "ALTA RECHAZADA" detrás es la misma mentira
+#: que se pagó en A-016 (el veredicto que salía de `final_text`).
+#:
+#: Es una lista corta y a propósito: preferimos un `ok` algo optimista en un caso
+#: raro a un `ok` que adivine. El `result` sigue siendo la autoridad.
+_MOTIVOS_DE_RECHAZO = (
+    "ALTA RECHAZADA",
+    "ESCRITURA DENEGADA",
+    "escritura RECHAZADA",
+)
+
+
+@app.post("/aprobaciones/{pet_id}/ejecutar")
+async def aprobacion_ejecutar(pet_id: str,
+                              _auth: None = Depends(exigir_token)) -> dict:
+    """Ejecuta **la llamada que aprobaste**, con los argumentos que aprobaste.
+
+    ## Por qué esto existe y no es un atajo
+    El token valida la llamada, no el run (A-033). Para gastarlo había que
+    relanzar el run entero y confiar en que el modelo emitiera **la misma** tool
+    con **los mismos** argumentos. Medido con `project_create`: de cuatro
+    intentos, solo uno casó. Relanzar no es "ejecutar lo que aprobaste", es
+    pedirle al modelo que vuelva a pedir lo mismo, y si lo pide distinto hay que
+    volver a aprobar.
+
+    Aquí no hay modelo en medio: se ejecuta lo que está en la fila, que es
+    literalmente lo que leíste antes de decir que sí. Es más fiel a la
+    aprobación, no menos.
+
+    ## Los límites, que son los que importan
+    - Solo tools de **nivel 3**: son las únicas que generan aprobaciones. Una
+      tool de otro nivel por aquí sería saltarse la puerta que decidió el nivel.
+    - **De un solo uso**: se gasta el token al ejecutarlo. Si la tool falla, el
+      permiso se gastó igual —reintentar es volver a la cola, a propósito.
+    - La tool vuelve a pasar por **sus** guardarraíles (whitelist, secretos,
+      rollback de sintaxis, ficha completa): ejecutar no salta ninguno.
+    - Exige `X-Aegis-Token`, como todo lo que concede poder.
+
+    Y queda escrito en `data/logs/runs/aprobacion-{id}.jsonl`, con el mismo
+    formato que los runs, porque una escritura sin rastro no es una ejecución: es
+    un accidente con buena pinta.
+    """
+    from . import autonomy as auto_mod
+    from .autopilot import ToolNotAllowed, _execute
+
+    fila = auto_mod.almacen().buscar(pet_id)
+    if not fila:
+        raise HTTPException(status_code=404, detail=f"no hay ninguna petición '{pet_id}'")
+    if fila["estado"] == "gastada":
+        raise HTTPException(status_code=409, detail="ese permiso ya se usó")
+    if fila["estado"] != "aprobada":
+        raise HTTPException(
+            status_code=409,
+            detail=f"esa petición está {fila['estado']}: no hay nada aprobado que ejecutar")
+    tool = fila["tool"]
+    if auto_mod.nivel_de(tool) != "requiere_ok":
+        # Por aquí solo pasan tools de nivel 3. Cualquier otra cosa sería
+        # ejecutar saltándose la puerta que decidió su nivel.
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{tool}' no es de nivel 3, así que no necesita aprobación: "
+                   "pasa por su nivel normal, no por la cola")
+    try:
+        argumentos = json.loads(fila["argumentos"] or "{}")
+    except ValueError:
+        raise HTTPException(status_code=500,
+                            detail="los argumentos guardados no son JSON legible") from None
+    if not isinstance(argumentos, dict):
+        raise HTTPException(status_code=500,
+                            detail="los argumentos guardados no son un objeto")
+
+    token = fila["token"]
+    gastado = auto_mod.almacen().gastar(token)
+    if not gastado:
+        raise HTTPException(status_code=409,
+                            detail="ese permiso se gastó en otro sitio a la vez")
+
+    ok, resultado, error = True, "", ""
+    try:
+        resultado = await asyncio.to_thread(_execute, tool, argumentos)
+    except ToolNotAllowed as exc:
+        ok, error = False, str(exc)
+    except Exception as exc:  # noqa: BLE001 — el motivo vuelve al móvil, no se pierde
+        ok, error = False, f"{type(exc).__name__}: {exc}"[:500]
+
+    # `ok` es si la tool **corrió**, y las tools de Aegis no lanzan cuando
+    # deniegan: devuelven el motivo como texto ("ALTA RECHAZADA: …"). Pintar eso
+    # de "hecho" es el falso éxito que este repo ya pagó una vez (A-016, el
+    # veredicto que salía de `final_text`). Así que se mira el motivo, con una
+    # lista corta y explícita: heurística, y por eso el `result` sigue siendo la
+    # autoridad — esto solo evita que la interfaz diga "hecho" cuando no fue.
+    marca = _MOTIVOS_DE_RECHAZO
+    if ok and any(resultado.startswith(m) for m in marca):
+        ok = False
+        error = resultado[:500]
+    _escribir_jsonl_de_aprobacion(pet_id, fila, argumentos, resultado, ok, error)
+    return {"id": pet_id, "tool": tool, "ok": ok,
+            "result": resultado, "error": error,
+            "proyecto": fila["proyecto"]}
+
+
+def _escribir_jsonl_de_aprobacion(pet_id: str, fila: dict, argumentos: dict,
+                                  resultado: str, ok: bool, error: str) -> None:
+    """La ejecución de una aprobación, en el mismo formato que un run.
+
+    Mismo formato a propósito: dos formatos para lo mismo obligan a dos lectores,
+    y uno de los dos miente un día.
+    """
+    import datetime as _dt
+    d = _runs_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        ahora = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds")
+        with (d / f"aprobacion-{pet_id}.jsonl").open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "at": ahora, "run_id": f"aprobacion-{pet_id}",
+                "event": "task.created", "agent": "aprobacion", "at_run": fila["run_id"],
+                "payload": {"project": fila["proyecto"], "tool": fila["tool"],
+                            "arguments": argumentos, "origen": "aprobacion.ejecutar"},
+            }, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({
+                "at": ahora, "run_id": f"aprobacion-{pet_id}",
+                "event": "tool.completed", "agent": "aprobacion", "at_run": fila["run_id"],
+                "payload": {"tool": fila["tool"], "ok": ok, "step": 1},
+            }, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({
+                "at": ahora, "run_id": f"aprobacion-{pet_id}",
+                "event": "task.done" if ok else "task.failed",
+                "agent": "aprobacion", "at_run": fila["run_id"],
+                "payload": {"steps": 1, "fin": "aprobacion.ejecutar",
+                            "answer": resultado[:2000], "error": error},
+            }, ensure_ascii=False) + "\n")
+    except OSError as exc:  # noqa: BLE001 — no tumbar la ejecución por el log
+        log.warning("no pude escribir la traza de %s: %s", pet_id, exc)
+
+
 def _escribir_jsonl_de_autopilot(run_id: str, project: str,
                                   result: dict[str, Any]) -> None:
     """Deja la traza de un run de autopilot en `data/logs/runs/{run_id}.jsonl`.

@@ -120,9 +120,17 @@ denegar es un "no" que no se puede aplicar a la siguiente situación parecida.
 El token valida **la llamada, no el run**, y es de un solo uso (A-033).
 
 Un permiso aprobado y no gastado **no se pierde**: `GET /aprobaciones` devuelve
-también `aprobadas`, con su token, y el móvil tiene un botón **Relanzar** para
-cerrar el círculo sin salir de la app. Si el token se gastara y el run volviera
-a pedir la misma tool con otros argumentos, vuelve a preguntar: es lo correcto.
+también `aprobadas`, con su token, y el móvil tiene un botón **Ejecutar** para
+cobrarlo ahí mismo y otro de **Relanzar** para que el run siga. Caducan a 24 h,
+porque un permiso que nadie recuerda aprobar es ruido.
+
+- **Ejecutar** (`POST /aprobaciones/{id}/ejecutar`) corre la llamada con los
+  argumentos **que aprobaste**, sin modelo en medio. Es lo fiel: el token valida
+  la llamada, y medido el modelo no la repite igual ni una de cada cuatro veces.
+- **Relanzar** repite el run con el token, y es lo correcto cuando lo que quieres
+  es que Aegis **continúe** working. Si pide la misma tool con otros argumentos,
+  vuelve a preguntar: es lo correcto, y ahora sin quemar el permiso.
+- Si el token se gastara y el run volviera a pedir lo mismo, vuelve a preguntar.
 
 ### Fases: pensar antes de construir
 

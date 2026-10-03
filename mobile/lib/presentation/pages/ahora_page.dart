@@ -647,14 +647,52 @@ class _Saludo extends ConsumerWidget {
 /// «Aprobar sin saber si la app se abre encima es justo lo que hay que
 /// evitar». Por eso el texto de Aegis se muestra completo y el botón de denegar
 /// **pide un motivo**: ese motivo es lo que Aegis leerá la próxima vez.
-class _Aprobaciones extends ConsumerWidget {
+class _Aprobaciones extends ConsumerStatefulWidget {
   const _Aprobaciones({required this.onRelanzar});
 
   /// Relanza un permiso ya concedido. Lo pone la pantalla que tiene el
   /// encargo escrito, porque el relanzado es repetir ese encargo con un token.
   final Future<void> Function(Aprobacion) onRelanzar;
 
-  Future<void> _denegar(BuildContext context, WidgetRef ref, Aprobacion a) async {
+  @override
+  ConsumerState<_Aprobaciones> createState() => _AprobacionesState();
+}
+
+class _AprobacionesState extends ConsumerState<_Aprobaciones> {
+  /// Lo que salió de ejecutar lo aprobado, para que se vea y no se suponga.
+  /// Sin esto, el botón dice "hecho" y no hay ni un texto que lo confirme: es
+  /// un informe, y los informes llegan tarde y a veces mintiendo.
+  String? _ejecutado;
+  bool _ejecutando = false;
+  bool _ok = false;
+
+  Future<void> _ejecutar(Aprobacion a) async {
+    setState(() {
+      _ejecutando = true;
+      _ejecutado = null;
+    });
+    try {
+      final r = await ref
+          .read(agentRepositoryProvider)
+          .ejecutarAprobacion(a.id);
+      if (!mounted) return;
+      setState(() {
+        _ok = r.ok;
+        _ejecutado = r.ok ? r.resultado : r.error;
+      });
+      refrescarAsistente(ref);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _ok = false;
+        _ejecutado = 'No pude ejecutarlo: $e';
+      });
+    } finally {
+      if (mounted) setState(() => _ejecutando = false);
+    }
+  }
+
+  Future<void> _denegar(Aprobacion a) async {
     final motivo = await showDialog<String>(
       context: context,
       builder: (context) => _DialogoMotivo(motivo: a.motivo),
@@ -668,14 +706,69 @@ class _Aprobaciones extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final estado = ref.watch(aprobacionesProvider);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // El resultado va **fuera** de la tarjeta, y a propósito. Al ejecutar,
+        // el permiso se gasta y la tarjeta desaparece de la cola: si el texto
+        // viviera dentro, se iría con ella. Un botón que ejecuta y borra la
+        // prueba de lo que ejecutó es un botón del que no puedes presumir.
+        if (_ejecutado != null) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: (_ok ? AegisPalette.ok : AegisPalette.danger)
+                  .withValues(alpha: .10),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color: (_ok ? AegisPalette.ok : AegisPalette.danger)
+                      .withValues(alpha: .6),
+                  width: 1.5),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _ok ? 'EJECUTADO' : 'NO SE HIZO',
+                  style: TextStyle(
+                    fontFamily: AegisPalette.mono,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.4,
+                    color: _ok ? AegisPalette.ok : AegisPalette.danger,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  _ejecutado!.replaceAll('**', ''),
+                  style: const TextStyle(
+                    fontFamily: AegisPalette.mono,
+                    fontSize: 10.5,
+                    height: 1.5,
+                    color: AegisPalette.fg,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        ..._tarjetas(estado),
+      ],
+    );
+  }
+
+  /// Las tarjetas de la cola: las que te preguntan y las que puedes ejecutar.
+  ///
+  /// Sin fase, no hay nada que decidir y el resultado de lo anterior se queda
+  /// solo: es lo último que pasó, no una cola que hay que atender.
+  List<Widget> _tarjetas(AsyncValue<List<Aprobacion>> estado) {
     return estado.maybeWhen(
-      orElse: () => const SizedBox.shrink(),
-      data: (lista) {
-        if (lista.isEmpty) return const SizedBox.shrink();
-        return Column(
-          children: [
+      orElse: () => const [],
+      data: (lista) => [
             for (final a in lista)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
@@ -748,27 +841,63 @@ class _Aprobaciones extends ConsumerWidget {
                         ),
                       ),
                       const SizedBox(height: 14),
-                      if (a.relanzable)
-                        // Un permiso aprobado y no relanzado es un permiso
-                        // cobrado que no pasó nada. El botón está aquí para que
-                        // cerrar el círculo no dependa de la terminal.
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed: () => onRelanzar(a),
-                            icon: const Icon(Icons.refresh_rounded, size: 16),
-                            label: const Text('Relanzar'),
-                            style: FilledButton.styleFrom(
-                                backgroundColor: AegisPalette.ok,
-                                foregroundColor: AegisPalette.bg0),
+                      if (a.relanzable) ...[
+                        // Lo principal es **ejecutar lo que aprobaste**, no
+                        // relanzar: relanzar depende de que el modelo vuelva a
+                        // emitir la misma llamada con los mismos argumentos, y
+                        // medido casi nunca lo hace. El botón de relanzar queda
+                        // al lado para cuando lo que quieres es que el run siga.
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: _ejecutando ? null : () => _ejecutar(a),
+                                icon: _ejecutando
+                                    ? const SizedBox(
+                                        width: 13,
+                                        height: 13,
+                                        child:
+                                            CircularProgressIndicator(strokeWidth: 2),
+                                      )
+                                    : const Icon(Icons.play_arrow_rounded, size: 17),
+                                label: const Text('Ejecutar'),
+                                style: FilledButton.styleFrom(
+                                    backgroundColor: AegisPalette.ok,
+                                    foregroundColor: AegisPalette.bg0),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _ejecutando ? null : () => widget.onRelanzar(a),
+                                icon: const Icon(Icons.refresh_rounded, size: 15),
+                                label: const Text('Relanzar'),
+                                style: OutlinedButton.styleFrom(
+                                    foregroundColor: AegisPalette.ok,
+                                    side: BorderSide(
+                                        color: AegisPalette.ok.withValues(alpha: .6))),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Ejecutar hace justo lo que aprobaste. Relanzar vuelve a '
+                          'lanzar el run, y depende de que Aegis repita la misma '
+                          'llamada; si la repite distinta, te vuelve a preguntar.',
+                          style: const TextStyle(
+                            fontFamily: AegisPalette.mono,
+                            fontSize: 9.5,
+                            height: 1.45,
+                            color: AegisPalette.fgFaint,
                           ),
-                        )
-                      else
+                        ),
+                      ] else
                         Row(
                         children: [
                           Expanded(
                             child: OutlinedButton(
-                              onPressed: () => _denegar(context, ref, a),
+                              onPressed: () => _denegar(a),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: AegisPalette.danger,
                                 side: BorderSide(
@@ -799,8 +928,6 @@ class _Aprobaciones extends ConsumerWidget {
                 ),
               ),
           ],
-        );
-      },
     );
   }
 }

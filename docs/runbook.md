@@ -266,7 +266,36 @@ Garantías de `aegis-ops` (sin importar quién la llame):
   devuelve el contenido actual al modelo para que reintente.
 - **Trazabilidad**: cada paso queda en `trace[]` con argumentos y resultado.
 
-### 4.3 Fases de trabajo
+### 4.3 Aprobaciones: qué te está preguntando
+
+```bash
+TOKEN=$(grep '^AEGIS_API_KEY=' bridge/.env | cut -d= -f2-)
+curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/aprobaciones | jq
+# {"pendientes": [...], "aprobadas": [...]}
+
+# aprobar (devuelve el token de un solo uso)
+curl -s -X POST localhost:8000/aprobaciones/<id> \
+  -H 'Content-Type: application/json' -H "X-Aegis-Token: $TOKEN" \
+  -d '{"decision":"aprobar"}' | jq -r .token
+
+# ejecutar lo aprobado, con sus argumentos, sin modelo en medio
+curl -s -X POST localhost:8000/aprobaciones/<id>/ejecutar \
+  -H "X-Aegis-Token: $TOKEN" | jq '{ok, tool, error}'
+
+# denegar con motivo: el motivo se le inyecta al siguiente run
+curl -s -X POST localhost:8000/aprobaciones/<id>/motivo \
+  -H 'Content-Type: application/json' -H "X-Aegis-Token: $TOKEN" \
+  -d '{"contenido":"ahora no, esta base todavía no"}' | jq -r .motivo
+```
+
+**Ejecutar o relanzar**: aprobar no es aprobar un run, es aprobar **una llamada con
+unos argumentos**. Ejecutar corre esa llamada tal cual (de un solo uso, solo
+tools de nivel 3, con sus guardarraíles y con rastro en
+`data/logs/runs/aprobacion-<id>.jsonl`); relanzar repite el run con el token y
+sirve para que Aegis **continúe** después de esa llamada. En el móvil son los dos
+botones de la tarjeta.
+
+### 4.4 Fases de trabajo
 
 Una fase son las instrucciones que solo valen mientras se piensa. Cada una es un
 fichero en `bridge/fases/`, y solo se inyecta en el prompt de los runs que la

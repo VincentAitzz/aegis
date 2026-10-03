@@ -4,6 +4,32 @@ library;
 import '../../data/models/agent_models.dart';
 import '../../data/models/asistente_models.dart';
 
+/// Lo que pasó al ejecutar una aprobación.
+///
+/// `ok` es si la tool corrió **y no denegó**: las tools de Aegis devuelven el
+/// motivo como texto en vez de lanzar, así que un "hecho" sobre un "RECHAZADO"
+/// detrás sería el falso éxito que el bridge ya pagó una vez.
+class EjecucionAprobada {
+  const EjecucionAprobada({
+    required this.tool,
+    required this.ok,
+    this.resultado = '',
+    this.error = '',
+  });
+
+  final String tool;
+  final bool ok;
+  final String resultado;
+  final String error;
+
+  factory EjecucionAprobada.fromJson(Map<String, dynamic> j) => EjecucionAprobada(
+        tool: (j['tool'] ?? '') as String,
+        ok: j['ok'] == true,
+        resultado: (j['result'] ?? '') as String,
+        error: (j['error'] ?? '') as String,
+      );
+}
+
 abstract interface class AgentRepository {
   Future<BridgeHealth> health();
 
@@ -124,6 +150,13 @@ abstract interface class AgentRepository {
   /// Antes esto devolvía `void` y el token se quedaba en la respuesta sin que
   /// nadie lo leyera: aprobar era un callejón sin salida.
   Future<String?> resolverAprobacion(String id, {required bool aprobar});
+
+  /// Ejecuta la llamada que ya aprobaste, con sus argumentos, sin modelo.
+  ///
+  /// Relanzar el run obligaba a que el modelo emitiera la misma tool con los
+  /// mismos argumentos, y medido no lo hacía casi nunca. Esto ejecuta lo que
+  /// está en la fila: lo que leíste antes de decir que sí. De un solo uso.
+  Future<EjecucionAprobada> ejecutarAprobacion(String id);
 
   /// **Por qué** denegas. Es lo que hace que la confianza crezca: no es que
   /// Aegis aprenda a tener cuidado, es que tú se lo dijiste una vez.

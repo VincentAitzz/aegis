@@ -313,6 +313,14 @@ class AgentRepositoryImpl implements AgentRepository {
   }
 
   @override
+  Future<EjecucionAprobada> ejecutarAprobacion(String id) async {
+    final r = await _dio.post<Map<String, dynamic>>(
+      '${config.httpBase}/aprobaciones/$id/ejecutar',
+    );
+    return EjecucionAprobada.fromJson(r.data ?? const {});
+  }
+
+  @override
   Future<void> denegarConMotivo(String id, String motivo) async {
     await _dio.post<Map<String, dynamic>>(
       '${config.httpBase}/aprobaciones/$id/motivo',
