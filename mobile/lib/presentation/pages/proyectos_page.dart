@@ -83,7 +83,7 @@ class ProyectosPage extends ConsumerWidget {
                 _FilaProyecto(
                   proyecto: p,
                   marcado: autonomia.maybeWhen(
-                    data: (a) => a.escritura.containsKey(p.alias),
+                    data: (a) => a.escribible(p.alias),
                     orElse: () => false,
                   ),
                 ),

@@ -53,9 +53,45 @@ class _Piso(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        # El APK real se queda viejo en cuanto se toca `mobile/`, y `pedir_deploy`
+        # **se niega a crear la petición** si lo está. Sin falsearlo aquí, media
+        # suite se ponía roja cada vez que se editaba la app —que es lo más
+        # corriente del mundo— y el fallo hablaba del sello, no de lo que el test
+        # estaba mirando.
+        #
+        # El sello tiene su propia clase (`TestElApkCorrespondeAlCodigo`) y ahí se
+        # llama a `apk_desactualizado` de verdad, sobre un proyecto de mentira. El
+        # resto prueba puertas y avisos, y ninguno de los dos depende del binario.
+        self._parchea_sello()
+
         self._ruta_real = ESTADO.RUTA
         ESTADO.RUTA = Path(tempfile.mkdtemp(prefix="aegis-deploy-")) / "deploy.json"
         ESTADO.limpiar()
+
+    def _parchea_sello(self, real: bool = False) -> None:
+        """Pone (o quita) el sello falso, y se puede volver al real.
+
+        ## Por qué existe el interruptor
+        Casi ningún test de la puerta depende del árbol real, y depender de él
+        hace que la suite se ponga roja cada vez que se toca `mobile/`, que es lo
+        más corriente del mundo. Pero **un** test sí lo necesita:
+        `TestElApkCorrespondeAlCodigo`, el único sitio donde `apk_desactualizado`
+        se comprueba de verdad. Con un `mock.patch` anidado no podría deshacerlo,
+        así que los parches se guardan y se pueden parar a mano.
+        """
+        if real:
+            for parche in getattr(self, "_parches_sello", []):
+                parche.stop()
+            self._parches_sello = []
+            return
+        self._parches_sello = [
+            mock.patch.object(deploy, "apk_desactualizado", return_value=""),
+            mock.patch.object(deploy, "apk_verificado", return_value=True),
+            mock.patch.object(deploy, "apk_sin_verificar", return_value=""),
+        ]
+        for parche in self._parches_sello:
+            parche.start()
+            self.addCleanup(parche.stop)
 
     def tearDown(self) -> None:
         ESTADO.limpiar()
@@ -364,9 +400,9 @@ class TestPrimeraInstalacion(_Piso):
              m.patch.object(disp, "telefono", return_value=TELEFONO), \
              m.patch.object(disp, "emulador", return_value=EMULADOR), \
              m.patch.object(disp, "resolver", return_value=TELEFONO), \
-             m.patch.object(deploy, "verificar_analisis", return_value=(True, "ok")), \
-             m.patch.object(deploy, "verificar_tests", return_value=(True, "11/11")), \
-             m.patch.object(deploy, "humo_una_vez", return_value=(True, "humo ok")), \
+             m.patch.object(deploy, "apk_desactualizado", return_value=""), \
+             m.patch.object(deploy, "apk_verificado", return_value=True), \
+             m.patch.object(deploy, "apk_sin_verificar", return_value=""), \
              m.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
              m.patch.object(disp, "telefono_alcanza", return_value=(True, "ok")), \
              m.patch.object(disp, "apk_para") as apk_para:
@@ -419,21 +455,30 @@ class TestInstaladoDistinguePaquete(_Piso):
 
 
 class TestVerificacionPrevia(_Piso):
-    """La puerta comprueba; no acepta que el agente diga que comprobó.
+    """La puerta **partida**: lo caro se comprueba al compilar, lo barato al instalar.
 
-    analyze, tests y humo van encadenados con `mock.patch.object`, así que cada
-    test solo tiene que declarar lo que cambia.
+    ## Por qué está partida
+    Medido (2026-10-03): la puerta completa corría **después** de que aprobaras.
+    `flutter analyze` + `flutter test` + el humo son minutos, así que el aviso
+    decía «se instala» y luego había varios minutos de silencio con el dedo de
+    alguien puesto encima de un botón. Y si la puerta se cerraba, ese «sí» había
+    servido para pedirte que aprobaras una instalación que no iba a ocurrir.
+
+    Ahora compilar verifica y deja el resultado sellado en `<apk>.verificado`, e
+    instalar solo comprueba que ese sello siga cuadrando con el binario de ahora.
+    Lo que queda entre tu «sí» y el APK instalado es un `adb install`.
+
+    ## Qué se sigue comprobando al instalar, y por qué
+    Que el teléfono esté, y que **alcance** al bridge. Eso no se puede verificar
+    al compilar: depende del cable, de Tailscale y de si la app está encendida,
+    y cambia sin avisar.
     """
 
     VERDE = {"analyze": (True, "ok"), "tests": (True, "11/11"),
              "humo": (True, "app viva y el bridge recibió la llamada")}
 
     def _puerta(self, **cambios):
-        """Contexto con la puerta en verde salvo lo que el test rompa.
-
-        Devuelve los mocks ya arrancados, no los `patch`, para poder preguntar
-        qué llegó a llamarse.
-        """
+        """Contexto con la puerta en verde salvo lo que el test rompa."""
         ver = dict(self.VERDE)
         ver.update(cambios)
         mocks = (mock.Mock(return_value=ver["analyze"]),
@@ -443,74 +488,73 @@ class TestVerificacionPrevia(_Piso):
         for nombre, m in zip(("verificar_analisis", "verificar_tests",
                               "humo_una_vez"), mocks):
             stack.enter_context(mock.patch.object(deploy, nombre, m))
-        # La puerta también pregunta al teléfono si alcanza al bridge. Por defecto
-        # responde que sí, para que cada test no tenga que mockear la red.
         stack.enter_context(mock.patch.object(disp, "api_host_para",
                                               return_value="100.101.102.100"))
         stack.enter_context(mock.patch.object(disp, "telefono_alcanza",
                                               return_value=(True, "ok")))
+        # Un APK verificado, que es lo normal después de `build_apk`.
+        stack.enter_context(mock.patch.object(deploy, "apk_verificado",
+                                              return_value=True))
+        stack.enter_context(mock.patch.object(deploy, "apk_sin_verificar",
+                                              return_value=""))
+        # El APK real **está** desactualizado mientras se toca `mobile/`, y la
+        # puerta lo detecta. Aquí se falsea: esta clase prueba la lógica de la
+        # puerta, y si el rojo fuera el sello real estos tests dirían «no pasa»
+        # por un motivo que no es el que están mirando.
+        stack.enter_context(mock.patch.object(deploy, "apk_desactualizado",
+                                              return_value=""))
         stack.mocks = mocks
         return stack
 
-    def test_sin_verificacion_no_pasa(self) -> None:
-        with self._puerta(analyze=(False, "rojo")) as puerta, \
+    # -- la puerta que queda al instalar -------------------------------------
+
+    def test_instalar_no_vuelve_a_pasar_analyze(self) -> None:
+        """El motivo de que la puerta exista partida:|minutos con el dedo puesto.
+
+        Antes, aprobar y esperar era esto: tres comprobaciones de minutos. Ahora
+        instalar no llama a ninguna, y el que lo afirma es el mock —si mañana
+        alguien las vuelve a meter aquí, el test se pone rojo.
+        """
+        with self._puerta() as puerta, \
              mock.patch.object(disp, "telefono", return_value=TELEFONO):
-            h, tests, humo = puerta.mocks
-            with self.assertRaises(PuertaCerrada) as cm:
-                deploy.pasar_puerta_deploy()
-        self.assertIn("analyze en rojo", str(cm.exception))
+            analyze, tests, humo = puerta.mocks
+            deploy.pasar_puerta_deploy()
+        analyze.assert_not_called()
         tests.assert_not_called()
         humo.assert_not_called()
 
-    def test_tests_rojos_tambien_detienen(self) -> None:
-        with self._puerta(tests=(False, "1 fallo")) as puerta, \
-             mock.patch.object(disp, "telefono", return_value=TELEFONO):
-            _, _, humo = puerta.mocks
+    def test_sin_verificar_no_pasa(self) -> None:
+        """Un APK sin pasar la puerta no se propone ni se instala."""
+        with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO), \
+             mock.patch.object(deploy, "apk_verificado", return_value=False), \
+             mock.patch.object(deploy, "apk_sin_verificar",
+                               return_value="este APK no ha pasado la puerta todavía"):
             with self.assertRaises(PuertaCerrada) as cm:
                 deploy.pasar_puerta_deploy()
-        self.assertIn("los tests fallan", str(cm.exception))
-        humo.assert_not_called()
+        self.assertIn("no ha pasado la puerta", str(cm.exception))
 
-    def test_el_humo_rojo_also_detiene_el_telefono(self) -> None:
-        """Verde todo y aun así no se instala: el humo manda."""
-        with self._puerta(humo=(False, "la app no habló con el bridge")) as puerta, \
-             mock.patch.object(disp, "telefono", return_value=TELEFONO):
+    def test_un_apk_recompilado_despues_no_pasa(self) -> None:
+        """El `.verificado` ata a un binario, no a un nombre de fichero.
+
+        Compilar dos veces deja el mismo nombre con otro contenido. Si el sello se
+        guardara por ruta, una aprobación vieja autorizaría un binario que nadie
+        vio; por eso se guarda la firma del **binario** (A-061 aplicado a esto).
+        """
+        with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO), \
+             mock.patch.object(deploy, "apk_verificado", return_value=False), \
+             mock.patch.object(deploy, "apk_sin_verificar",
+                               return_value="el APK se recompiló después de verificarse"):
             with self.assertRaises(PuertaCerrada) as cm:
                 deploy.pasar_puerta_deploy()
-        self.assertIn("humo en el emulador no pasa", str(cm.exception))
-        self.assertIn("no habló", str(cm.exception))
-
-    def test_el_orden_es_analyze_tests_humo(self) -> None:
-        """El orden importa: el humo es lo caro, para lo último."""
-        orden = []
-
-        def an():
-            orden.append("analyze")
-            return True, "ok"
-
-        def ts():
-            orden.append("tests")
-            return True, "11/11"
-
-        def hu():
-            orden.append("humo")
-            return True, "ok"
-
-        with mock.patch.object(disp, "telefono", return_value=TELEFONO), \
-             mock.patch.object(deploy, "verificar_analisis", side_effect=an), \
-             mock.patch.object(deploy, "verificar_tests", side_effect=ts), \
-             mock.patch.object(deploy, "humo_una_vez", side_effect=hu), \
-             mock.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
-             mock.patch.object(disp, "telefono_alcanza", return_value=(True, "ok")):
-            deploy.pasar_puerta_deploy()
-        self.assertEqual(orden, ["analyze", "tests", "humo"])
+        self.assertIn("recompiló", str(cm.exception))
 
     def test_un_telefono_que_no_alcanza_el_bridge_no_instala(self) -> None:
         """La puerta anterior daba por bueno un APK con una dirección sin probar.
 
         El APK del teléfono lleva la dirección del bridge dentro. Si el móvil no
         llega, la app instala y abre sin ver nada, que es el peor resultado
-        posible: parece que funcionó.
+        posible: parece que funcionó. Y esto **no** se puede comprobar al
+        compilar: depende del cable y de Tailscale.
         """
         with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO), \
              mock.patch.object(disp, "api_host_para", return_value="100.101.102.100"), \
@@ -526,15 +570,75 @@ class TestVerificacionPrevia(_Piso):
              mock.patch.object(disp, "telefono_alcanza", return_value=(True, "ok")):
             self.assertTrue(deploy.pasar_puerta_deploy())
 
-    def test_todo_verde_pasa(self) -> None:
-        with self._puerta(), mock.patch.object(disp, "telefono", return_value=TELEFONO):
-            self.assertTrue(deploy.pasar_puerta_deploy())
-
     def test_sin_telefono_no_da_error_sino_por_que(self) -> None:
         with mock.patch.object(disp, "telefono", return_value=None):
             with self.assertRaises(PuertaCerrada) as cm:
                 deploy.pasar_puerta_deploy()
         self.assertIn("no instalo", str(cm.exception) + "no instalo")
+
+    # -- la puerta cara, que ahora corre al compilar ------------------------
+
+    def test_verificar_binario_pasa_analyze_tests_y_humo(self) -> None:
+        """Al compilar: verde, y con humo si lo piden."""
+        with self._puerta() as puerta:
+            analyze, tests, humo = puerta.mocks
+            ok, _ = deploy.verificar_binario(deploy.APK_TELEFONO, con_humo=True)
+        self.assertTrue(ok)
+        analyze.assert_called_once()
+        tests.assert_called_once()
+        humo.assert_called_once()
+
+    def test_sin_humo_no_se_arranca_el_emulador(self) -> None:
+        """Compilar para tu propio uso no debería instalar en el emulador.
+
+        El humo cuesta alrededor de un minuto e instala y arranca el AVD. Por
+        defecto se apaga; quien quiera sellar el APK como instalable lo pide.
+        """
+        with self._puerta() as puerta:
+            analyze, tests, humo = puerta.mocks
+            ok, _ = deploy.verificar_binario(deploy.APK_TELEFONO, con_humo=False)
+        self.assertTrue(ok)
+        analyze.assert_called_once()
+        tests.assert_called_once()
+        humo.assert_not_called()
+
+    def test_analyze_rojo_no_llega_al_humo(self) -> None:
+        """Analyze y tests se pasan los dos aunque uno falle; el humo no.
+
+        Correr los dos aunque analyze esté rojo es a propósito: da la foto
+        completa en una pasada, en vez de obligar a arreglar analyze, repetir, y
+        descubrir que los tests también estaban rojos. El humo **sí** se salta,
+        porque cuesta un minuto y si analyze ya está en rojo su resultado no va
+        a cambiar la conclusión.
+        """
+        with self._puerta(analyze=(False, "rojo")) as puerta, \
+             mock.patch.object(deploy, "apk_desactualizado", return_value=""):
+            analyze, tests, humo = puerta.mocks
+            ok, detalle = deploy.verificar_binario(deploy.APK_TELEFONO, con_humo=True)
+        self.assertFalse(ok)
+        self.assertIn("analyze: rojo", detalle)
+        analyze.assert_called_once()
+        tests.assert_called_once()
+        humo.assert_not_called()
+
+    def test_humo_rojo_tambien_detiene(self) -> None:
+        """Verde todo y aun así no se instala: el humo manda."""
+        with self._puerta(humo=(False, "la app no habló con el bridge")) as puerta, \
+             mock.patch.object(deploy, "apk_desactualizado", return_value=""):
+            ok, detalle = deploy.verificar_binario(deploy.APK_TELEFONO, con_humo=True)
+        self.assertFalse(ok)
+        self.assertIn("no habló", detalle)
+
+    def test_un_apk_desactualizado_no_se_verifica(self) -> None:
+        """Verificar un binario que no es del código actual no sirve de nada."""
+        with self._puerta() as puerta, \
+             mock.patch.object(deploy, "apk_desactualizado",
+                               return_value="el APK no corresponde al código de ahora"):
+            analyze, _, _ = puerta.mocks
+            ok, detalle = deploy.verificar_binario(deploy.APK_TELEFONO, con_humo=True)
+        self.assertFalse(ok)
+        self.assertIn("no corresponde al código", detalle)
+        analyze.assert_not_called()
 
 
 class TestElHumoNoSeRepite(unittest.TestCase):
@@ -706,6 +810,20 @@ class _PisoAvisos(_Piso):
         self.llamadas: list[dict] = []
         #: ¿La app llegó a publicar el aviso? Para poder simular que sí y que no.
         self.hay_aviso = True
+        #: El estado del **último** broadcast, para que el `dumpsys` falso enseñe
+        #: el mismo título que el aviso de verdad.
+        #:
+        #: ## Por qué hace falta y no era un detalle
+        #: `_hay_aviso_aegis` comprueba que el aviso esté **en el estado que se
+        #: acaba de pedir**, no solo que exista. Antes el mock enseñaba un
+        #: `NotificationRecord` sin título, así que cualquier estado nuevo daba
+        #: «no verificado» y los tests de resultado se pusieron rojos.
+        #:
+        #: Lo peligroso es el revés: un mock que **siempre** dice «está» hace que
+        #: la verificación parezca funcionar sin comprobar nada. Y con un solo id
+        #: eso es exactamente lo que pasaba en el dispositivo: tras `hecho`,
+        #: `dumpsys` seguía enseñando `EN MARCHA` y el puente decía «verificado».
+        self.estado_actual = "pendiente"
 
     def tearDown(self) -> None:
         deploy._AVISO = self._aviso_previo
@@ -718,19 +836,222 @@ class _PisoAvisos(_Piso):
         # devuelve el registro, la verificación falla y el aviso se da por no
         # entregado — que es lo que debe pasar cuando el aviso no existe.
         if "dumpsys" in a and "notification" in a:
-            if self.hay_aviso:
-                return 0, (f"    NotificationRecord(0x1: pkg={deploy.PAQUETE} "
-                           f"user=UserHandle{{0}} id={deploy.ID_AVISO} tag=null)")
-            return 0, "sin notificaciones"
+            if not self.hay_aviso:
+                return 0, "sin notificaciones"
+            titulo = (deploy.MARCA_ESTADO.get(self.estado_actual)
+                      or "NECESITO TU OK")
+            return 0, (
+                f"    NotificationRecord(0x1: pkg={deploy.PAQUETE} "
+                f"user=UserHandle{{0}} id={deploy.ID_AVISO} tag=null)\n"
+                f"      android.title=String (AEGIS · {titulo})\n"
+                f"      android.text=String (algo)")
         if "appops" in a:
             return 0, "Uid mode: POST_NOTIFICATION: allow"
         # `am broadcast` responde con esto; sin él el puente no lo da por entregado.
         if "broadcast" in a:
+            if "tipo" in a:
+                self.estado_actual = a[a.index("tipo") + 1]
             return 0, "Broadcasting: Intent {...}\nBroadcast completed: result=0"
         return 0, ""
 
+    def _solo_broadcasts(self) -> list[dict]:
+        """Solo los `am broadcast`. El resto es `dumpsys`, `appops` y compañía."""
+        return [c for c in self.llamadas if "broadcast" in c["args"]]
+
     def _destinos(self) -> list[str]:
-        return [c["serial"] for c in self.llamadas]
+        """Solo de los broadcasts.
+
+        La verificación lee `dumpsys` contra el mismo dispositivo, así que
+        `self.llamadas` tiene el serial repetido. Mirar todos los destinos sería
+        mirar dos veces el mismo sitio.
+        """
+        return [c["serial"] for c in self._solo_broadcasts()]
+
+    @staticmethod
+    def _sin_dormir():
+        """La verificación espera hasta 6 s a que el aviso aparezca.
+
+        En un test eso son 6 s reales por cada caso de fallo, y no prueba nada
+        sobre el tiempo: el mock responde o no responde.
+        """
+        return mock.patch.object(deploy.time, "sleep", lambda _s: None)
+
+
+class TestElCicloDelAviso(_PisoAvisos):
+    """Un aviso, un id, y cuatro estados que se sustituyen en sitio.
+
+    ## Por qué esta clase existe
+    El fallo medido (2026-10-03) fue que un aviso de un test **quedó en la
+    bandeja sin forma de quitarlo**. La causa no fue un estado mal pintado: fue
+    que había **dos** ids (4101 para decidir, 4102 para el resultado), que solo
+    se cancelaba el primero, y solo cuando otro aviso de pendientes veía la cola
+    vacía. Si no volvía a haber nada que decidir, ese otro aviso nunca llegaba y
+    el aviso se quedaba ahí para siempre.
+
+    ## Lo que se afirma
+    1. Los cuatro estados viajan con el nombre que la app espera.
+    2. `limpiar` **no** se verifica contra `dumpsys`: no publica nada, y preguntar
+       por él daría «no verificado» siempre, que es ruido y no un dato.
+    3. Todo lleva `ts`, que es lo que permite ordenar y descartar avisos viejos.
+    """
+
+    def _extra(self, clave: str, indice: int = 0) -> str:
+        """El **valor** del `--es <clave> <valor>` del n-ésimo broadcast.
+
+        Se busca por el nombre de la clave y se lee el siguiente elemento, que es
+        su valor. La versión anterior buscaba `--es` y leía el siguiente, que es
+        la **clave** —«tipo»— en vez del valor, y por eso afirmaba que todos los
+        avisos decían «tipo».
+        """
+        args = self._solo_broadcasts()[indice]["args"]
+        return args[args.index(clave) + 1] if clave in args else ""
+
+    def _estado(self, indice: int = 0) -> str:
+        return self._extra("tipo", indice)
+
+    def _con_telefono(self):
+        return mock.patch.object(deploy.disp, "telefono", return_value=TELEFONO), \
+            mock.patch.object(deploy.disp, "emulador", return_value=EMULADOR)
+
+    def test_los_cuatro_estados_viajan_con_su_nombre(self) -> None:
+        tlf, emu = self._con_telefono()
+        with tlf, emu, self._sin_dormir(), \
+                mock.patch.object(deploy.disp, "_adb", side_effect=self._adb):
+            deploy.avisar_trabajando("deploy-1", "instalando")
+            deploy.avisar_telefono({"id": "deploy-1", "razon": "instalado"})
+            deploy.avisar_fallo_telefono("deploy-2", "no se pudo")
+            deploy.avisar_limpiar()
+        tipos = [self._estado(i) for i in range(len(self._solo_broadcasts()))]
+        self.assertEqual(tipos, ["trabajando", "hecho", "fallo", "limpiar"])
+
+    def test_limpiar_no_se_verifica(self) -> None:
+        """`limpiar` cancela. Preguntar en `dumpsys` si hay un aviso daría siempre
+        «no verificado», que no es un fallo: es lo único que puede pasar."""
+        tlf, emu = self._con_telefono()
+        with tlf, emu, self._sin_dormir(), \
+                mock.patch.object(deploy.disp, "_adb", side_effect=self._adb):
+            salida = deploy.avisar_limpiar()
+        self.assertEqual(salida, "aviso limpiado")
+        self.assertNotIn("VERIFICADO", salida)
+
+    def test_todo_lleva_ts_para_poder_ordenar(self) -> None:
+        """Sin `ts`, un broadcast tardío puede pisar un estado más nuevo.
+
+        Los broadcasts van por adb, uno a uno, pero sin orden entre llamadas
+        distintas: el puente avisa por teléfono y por emulador en procesos
+        separados. Sin esta marca, un «instalado» que llegaba tarde podía dejar la
+        bandeja pidiendo un OK sobre algo ya hecho.
+        """
+        tlf, emu = self._con_telefono()
+        with tlf, emu, self._sin_dormir(), \
+                mock.patch.object(deploy.disp, "_adb", side_effect=self._adb):
+            deploy.avisar_telefono({"id": "d1", "razon": "instalado"})
+        args = self._solo_broadcasts()[0]["args"]
+        self.assertIn("--es", args)
+        self.assertIn("ts", args)
+        self.assertGreater(float(args[args.index("ts") + 1]), 0.0)
+
+    def test_el_estado_tambien_lo_ve_la_peticion_que_lo_causo(self) -> None:
+        """`pet_id` para que la app pueda ignorar lo de una petición que ya no existe."""
+        tlf, emu = self._con_telefono()
+        with tlf, emu, self._sin_dormir(), \
+                mock.patch.object(deploy.disp, "_adb", side_effect=self._adb):
+            deploy.avisar_trabajando("deploy-xyz", "instalando")
+        self.assertEqual(self._extra("pet_id"), "deploy-xyz")
+
+    def test_verificar_exige_el_estado_y_no_solo_la_existencia(self) -> None:
+        """Un aviso que ya existía **no** prueba que el estado nuevo esté puesto.
+
+        ## El fallo, medido en el emulador
+        Con un solo id, los estados se sustituyen en sitio, así que el aviso
+        anterior sigue ahí mientras el nuevo se publica en el hilo del receptor.
+        `_hay_aviso_aegis` solo miraba que hubiera un aviso de Aegis, así que
+        devolvía «entregado y verificado» sin esperar nada. Medido: tras pedir
+        `hecho`, `dumpsys` seguía enseñando `AEGIS · EN MARCHA`.
+
+        Es A-042 otra vez —un éxito que nadie comprobó— y lo causó el arreglo
+        anterior, que fue a mejor en todo lo demás.
+        """
+        registro = (f"    NotificationRecord(0x1: pkg={deploy.PAQUETE} "
+                    f"user=UserHandle{{0}} id={deploy.ID_AVISO} tag=null)\n"
+                    "      android.title=String (AEGIS · EN MARCHA)\n"
+                    "      android.text=String (instalando)")
+
+        def _adb(args, timeout=60, serial=""):
+            if "dumpsys" in args:
+                return 0, registro
+            return 0, "Broadcasting: Intent {...}\nBroadcast completed: result=0"
+
+        with mock.patch.object(deploy.disp, "telefono", return_value=TELEFONO), \
+             self._sin_dormir(), \
+             mock.patch.object(deploy.disp, "_adb", side_effect=_adb):
+            salida = deploy._avisar_app(TELEFONO, deploy.ESTADO_HECHO)
+        # El aviso existe, pero es el de antes: no se puede dar por entregado.
+        self.assertIn("NO VERIFICADO", salida)
+        self.assertNotIn("entregado", salida)
+
+    def test_verificar_con_el_estado_bueno_si_pasa(self) -> None:
+        """El otro lado: si el título es el que se pidió, se acepta."""
+        registro = (f"    NotificationRecord(0x1: pkg={deploy.PAQUETE} "
+                    f"user=UserHandle{{0}} id={deploy.ID_AVISO} tag=null)\n"
+                    "      android.title=String (AEGIS · INSTALADO)")
+
+        def _adb(args, timeout=60, serial=""):
+            if "dumpsys" in args:
+                return 0, registro
+            return 0, "Broadcasting: Intent {...}\nBroadcast completed: result=0"
+
+        with mock.patch.object(deploy.disp, "telefono", return_value=TELEFONO), \
+             self._sin_dormir(), \
+             mock.patch.object(deploy.disp, "_adb", side_effect=_adb):
+            salida = deploy._avisar_app(TELEFONO, deploy.ESTADO_HECHO)
+        self.assertIn("entregado y verificado", salida)
+
+    def test_limpiar_llega_al_emulador_si_no_hay_telefono(self) -> None:
+        """Un aviso que hay que quitar tiene que poder quitarse **donde está**.
+
+        ## El fallo
+        `avisar_intermedio` caía al emulador si no había teléfono; los otros tres
+        avisos, no. Medido: en una máquina sin teléfono conectado, el aviso atascado
+        del emulador **no se podía limpiar nunca**, porque `limpiar` se quedaba
+        mirando el teléfono, que no existía. Cuatro maneras de decidir a quién
+        avisar es cuatro maneras de que una se quede sin probar.
+        """
+        with mock.patch.object(deploy.disp, "emulador", return_value=EMULADOR), \
+             mock.patch.object(deploy.disp, "telefono", return_value=None), \
+             mock.patch.object(deploy.disp, "_adb", side_effect=self._adb):
+            salida = deploy.avisar_limpiar()
+        self.assertEqual(salida, "aviso limpiado")
+        self.assertEqual(self._destinos(), [EMULADOR.serial])
+
+    def test_limpiar_prefiere_el_telefono(self) -> None:
+        """Y si hay los dos, va al teléfono: es donde se decide."""
+        with mock.patch.object(deploy.disp, "emulador", return_value=EMULADOR), \
+             mock.patch.object(deploy.disp, "telefono", return_value=TELEFONO), \
+             mock.patch.object(deploy.disp, "_adb", side_effect=self._adb):
+            deploy.avisar_limpiar()
+        self.assertEqual(self._destinos(), [TELEFONO.serial])
+
+    def test_el_id_verificado_sigue_siendo_el_que_publica(self) -> None:
+        """El puente **comprueba** este id en `dumpsys` para decir que llegó.
+
+        Si Kotlin publica en un id distinto de `ID_AVISO`, el aviso se entrega y
+        el puente responde «AVISO NO VERIFICADO»: un fallo que no se ve en ninguna
+        parte, porque los dos lados compilan bien por separado.
+        """
+        fuente = Path(__file__).resolve().parents[2] / "mobile" / "android" / "app" \
+            / "src" / "main" / "kotlin" / "com" / "aegis" / "aegis_console" \
+            / "NotificacionReceiver.kt"
+        if not fuente.exists():
+            self.skipTest("el proyecto Android no está a mano")
+        kotlin = fuente.read_text(encoding="utf-8")
+        self.assertIn(f"const val ID = {deploy.ID_AVISO}", kotlin)
+        # Y no queda el segundo id, que es lo que no se cancelaba nunca.
+        self.assertNotIn("ID_RESULTADO", kotlin)
+        # Y la caducidad coincide con la del puente, o el aviso se va antes o
+        # después de lo que el puente dice que se queda.
+        ms = int(kotlin.split("CADUCIDAD_MS = ")[1].split("L")[0])
+        self.assertEqual(ms, deploy.CADUCIDAD_FINAL_MS)
 
 
 class TestAvisosQueVanAlTelefono(_PisoAvisos):
@@ -760,26 +1081,31 @@ class TestAvisosQueVanAlTelefono(_PisoAvisos):
     aviso yendo al emulador.
     """
 
-    def _solo_broadcasts(self) -> list[dict]:
-        return [c for c in self.llamadas if "broadcast" in c["args"]]
+    class _Reloj:
+        """Un reloj que el test **mueve**, en vez de una lista de valores.
 
-    def _destinos(self) -> list[str]:
-        """Solo de los broadcasts.
+        ## Por qué controlarlo y no listarlo
+        Antes era `side_effect=[100.0, 100.0, 120.0, 120.0]`: una lista ata el test
+        al **número** de llamadas a `time.time()` que hay dentro de `pedir_deploy`
+        más `_avisar_app`. Añadir el `ts` al aviso —una llamada más— lo dejó en
+        rojo sin que hubiera cambiado una sola regla de deduplicación. El test
+        estaba midiendo la implementación por accidente.
 
-        La verificación lee `dumpsys` contra el mismo dispositivo, así que
-        `self.llamadas` tiene el serial repetido. Mirar todos los destinos sería
-        mirar dos veces el mismo sitio.
+        Con un reloj que el test mueve entre llamadas, lo que se afirma es lo que
+        dice el nombre: «pasada la ventana, vuelve a sonar».
         """
-        return [c["serial"] for c in self._solo_broadcasts()]
 
-    @staticmethod
-    def _sin_dormir():
-        """La verificación espera hasta 6 s a que el aviso aparezca.
+        def __init__(self, ahora: float = 100.0) -> None:
+            self.ahora = ahora
 
-        En un test eso son 6 s reales por cada caso de fallo, y no prueba nada
-        sobre el tiempo: el mock responde o no responde.
-        """
-        return mock.patch.object(deploy.time, "sleep", lambda _s: None)
+        def __call__(self) -> float:
+            return self.ahora
+
+        def avanza(self, segundos: float) -> None:
+            self.ahora += segundos
+
+    def _reloj(self, ahora: float = 100.0) -> "_Reloj":
+        return self._Reloj(ahora)
 
     def test_el_aviso_intermedio_va_al_telefono(self) -> None:
         """Se aprueba desde el móvil, así que al móvil va."""
@@ -820,24 +1146,29 @@ class TestAvisosQueVanAlTelefono(_PisoAvisos):
         Si dos avisos distintos se comieran el segundo, el móvil se quedaría sin
         enterarse de algo que sí pasó.
         """
+        reloj = self._reloj()
         with mock.patch.object(deploy.disp, "emulador", return_value=EMULADOR), \
              mock.patch.object(deploy.disp, "telefono", return_value=TELEFONO), \
              mock.patch.object(deploy.disp, "_adb", side_effect=self._adb), \
-             mock.patch.object(deploy.time, "time",
-                               side_effect=[100.0, 100.0, 120.0, 120.0]):
+             mock.patch.object(deploy.time, "time", side_effect=reloj):
             deploy.pedir_deploy("motivo A")
+            reloj.avanza(20.0)
             deploy.pedir_deploy("motivo B")
         self.assertEqual(len(self._solo_broadcasts()), 2, self.llamadas)
 
     def test_pasada_la_ventana_vuelve_a_sonar(self) -> None:
         """El aviso se calla un rato, no para siempre."""
+        reloj = self._reloj()
         with mock.patch.object(deploy.disp, "emulador", return_value=EMULADOR), \
              mock.patch.object(deploy.disp, "telefono", return_value=TELEFONO), \
              mock.patch.object(deploy.disp, "_adb", side_effect=self._adb), \
-             mock.patch.object(deploy.time, "time",
-                               side_effect=[100.0, 100.0,
-                                            100.0, 100.0 + deploy.VENTANA_AVISO + 1]):
+             mock.patch.object(deploy.time, "time", side_effect=reloj):
             deploy.pedir_deploy("mismo motivo")
+            deploy.pedir_deploy("mismo motivo")
+            self.assertEqual(len(self._solo_broadcasts()), 1, "no se repitió de más")
+            # Y pasada la ventana, vuelve a sonar. Eso es lo que se afirma: que la
+            # ventana **acaba**, en vez de que el aviso se calla para siempre.
+            reloj.avanza(deploy.VENTANA_AVISO + 1)
             deploy.pedir_deploy("mismo motivo")
         self.assertEqual(len(self._solo_broadcasts()), 2, self.llamadas)
 
@@ -906,7 +1237,7 @@ class TestAvisosQueVanAlTelefono(_PisoAvisos):
                 # Lo que la app ve por `/deploys` en el instante del aviso.
                 return [deploy.ESTADO.peticion(p["id"]) for p in
                         deploy.pendientes()]
-            avisar.side_effect = lambda dev, **k: str(_pregunta())
+            avisar.side_effect = lambda dev, *a, **k: str(_pregunta())
             p = deploy.pedir_deploy("una sola")
         self.assertIsNotNone(deploy.ESTADO.peticion(p["id"]))
 
@@ -1344,16 +1675,20 @@ class TestLaPuertaDevuelveElDevice(_Piso):
     """
 
     def _puerta_verde(self) -> "contextlib.ExitStack":
-        """La puerta en verde: los tres verificadores.
+        """La puerta en verde: el APK verificado y el sello cuadrando.
 
-        Se falsean **solo** los verificadores. La resolución del teléfono y la
-        comprobación de la huella se dejan correr de verdad, porque son parte de
-        lo que este test mide: el contrato entre la puerta y quien la usa.
+        Analyze, tests y humo **no** se falsean: ya no pasan por aquí, se pasan
+        al compilar (`verificar_binario`), y esta clase no va de eso. Lo que se
+        falsea es lo que la puerta de instalar sí mira: que el binario tenga el
+        `.verificado`. La resolución del teléfono y el resto se dejan correr de
+        verdad, porque son parte de lo que este test mide: el contrato entre la
+        puerta y quien la usa.
         """
         stack = contextlib.ExitStack()
-        for nombre in ("verificar_analisis", "verificar_tests", "humo_una_vez"):
-            stack.enter_context(
-                mock.patch.object(deploy, nombre, return_value=(True, "ok")))
+        stack.enter_context(
+            mock.patch.object(deploy, "apk_verificado", return_value=True))
+        stack.enter_context(
+            mock.patch.object(deploy, "apk_sin_verificar", return_value=""))
         return stack
 
     def test_devuelve_un_device_no_un_serial(self) -> None:
@@ -1424,6 +1759,9 @@ class TestElApkCorrespondeAlCodigo(_Piso):
 
     def setUp(self) -> None:
         super().setUp()
+        # Aquí el sello **no** se falsea: es la única clase que lo comprueba, y con
+        # el falseo del piso afirmaría que un APK desactualizado está al día.
+        self._parchea_sello(real=True)
         self.tmp = Path(tempfile.mkdtemp(prefix="aegis-sello-"))
 
     def _proyecto(self, tmp: Path) -> Path:

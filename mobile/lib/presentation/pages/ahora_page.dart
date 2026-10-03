@@ -1,10 +1,13 @@
-/// Pide una misión: qué proyecto, con qué motor, y qué hacer.
+/// Pide una misión: dónde, y qué hacer.
 ///
-/// ## Por qué el motor se elige con una frase y no con un interruptor
-/// La diferencia entre Hermes y Autopilot no es técnica, es de **qué puede
-/// hacer**: uno razona y conversa, el otro ejecuta herramientas de verdad. Ese
-/// es el dato que hace falta para elegir, y por eso está escrito encima del
-/// campo y no escondido detrás de una etiqueta.
+/// ## Por qué no se elige motor
+/// Aquí había un interruptor HERMES / AUTOPILOT, y era lo primero que te
+/// cruzabas. La diferencia entre los dos no era de capacidad: **los dos llamaban
+/// a las mismas 18 tools** de `mcp_ops.py` — Hermes por MCP, el autopilot
+/// llamándolas en proceso. El interruptor no elegía qué se podía hacer, elegía en
+/// qué proceso vivía el bucle, y el bucle es lo que decide qué guardarraíl se
+/// aplica. Dos motores son **dos sitios donde puede vivir un guardarraíl**, y el
+/// que se ejecutaba acababa siendo Hermes, que es el que no los tenía.
 ///
 /// ## Por qué el proyecto va con su color de estado
 /// Un proyecto sin ficha sale en rojo porque Aegis **no puede escribir** en él.
@@ -35,7 +38,6 @@ class AhoraPage extends ConsumerStatefulWidget {
 class _AhoraPageState extends ConsumerState<AhoraPage> {
   final _prompt = TextEditingController();
   bool _busy = false;
-  bool _autopilot = false;
   String? _error;
 
   AutopilotRun? _run;
@@ -86,35 +88,78 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
       final proyecto = proyectoForzado ?? ref.read(selectedProjectProvider) ?? '';
       final sinProyecto = proyecto.isEmpty ? null : proyecto;
       final fase = ref.read(faseElegidaProvider);
-      if (_autopilot) {
-        final runId = await ref.read(agentRepositoryProvider).startAutopilot(
-              prompt: prompt,
-              project: sinProyecto,
-              maxSteps: 6,
-              verify: false,
-              token: token,
-              fase: fase.isEmpty ? null : fase,
-            );
-        if (!mounted) return;
-        setState(() => _run = null);
-        _parar();
-        await _seguir(runId);
-        return;
-      }
-      final session = ref.read(taskSessionProvider.notifier);
-      await session.createTask(
-        agent: kAegisAgent,
-        prompt: prompt,
-        project: sinProyecto,
-      );
-      final task = ref.read(taskSessionProvider)?.task;
-      if (task != null) {
-        ref.read(recentTasksProvider.notifier).add(task.runId);
-      }
+      final runId = await ref.read(agentRepositoryProvider).startAutopilot(
+            prompt: prompt,
+            project: sinProyecto,
+            maxSteps: 6,
+            // La puerta de verificación no se elige a mano. Antes iba `false`
+            // fijo desde aquí, y eso significaba que **desde el móvil ninguna
+            // escritura pasaba por el verificador**, ni en un proyecto que la
+            // persona había marcado como escribible. La ruta de `curl` sí la
+            // tenía. La puerta depende de si el proyecto está marcado, no de
+            // qué botón pulsaste.
+            verify: _autonomiaEscribible(sinProyecto),
+            token: token,
+            fase: fase.isEmpty ? null : fase,
+          );
+      if (!mounted) return;
+      setState(() {
+        _run = null;
+        _error = null;
+      });
+      _parar();
+      await _seguir(runId);
     } catch (e) {
       setState(() => _error = 'No pude lanzar la tarea: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Si Aegis puede escribir en ese proyecto, el run lleva la puerta.
+  ///
+  /// Sin proyecto no hay nada que verificar: `db_query` y `repo_verify` no
+  /// escriben, y una puerta sin proyecto solo añadiría un paso de inferencia por
+  /// comprobar lo que ya se sabe.
+  bool _autonomiaEscribible(String? proyecto) {
+    if (proyecto == null || proyecto.isEmpty) return false;
+    final aut = ref.read(autonomiaProvider).value;
+    return aut?.escribible(proyecto) ?? false;
+  }
+
+  /// Pide que el run en marcha deje de empezar pasos.
+  ///
+  /// ## Por qué sale en la traza y no en la barra
+  /// Parar es una decisión sobre **este** run, no sobre la pantalla: ponerlo
+  /// arriba obligaría a decidir antes de saber si hay algo que parar, y el botón
+  /// estaría vivo cuando no hay run. Aquí solo existe mientras el run corre.
+  Future<void> _pararRun() async {
+    final run = _run;
+    if (run == null || !run.running) return;
+    try {
+      await ref.read(agentRepositoryProvider).stopAutopilot(run.runId);
+      if (!mounted) return;
+      // No se para el sondeo: el run sigue vivo hasta que el bucle acknowledge
+      // el corte y devuelva `fin: "parado"`. Dejar de preguntar aquí dejaría la
+      // traza congelada en "trabajando" para siempre.
+      setState(() => _error = null);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'No pude parar el run: $e');
+    }
+  }
+
+  /// Escribe una instrucción en el run que ya está corriendo.
+  Future<void> _dirigir(String texto) async {
+    final run = _run;
+    if (run == null || !run.running) return;
+    try {
+      await ref.read(agentRepositoryProvider).steerAutopilot(run.runId, texto);
+      if (!mounted) return;
+      setState(() => _error = null);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'No pude dirigir el run: $e');
     }
   }
 
@@ -152,13 +197,8 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
           onChanged: (a) =>
               ref.read(selectedProjectProvider.notifier).select(a),
         ),
-        const SizedBox(height: 14),
-        _Motor(
-          autopilot: _autopilot,
-          onChanged: (v) => setState(() => _autopilot = v),
-        ),
         const SizedBox(height: 12),
-        const _SelectorFase(),
+        _ComoTrabajar(prompt: _prompt),
         const SizedBox(height: 12),
         TextField(
           controller: _prompt,
@@ -207,76 +247,35 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
         ),
         if (_run != null) ...[
           const SizedBox(height: 16),
-          _TrazaAutopilot(run: _run!),
+          _TrazaAutopilot(
+            run: _run!,
+            onParar: _pararRun,
+            onDirigir: _dirigir,
+          ),
         ],
       ],
     );
   }
 }
 
-/// Aegis tiene un solo agente. Antes había un selector worker/orchestrator, pero
-/// los dos acababan en el mismo modelo: era una elección que no elegía nada.
-const String kAegisAgent = 'worker';
-
-/// Elige el motor, y dice en una línea para qué sirve cada uno.
+/// Cómo trabajar: la fase del encargo.
 ///
-/// El texto va **debajo** del interruptor y no en un tooltip: en un móvil un
-/// tooltip no se llega a ver, y esta es justo la decisión que hay que entender
-/// la primera vez.
-class _Motor extends StatelessWidget {
-  const _Motor({required this.autopilot, required this.onChanged});
-
-  final bool autopilot;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SegmentedButton<bool>(
-          segments: const [
-            ButtonSegment(value: false, label: Text('HERMES')),
-            ButtonSegment(value: true, label: Text('AUTOPILOT')),
-          ],
-          selected: {autopilot},
-          onSelectionChanged: (s) => onChanged(s.first),
-        ),
-        const SizedBox(height: 7),
-        Row(
-          children: [
-            StatusLed(
-              color: autopilot ? AegisPalette.voz : AegisPalette.brand,
-              size: 7,
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                autopilot
-                    ? 'Ejecuta herramientas de verdad, una a una, dejando traza de cada una.'
-                    : 'Razona y conversa. Para tocar archivos, usa AUTOPILOT.',
-                style: const TextStyle(
-                  fontFamily: AegisPalette.mono,
-                  fontSize: 10.5,
-                  height: 1.45,
-                  color: AegisPalette.fgDim,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-/// Qué fase de trabajo lleva el encargo.
+/// ## Por qué está plegada y no en la línea de arriba
+/// Una fase son las instrucciones que **solo valen mientras se piensa**, y solo
+/// las pagan los runs que las piden. En el prompt, la fase es el presupuesto:
+/// A-016 midió que los modelos de 6 GB dejan de emitir `tool_calls` cuando el
+/// prompt crece, y un selector de fases abierto por defecto invita a elegir una
+/// en cada encargo —que es pagarla sin necesitarla— mientras esconde el único
+/// dato que de verdad hay que ver a la primera: dónde vas a trabajar.
 ///
-/// Solo aparece si el puente ofrece alguna, y el texto explica para qué sirve:
-/// una fase cambia lo que Aegis se permite hacer, así que no es un adorno que
-/// se pueda dejar sin leer.
-class _SelectorFase extends ConsumerWidget {
-  const _SelectorFase();
+/// Plegada, el criterio es "solo si ya estás pensando en ello", que es
+/// exactamente cuando la fase aplica. El equipo tampoco hace falta: el bucle
+/// termina solo en cuanto el modelo no pide más herramientas, así que una
+/// pregunta de razonamiento llega igual, y con su respuesta.
+class _ComoTrabajar extends ConsumerWidget {
+  const _ComoTrabajar({required this.prompt});
+
+  final TextEditingController prompt;
 
   static String _ayuda(String fase) => switch (fase) {
         'idea' => 'Aterriza el problema y sus alternativas. No escribe código.',
@@ -293,55 +292,116 @@ class _SelectorFase extends ConsumerWidget {
       orElse: () => const SizedBox.shrink(),
       data: (lista) {
         if (lista.isEmpty) return const SizedBox.shrink();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 7,
-              runSpacing: 7,
-              children: [
-                for (final f in lista)
-                  ChoiceChip(
-                    label: Text(f.toUpperCase()),
-                    selected: f == elegida,
-                    onSelected: (_) => ref.read(faseElegidaProvider.notifier).alternar(f),
-                    labelStyle: TextStyle(
-                      fontFamily: AegisPalette.mono,
-                      fontSize: 10,
-                      letterSpacing: 1,
-                      color: f == elegida ? AegisPalette.bg0 : AegisPalette.fgDim,
-                    ),
-                    selectedColor: AegisPalette.brand,
-                    backgroundColor: AegisPalette.bg1,
-                    side: BorderSide(
-                      color: f == elegida
-                          ? AegisPalette.brand
-                          : AegisPalette.bg1.withValues(alpha: 1),
-                    ),
-                    showCheckmark: false,
+        return Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          // El `ValueListenableBuilder` está **por dentro** del `ExpansionTile`,
+          // no en la página entera: el criterio para abrir es «ya hay algo
+          // escrito», y sacarlo a un `setState` del `State` reconstruiría el
+          // `ListView` completo en cada tecla —con las aprobaciones y la traza
+          // dentro— para saber si abrir un desplegable.
+          child: ValueListenableBuilder<TextEditingValue>(
+            valueListenable: prompt,
+            builder: (context, value, _) {
+              final escrito = value.text.trim().isNotEmpty;
+              return ExpansionTile(
+                initiallyExpanded: escrito && elegida.isNotEmpty,
+                tilePadding: const EdgeInsets.symmetric(horizontal: 0),
+                childrenPadding: const EdgeInsets.only(bottom: 4),
+                visualDensity: VisualDensity.compact,
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text(
+                  elegida.isEmpty
+                      ? 'Cómo trabajar'
+                      : 'Cómo trabajar · ${elegida.toUpperCase()}',
+                  style: TextStyle(
+                    fontFamily: AegisPalette.mono,
+                    fontSize: 10.5,
+                    letterSpacing: 1,
+                    color: elegida.isEmpty
+                        ? AegisPalette.fgFaint
+                        : AegisPalette.brand,
                   ),
-              ],
-            ),
-            if (_ayuda(elegida).isNotEmpty) ...[
-              const SizedBox(height: 7),
-              Text(
-                _ayuda(elegida),
-                style: const TextStyle(
-                  fontFamily: AegisPalette.mono,
-                  fontSize: 10.5,
-                  height: 1.45,
-                  color: AegisPalette.fgDim,
                 ),
-              ),
-            ],
-          ],
+                trailing: Icon(
+                  Icons.tune,
+                  size: 14,
+                  color:
+                      elegida.isEmpty ? AegisPalette.fgFaint : AegisPalette.brand,
+                ),
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: [
+                        for (final f in lista)
+                          ChoiceChip(
+                            label: Text(f.toUpperCase()),
+                            selected: f == elegida,
+                            onSelected: (_) => ref
+                                .read(faseElegidaProvider.notifier)
+                                .alternar(f),
+                            labelStyle: TextStyle(
+                              fontFamily: AegisPalette.mono,
+                              fontSize: 10,
+                              letterSpacing: 1,
+                              color: f == elegida
+                                  ? AegisPalette.bg0
+                                  : AegisPalette.fgDim,
+                            ),
+                            selectedColor: AegisPalette.brand,
+                            backgroundColor: AegisPalette.bg1,
+                            side: BorderSide(
+                              color: f == elegida
+                                  ? AegisPalette.brand
+                                  : AegisPalette.bg1.withValues(alpha: 1),
+                            ),
+                            showCheckmark: false,
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (_ayuda(elegida).isNotEmpty) ...[
+                    const SizedBox(height: 7),
+                    Text(
+                      _ayuda(elegida),
+                      style: const TextStyle(
+                        fontFamily: AegisPalette.mono,
+                        fontSize: 10.5,
+                        height: 1.45,
+                        color: AegisPalette.fgDim,
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
         );
       },
     );
   }
 }
 
-/// Selector de proyecto del workspace, coloreado por el estado de su ficha.
+/// Dónde vas a trabajar.
+///
+/// ## Por qué una fila y no los ocho proyectos a la vista
+/// Los chips ocupaban **tres filas** antes del campo de texto —el registro tiene
+/// ocho proyectos, no cinco— y el segundo objetivo de la pantalla es que escribas
+/// el encargo. Ocho proyectos con su color de ficha eran el dato más caro de la
+/// pantalla y el que menos se releía: el color repetido ocho veces no dice más
+/// que el del proyecto elegido.
+///
+/// Ahora sale **uno**: el que está activo, con su LED. Cambiarlo es un toque, y
+/// entonces sí tiene sentido verlos todos —con buscador, porque `compra-unida` y
+/// `recepcion-persa` no se distinguen a tres letras—.
+///
+/// ## Por qué el filtro es de escribibles y no de favoritos
+/// «Solo escribibles» contesta la pregunta que de verdad se hace al elegir
+/// proyecto: dónde va a poder trabajar Aegis. La respuesta viene del permiso que
+/// ya se le dio en Ajustes, no de otra marca que mantener al día.
 class _SelectorProyecto extends ConsumerWidget {
   const _SelectorProyecto({required this.seleccionado, required this.onChanged});
 
@@ -386,70 +446,228 @@ class _SelectorProyecto extends ConsumerWidget {
           (p) => p.alias == seleccionado,
           orElse: () => lista.first,
         );
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
+        final color = _color(actual);
+        return InkWell(
+          onTap: () => _abrirHoja(context, ref, lista),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+            child: Row(
               children: [
-                for (final p in lista)
-                  _pastilla(p, seleccionado == p.alias, () => onChanged(p.alias)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                StatusLed(color: _color(actual), size: 6),
-                const SizedBox(width: 7),
+                StatusLed(color: color, size: 6),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    seleccionado.isEmpty
-                        ? 'Sin proyecto: razono sin saber de qué se trata.'
-                        : '${actual.alias} · ${_globo(actual)}',
-                    style: const TextStyle(
-                        fontFamily: AegisPalette.mono,
-                        fontSize: 10,
-                        color: AegisPalette.fgFaint,
-                        height: 1.4),
+                    seleccionado.isEmpty ? actual.alias : seleccionado,
+                    style: TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: color,
+                    ),
                   ),
                 ),
+                Text(
+                  _globo(actual),
+                  style: const TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 10,
+                      color: AegisPalette.fgFaint,
+                      height: 1.4),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.expand_more,
+                    size: 16, color: AegisPalette.fgFaint),
               ],
             ),
-          ],
+          ),
         );
       },
     );
   }
 
-  Widget _pastilla(ProjectInfo p, bool activo, VoidCallback tap) {
-    final color = _color(p);
-    return GestureDetector(
-      onTap: tap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: activo ? .20 : .07),
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(
-              color: color.withValues(alpha: activo ? 1 : .45),
-              width: activo ? 1.5 : 1),
-        ),
-        child: Row(
+  Future<void> _abrirHoja(
+      BuildContext context, WidgetRef ref, List<ProjectInfo> lista) async {
+    final elegido = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AegisPalette.bg1,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+      ),
+      builder: (ctx) => _HojaProyectos(
+        proyectos: lista,
+        seleccionado: seleccionado,
+      ),
+    );
+    // `null` es "cerrada sin elegir". Sin esta comprobación, cancelar dejaría el
+    // proyecto en `''`, que significa "sin proyecto", y no es lo mismo: un cierre
+    // accidental no puede cambiar a dónde va a trabajar el siguiente encargo.
+    if (elegido != null) onChanged(elegido);
+  }
+}
+
+/// La hoja: buscador arriba, filtro de escribibles, y los proyectos.
+///
+/// Es una hoja y no un diálogo porque en un móvil alto la lista completa de
+/// proyectos es más comoda de recorrer deslizando, y porque el buscador necesita el
+/// teclado sin tapar el botón de cerrar.
+class _HojaProyectos extends ConsumerStatefulWidget {
+  const _HojaProyectos({required this.proyectos, required this.seleccionado});
+
+  final List<ProjectInfo> proyectos;
+  final String seleccionado;
+
+  @override
+  ConsumerState<_HojaProyectos> createState() => _HojaProyectosState();
+}
+
+class _HojaProyectosState extends ConsumerState<_HojaProyectos> {
+  final _buscar = TextEditingController();
+  bool _soloEscribibles = false;
+
+  @override
+  void dispose() {
+    _buscar.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // El permiso se lee del provider de autonomía, la única fuente. Guardarlo en
+    // un campo sería una segunda copia del mismo dato que se puede desincronizar
+    // de la de Ajustes.
+    final autonomia = ref.watch(autonomiaProvider).value;
+    final q = _buscar.text.trim().toLowerCase();
+    // Se busca por alias, área y tipo, no por nombre: `ProjectInfo` no trae
+    // nombre, trae lo que el registro declara. Con `compra-unida` y
+    // `recepcion-persa` el área es lo que desambigua.
+    final visibles = widget.proyectos.where((p) {
+      if (_soloEscribibles && !(autonomia?.escribible(p.alias) ?? false)) {
+        return false;
+      }
+      return q.isEmpty ||
+          p.alias.toLowerCase().contains(q) ||
+          p.area.toLowerCase().contains(q) ||
+          p.kind.toLowerCase().contains(q);
+    }).toList();
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        // El teclado tapa la mitad de la hoja; sin este padding el último
+        // proyecto de la lista queda justo debajo del botón de enviar del
+        // teclado, que es donde no se puede pulsar.
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-            const SizedBox(width: 7),
-            Text(
-              p.alias,
-              style: TextStyle(
-                  fontFamily: AegisPalette.mono,
-                  fontSize: 11.5,
-                  fontWeight: activo ? FontWeight.w700 : FontWeight.w400,
-                  color: color),
+            const SizedBox(height: 10),
+            Center(
+              child: Container(
+                width: 36,
+                height: 3,
+                decoration: BoxDecoration(
+                  color: AegisPalette.line,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextField(
+                controller: _buscar,
+                onChanged: (_) => setState(() {}),
+                style:
+                    const TextStyle(fontFamily: AegisPalette.mono, fontSize: 13),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: 'Buscar proyecto…',
+                  prefixIcon: Icon(Icons.search, size: 17),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  FilterChip(
+                    label: const Text('solo escribibles'),
+                    selected: _soloEscribibles,
+                    onSelected: (v) => setState(() => _soloEscribibles = v),
+                    labelStyle: TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 10,
+                      color:
+                          _soloEscribibles ? AegisPalette.bg0 : AegisPalette.fgDim,
+                    ),
+                    selectedColor: AegisPalette.brand,
+                    backgroundColor: AegisPalette.bg2,
+                    showCheckmark: false,
+                  ),
+                  const SizedBox(width: 10),
+                  Text('${visibles.length} de ${widget.proyectos.length}',
+                      style: const TextStyle(
+                          fontFamily: AegisPalette.mono,
+                          fontSize: 10,
+                          color: AegisPalette.fgFaint)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Flexible(
+              child: visibles.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 18, 16, 18),
+                      child: Text(
+                        'Ningún proyecto coincide. Con el filtro de escribibles '
+                        'puede que no hayas marcado ninguno todavía: se marcan en '
+                        'Proyectos.',
+                        style: TextStyle(
+                            fontFamily: AegisPalette.mono,
+                            fontSize: 11,
+                            height: 1.5,
+                            color: AegisPalette.warn),
+                      ),
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.only(bottom: 12),
+                      itemCount: visibles.length,
+                      itemBuilder: (context, i) {
+                        final p = visibles[i];
+                        final activo = p.alias == widget.seleccionado;
+                        final color = _SelectorProyecto._color(p);
+                        final marcado = autonomia?.escribible(p.alias) ?? false;
+                        return ListTile(
+                          dense: true,
+                          selected: activo,
+                          selectedTileColor: color.withValues(alpha: .12),
+                          onTap: () => Navigator.pop(context, p.alias),
+                          leading: StatusLed(color: color, size: 7),
+                          title: Text(p.alias,
+                              style: TextStyle(
+                                  fontFamily: AegisPalette.mono,
+                                  fontSize: 12.5,
+                                  fontWeight:
+                                      activo ? FontWeight.w700 : FontWeight.w400,
+                                  color: activo ? color : AegisPalette.fg)),
+                          subtitle: Text(
+                            '${_SelectorProyecto._globo(p)}'
+                            '${marcado ? " · marcado para escribir" : ""}',
+                            style: const TextStyle(
+                                fontFamily: AegisPalette.mono,
+                                fontSize: 10,
+                                height: 1.4,
+                                color: AegisPalette.fgFaint),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
@@ -464,9 +682,18 @@ class _SelectorProyecto extends ConsumerWidget {
 /// Un run sin ninguna tool en la traza se dice explícitamente: es la diferencia
 /// entre "terminó" y "hizo algo".
 class _TrazaAutopilot extends StatelessWidget {
-  const _TrazaAutopilot({required this.run});
+  const _TrazaAutopilot({
+    required this.run,
+    required this.onParar,
+    required this.onDirigir,
+  });
 
   final AutopilotRun run;
+
+  /// Parar el run y dirigirlo. Los dos solo existen mientras corre: fuera de
+  /// entonces no hay nada que parar ni a quién decirle nada.
+  final Future<void> Function() onParar;
+  final Future<void> Function(String) onDirigir;
 
   @override
   Widget build(BuildContext context) {
@@ -502,6 +729,41 @@ class _TrazaAutopilot extends StatelessWidget {
                     fontSize: 11,
                     color: AegisPalette.danger,
                     height: 1.4)),
+          ],
+          if (run.running) ...[
+            const SizedBox(height: 10),
+            // El mando va **antes** de la traza, no al final: mientras corre hay
+            // que poder parar sin tener que llegar al último paso con el pulgar, y
+            // cuando termina desaparece, así que no ocupa nada entonces.
+            Row(
+              children: [
+                Expanded(child: _Direccion(onEnviar: onDirigir)),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => onParar(),
+                  icon: const Icon(Icons.stop_rounded, size: 16),
+                  label: const Text('Parar'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AegisPalette.danger,
+                    side: BorderSide(
+                        color: AegisPalette.danger.withValues(alpha: .55)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Parar termina el paso que ya está corriendo y no empieza otro: '
+              'la traza de abajo es exactamente lo que llegó a ejecutarse.',
+              style: TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 9.5,
+                height: 1.4,
+                color: AegisPalette.fgFaint,
+              ),
+            ),
           ],
           for (final paso in run.trace) ...[
             const SizedBox(height: 8),
@@ -558,6 +820,66 @@ class _TrazaAutopilot extends StatelessWidget {
                 color: AegisPalette.fgFaint),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Escribir una instrucción en un run que ya está corriendo.
+///
+/// ## Por qué un controller propio
+/// Podría haber reutilizado el del encargo, y sería un bug: enviar por aquí
+/// **no** lanza un run nuevo, lo dirige. Si compartieran texto, corregir una
+/// instrucción a media ejecución te dejaría el encargo del run anterior mezclado
+/// en el campo del nuevo, y el botón de arriba volvería a encargar algo que ya
+/// no es lo que querías.
+class _Direccion extends StatefulWidget {
+  const _Direccion({required this.onEnviar});
+
+  final Future<void> Function(String) onEnviar;
+
+  @override
+  State<_Direccion> createState() => _DireccionState();
+}
+
+class _DireccionState extends State<_Direccion> {
+  final _texto = TextEditingController();
+
+  @override
+  void dispose() {
+    _texto.dispose();
+    super.dispose();
+  }
+
+  Future<void> _enviar() async {
+    final t = _texto.text.trim();
+    if (t.isEmpty) return;
+    await widget.onEnviar(t);
+    if (!mounted) return;
+    // Se limpia solo, no al devolver el run: lo que se mandó ya está en el
+    // bucle, y dejarlo puesto invitaría a reenviarlo sin querer.
+    _texto.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: _texto,
+      minLines: 1,
+      maxLines: 2,
+      textInputAction: TextInputAction.send,
+      onSubmitted: (_) => _enviar(),
+      style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 11.5),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: 'Corregir en marcha…',
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        suffixIcon: IconButton(
+          icon: const Icon(Icons.send_rounded, size: 15),
+          onPressed: _enviar,
+          tooltip: 'Aplica en el siguiente paso',
+        ),
       ),
     );
   }
@@ -677,8 +999,20 @@ class _AprobacionesState extends ConsumerState<_Aprobaciones> {
           .ejecutarAprobacion(a.id);
       if (!mounted) return;
       setState(() {
-        _ok = r.ok;
-        _ejecutado = r.ok ? r.resultado : r.error;
+        // La ejecución va en segundo plano y el desenlace lo publica **el aviso**
+        // (A-069). Aquí solo se dice lo que dijo el bridge al arrancar, y se dice
+        // con sus palabras.
+        //
+        // Antes esta caja pintaba el resultado y el aviso pintaba el suyo, y se
+        // desincronizaron dos veces: una dejó una caja **en blanco**, porque leía
+        // un `ok` que ya no venía en la respuesta y pintaba un fallo sin motivo
+        // detrás. Un `ok` que se supone falso es peor que no pintar nada.
+        _ok = r.terminada;
+        _ejecutado = r.terminada
+            ? (r.ok ? r.resultado : r.error)
+            : (r.detalle.isEmpty
+                ? 'Aegis lo está haciendo. Te aviso con el aviso del móvil.'
+                : r.detalle);
       });
       refrescarAsistente(ref);
     } catch (e) {

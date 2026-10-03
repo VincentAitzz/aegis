@@ -254,12 +254,55 @@ class _Despliegues extends ConsumerStatefulWidget {
 
 class _DesplieguesState extends ConsumerState<_Despliegues> {
   bool _ocupado = false;
+  String? _aviso;
 
+  /// Aprueba o deniega, y —si se aprueba— **encadena la instalación**.
+  ///
+  /// ## Por qué las dos llamadas van aquí y no sueltas
+  /// `decideDeploy` emite el token y ya está: no instala nada. La instalación va
+  /// en su propio endpoint para que el token se gaste dentro del bridge y nunca
+  /// pase por el agente. Ese diseño obliga a que quien aprueba llame a las dos,
+  /// y aquí no se llamaba a la segunda: approved, se refrescaba la lista, y la
+  /// app enseñaba «hecho» con **nada instalado**. Dos OK dados y ni una
+  /// actualización, que es el peor final para un gesto hecho a distancia.
+  ///
+  /// ## Por qué aquí solo se dice «arranca ya» y no más
+  /// `/instalar` devuelve de inmediato y dice que **arranca**; el desenlace lo
+  /// publica el aviso, que es lo que se queda en la bandeja cuando cierras la
+  /// app. Esta línea está para que el gesto no se sienta como un trámite sin
+  /// destino, no para ser la segunda fuente de verdad: en cuanto Aegis termina,
+  /// el aviso dice «instalado» o «no se pudo» con el motivo, y aquí ya no queda
+  /// nada que decidir.
+  ///
+  /// ## Por qué no se abre la app al terminar
+  /// `adb install -r` mata el proceso de la app por su cuenta, así que no hay
+  /// nada que cerrar a mano. Lo que hay que evitar es lo contrario: que la app
+  /// intente mantener una pantalla con el resultado de algo que ya la ha
+  /// matado. Por eso el estado vive en el aviso y no en un widget.
   Future<void> _decidir(DeployRequest d, bool aprobar) async {
-    setState(() => _ocupado = true);
+    setState(() {
+      _ocupado = true;
+      _aviso = null;
+    });
     try {
       await ref.read(agentRepositoryProvider).decideDeploy(d.id, aprobar: aprobar);
+      if (!aprobar) {
+        if (mounted) setState(() => _aviso = 'Denegado. Aegis no lo intentará más.');
+        ref.read(deploysProvider.notifier).refrescar();
+        return;
+      }
+      final detalle =
+          await ref.read(agentRepositoryProvider).instalarDeploy(d.id);
       ref.read(deploysProvider.notifier).refrescar();
+      // El aviso del móvil lleva el estado de verdad, así que aquí **no** se
+      // afirma nada más: una operación en marcha solo tiene un sitio donde vivir
+      // (A-069). Antes esta app pintaba el resultado y el aviso pintaba el suyo, y
+      // se han desincronizado dos veces.
+      if (mounted) setState(() => _aviso = detalle);
+    } catch (e) {
+      // Aprobado pero no instalado, o al revés: se dice. Un `catch` mudo aquí
+      // es lo que convirtió el fallo en un "hecho" sin instalar.
+      if (mounted) setState(() => _aviso = 'No pude instalar: $e');
     } finally {
       if (mounted) setState(() => _ocupado = false);
     }
@@ -318,13 +361,26 @@ class _DesplieguesState extends ConsumerState<_Despliegues> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Aprobar es de un solo uso: sirve para esta instalación y se gasta.',
+              'Aprobar es de un solo uso: sirve para esta instalación y se gasta. '
+              'Al aprobar, Aegis la instala en segundo plano y el móvil avisa al '
+              'terminar.',
               style: TextStyle(
                   fontFamily: AegisPalette.mono,
                   fontSize: 9.5,
                   color: AegisPalette.fgFaint,
                   height: 1.5),
             ),
+            if (_aviso != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _aviso!,
+                style: const TextStyle(
+                    fontFamily: AegisPalette.mono,
+                    fontSize: 10.5,
+                    color: AegisPalette.ok,
+                    height: 1.5),
+              ),
+            ],
           ],
         ],
       ),

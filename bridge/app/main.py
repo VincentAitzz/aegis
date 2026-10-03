@@ -387,10 +387,19 @@ async def deploy_instalar(
 
     Si se bloqueara la respuesta, pulsar "sí" se sentiría como la app colgada, y
     quien aprueba desde el móvil no tiene a nadie a quien preguntarle qué pasó.
+
+    ## Y el aviso lleva las tres fases
+    Antes solo se avisaba del **final**. El aviso decía «necesito tu OK», tú
+    aprobabas, y el aviso desaparecía: se había aprobado *tu* parte, no la de
+    Aegis, y durante el trabajo no había nada. Ahora es el mismo aviso pasando de
+    «necesito tu OK» a «en marcha» y a «instalado», que es lo que hace que la
+    bandeja no se quede muda justo en la parte que espera (A-069).
     """
-    from .deploy import avisar_fallo_telefono, instalar_pendiente, PuertaCerrada
+    from .deploy import (avisar_fallo_telefono, avisar_trabajando,
+                         instalar_pendiente, PuertaCerrada)
 
     def _correr() -> None:
+        avisar_trabajando(pet_id, "instalando la app en tu teléfono")
         try:
             detalle = instalar_pendiente(pet_id)
             log.info("instalación en segundo plano de %s: %s", pet_id, detalle)
@@ -403,6 +412,9 @@ async def deploy_instalar(
         except Exception as exc:  # noqa: BLE001 — un hilo no puede propagar
             log.exception("instalación en segundo plano de %s", pet_id)
             avisar_fallo_telefono(pet_id, f"fallo inesperado: {exc}")
+        # El éxito **no** se avisa aquí: lo avisa `instalar_en_telefono`, que es
+        # quien sabe que `adb install` salió bien. Avisarlo también desde aquí
+        # publicaría dos veces y la segunda podría llegar antes que la primera.
 
     # `run_in_executor`: tanto la puerta como `adb install` son llamadas
     # bloqueantes. En el bucle de eventos pararían el WebSocket de telemetría
@@ -631,15 +643,42 @@ class AutopilotStatus(BaseModel):
 _AUTOPILOT_RUNS: dict[str, dict] = {}
 _AUTOPILOT_RUNS_MAX = 50
 
+#: Prefijo de los ids de autopilot. Sirve para reconocer un run propio sin
+#: mirar el buffer: un run ya podado sigue siendo reconocible, y un id de Hermes
+#: nunca empieza por aquí.
+_AUTOPILOT_PREFIX = "autopilot-"
+
 
 def _autopilot_trim() -> None:
-    while len(_AUTOPILOT_RUNS) > _AUTOPILOT_RUNS_MAX:
-        _AUTOPILOT_RUNS.pop(next(iter(_AUTOPILOT_RUNS)))
+    """Poda los runs más viejos, **saltando los que siguen en marcha**.
+
+    ## Por qué no basta con quitar el primero
+    Con un dict de datos, quedarse sin la entrada de un run terminado era una
+    molestia menor. Con `task`, `parar` y `extra` dentro, podar un run vivo le
+    borraría justo lo que lo hace controlable: quien pulsara parar recibiría un
+    404 y el steer se iría a un queue sin dueño, sin ningún error visible.
+
+    Por eso el recorte solo se come runs terminados. Si todos los que quedan
+    están vivos, no recorta y el buffer crece por encima del tope: preferible a
+   trunca un run que se vuelve incontrolable, y en la práctica los runs vivos
+    son pocos porque el tope es 50.
+    """
+    if len(_AUTOPILOT_RUNS) <= _AUTOPILOT_RUNS_MAX:
+        return
+    sobran = len(_AUTOPILOT_RUNS) - _AUTOPILOT_RUNS_MAX
+    for run_id in list(_AUTOPILOT_RUNS):
+        if sobran <= 0:
+            break
+        if _AUTOPILOT_RUNS[run_id].get("status") == "running":
+            continue
+        _AUTOPILOT_RUNS.pop(run_id, None)
+        sobran -= 1
 
 
 async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
                               run_id: str, on_step: Any = None,
-                              token: str = "") -> dict:
+                              token: str = "",
+                              parar: Any = None, extra: Any = None) -> dict:
     """El bucle de verdad, con su traza, su verificador y su episodio.
 
     Lo comparten la ruta síncrona y la de segundo plano: que el móvil vea el
@@ -650,6 +689,9 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
     cada paso. Si se midiera después de cada escritura, el rojo ya sería
     consecuencia de lo que hizo Aegis y no serviría para decidir si puede
     seguir. Es la línea base, y por eso se mide una vez y antes.
+
+    `parar` y `extra` llegan desde la ruta de segundo plano; la síncrona no los
+    pasa porque no hay nadie a quien parar mientras `/autopilot` no responde.
     """
     project = body.project or ""
     estado_base = medir_base(project, body.que) if project else None
@@ -671,6 +713,8 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
         token=token,
         fase=body.fase or "",
         estado_base=estado_base,
+        parar=parar,
+        extra=extra,
     )
     log.info("autopilot %s: %d pasos, %d tools ejecutadas (proyecto=%s, fase=%s)",
              run_id, result["steps"], sum(1 for t in result["trace"] if t.get("tool")),
@@ -745,10 +789,16 @@ async def autopilot(body: AutopilotIn) -> AutopilotOut:
 @app.post("/autopilot/start", response_model=AutopilotStarted)
 async def autopilot_start(body: AutopilotIn) -> AutopilotStarted:
     """Lanza el run y devuelve ya, con la traza creciendo en GET /autopilot/{id}."""
-    run_id = f"autopilot-{uuid.uuid4().hex[:12]}"
+    run_id = f"{_AUTOPILOT_PREFIX}{uuid.uuid4().hex[:12]}"
+    # `parar` y `extra` se crean **antes** de la tarea y se guardan en el run: un
+    # endpoint de parada que llegara después de arrancar la tarea podría no
+    # encontrarlo, y la persona vería "parado" y el run seguiría escribiendo.
+    # El `task` se rellena justo debajo, en cuanto existe.
     _AUTOPILOT_RUNS[run_id] = {"run_id": run_id, "status": "running",
                                "steps": 0, "trace": [],
-                               "answer": None, "fin": None, "error": None}
+                               "answer": None, "fin": None, "error": None,
+                               "parar": asyncio.Event(), "extra": asyncio.Queue(),
+                               "task": None}
     _autopilot_trim()
     project = body.project or ""
     ctx = await _memory_context(body.prompt) if project else ""
@@ -766,19 +816,97 @@ async def autopilot_start(body: AutopilotIn) -> AutopilotStarted:
 
     async def _runner() -> None:
         try:
+            run = _AUTOPILOT_RUNS.get(run_id) or {}
             result = await _run_autopilot_once(body, ctx, puerta, run_id,
-                                               on_step=_on_step, token=body.token)
+                                               on_step=_on_step, token=body.token,
+                                               parar=run.get("parar"),
+                                               extra=run.get("extra"))
             run = _AUTOPILOT_RUNS.setdefault(run_id, {"run_id": run_id})
             run.update(status="completed", steps=result["steps"],
                        answer=result["answer"], fin=result["fin"],
                        trace=result["trace"])
+        except asyncio.CancelledError:
+            # Parar la tarea de asyncio no es la vía de parada —el bucle corta
+            # entre pasos—, pero si ocurre (apagado del bridge) el run no puede
+            # quedarse en `running` para siempre: se marca como parado, que es
+            # lo que pasó.
+            log.info("autopilot %s: tarea cancelada", run_id)
+            run = _AUTOPILOT_RUNS.setdefault(run_id, {"run_id": run_id})
+            run.update(status="completed", fin="parado",
+                       answer=run.get("answer")
+                       or "El run se canceló antes de terminar.")
+            raise
         except Exception as exc:  # noqa: BLE001 — el run no puede morir en silencio
             log.warning("autopilot %s falló: %s", run_id, exc)
             run = _AUTOPILOT_RUNS.setdefault(run_id, {"run_id": run_id})
             run.update(status="failed", error=str(exc)[:500])
 
-    asyncio.create_task(_runner())
+    tarea = asyncio.create_task(_runner(), name=f"autopilot-{run_id}")
+    # La tarea se guarda ya en marcha: el endpoint de parada solo necesita el
+    # `Event`, pero sin la referencia el run queda huérfano en `/proc` si nadie
+    # lo para nunca, y no hay forma de distinguir eso de un bridge sano.
+    _AUTOPILOT_RUNS[run_id]["task"] = tarea
     return AutopilotStarted(run_id=run_id)
+
+
+class SteerIn(BaseModel):
+    """Instrucción para un run que ya está corriendo."""
+
+    text: str = Field(min_length=1, max_length=4_000)
+
+
+@app.post("/autopilot/{run_id}/stop")
+async def autopilot_stop(run_id: str) -> dict:
+    """Pide que el run deje de empezar pasos.
+
+    ## Por qué no se cancela la tarea
+    El bucle está a mitad de un `await` contra el modelo o dentro de `_execute`,
+    que **es síncrono**: cortar ahí deja una escritura a medias y la traza sin el
+    paso que la menjelaskan. Poner el `Event` deja terminar el paso en marcha y
+    corta antes de pedirle nada más al modelo.
+
+    La parada es por tanto «no empieces otro»: si ya habías pedido una tool, esa
+    se ejecuta y se registra. Es lo que hace un interruptor de proceso, y es
+    honesto porque la traza que devuelve es exactamente lo que corrió.
+    """
+    run = _AUTOPILOT_RUNS.get(run_id)
+    if run is None:
+        # No es un fallo del usuario: el run puede haberse podado, o el bridge
+        # haberse reiniciado. El JSONL sigue ahí, que es lo que permite decirlo
+        # en vez de fingir que el id nunca existió.
+        raise HTTPException(
+            status_code=404,
+            detail=f"el run {run_id} no está vivo: o terminó y se cayó del "
+                   f"buffer, o el bridge se reinició. Se puede parar lo que está "
+                   f"corriendo ahora, no un run ya terminado.")
+    if run.get("status") != "running":
+        return {"run_id": run_id, "status": run.get("status"), "parado": False,
+                "detalle": "el run ya había terminado"}
+    run["parar"].set()
+    return {"run_id": run_id, "status": "parando", "parado": True,
+            "detalle": "termina el paso en marcha y no empieza otro"}
+
+
+@app.post("/autopilot/{run_id}/steer")
+async def autopilot_steer(run_id: str, body: SteerIn) -> dict:
+    """Mete una instrucción en un run que ya está corriendo.
+
+    Se aplica en el **siguiente** paso, no en mitad del actual: el paso en marcha
+    ya tiene su lista `messages` decidida, y cambiarlo a mitad dejaría la traza
+    diciendo una cosa y el resultado de la tool siendo otro.
+    """
+    run = _AUTOPILOT_RUNS.get(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"el run {run_id} no está vivo, así que no hay a quién "
+                   f"dirigir.")
+    if run.get("status") != "running":
+        return {"run_id": run_id, "aplicada": False,
+                "detalle": "el run ya había terminado"}
+    run["extra"].put_nowait(body.text)
+    return {"run_id": run_id, "aplicada": True,
+            "detalle": "surte efecto en el próximo paso"}
 
 
 @app.get("/autopilot/{run_id}", response_model=AutopilotStatus)
@@ -788,11 +916,27 @@ async def autopilot_status(run_id: str) -> AutopilotStatus:
     Si no está en el buffer en vivo —porque el bridge se reinició, o porque ya
     se cayó del tope de 50— se reconstruye desde el JSONL del disco. Un 404 aquí
     sería mentir: el run ocurrió y su traza está escrita.
+
+    ## Por qué el `AutopilotStatus` se arma campo a campo
+    El dict del run guarda también `parar`, `extra` y `task`, que son objetos
+    vivos de asyncio. Un `AutopilotStatus(**run)` depende de que pydantic los
+    ignore por defecto —que hoy sí, pero es un detalle de la librería, no una
+    decisión— y además intentaría serializar un `Event` si alguien cambia ese
+    ajuste. Nombrar los campos que salen es lo que hace que este endpoint no
+    pueda romperse al añadir control de un run.
     """
     run = _AUTOPILOT_RUNS.get(run_id)
     if run is None:
         return _autopilot_desde_disco(run_id)
-    return AutopilotStatus(**run)
+    return AutopilotStatus(
+        run_id=run_id,
+        status=run.get("status") or "running",
+        steps=run.get("steps") or 0,
+        trace=run.get("trace") or [],
+        answer=run.get("answer"),
+        fin=run.get("fin"),
+        error=run.get("error"),
+    )
 
 
 def _autopilot_desde_disco(run_id: str) -> AutopilotStatus:
@@ -1395,6 +1539,18 @@ _MOTIVOS_DE_RECHAZO = (
 )
 
 
+#: Las tools que **ya** publican su propio desenlace en el aviso.
+#:
+#: `install_apk` avisa desde `instalar_en_telefono`, que es la única que sabe si
+#: `adb install` salió bien de verdad; hacerlo aquí también publicaría dos veces
+#: y el orden entre dos broadcasts distintos no está garantizado.
+_AVISAN_ELLAS_MISMAS = frozenset({"install_apk"})
+
+
+def _avisa_por_si_mismo(tool: str) -> bool:
+    return tool in _AVISAN_ELLAS_MISMAS
+
+
 @app.post("/aprobaciones/{pet_id}/ejecutar")
 async def aprobacion_ejecutar(pet_id: str,
                               _auth: None = Depends(exigir_token)) -> dict:
@@ -1460,28 +1616,120 @@ async def aprobacion_ejecutar(pet_id: str,
         raise HTTPException(status_code=409,
                             detail="ese permiso se gastó en otro sitio a la vez")
 
+    # La ejecución va en un hilo y la respuesta sale **ya**. La razón está
+    # escrita en `_ejecutar_aprobacion_en_segundo_plano`: una tool de nivel 3
+    # puede ser la puerta completa del despliegue, que son minutos, y el cliente
+    # del móvil se cansa a los 10 s. Aquí se canseba antes.
+    asyncio.get_running_loop().run_in_executor(
+        None, _lanza_ejecucion, pet_id, fila, tool, argumentos)
+
+    return {"id": pet_id, "tool": tool, "estado": "en_curso",
+            "detalle": "la llamada arranca ya; el rastro y el aviso confirman al "
+                       "terminar",
+            "proyecto": fila["proyecto"]}
+
+
+def _ejecutar_aprobacion_en_segundo_plano(pet_id: str, fila: dict, tool: str,
+                                          argumentos: dict) -> None:
+    """Ejecuta la llamada aprobada y deja el rastro, sin retener la respuesta.
+
+    ## Por qué esto está en un hilo y no awaited
+    Medido (A-066): `install_apk` no es una llamada, es **la puerta completa** —
+    `flutter analyze`, `flutter test` y el humo en el emulador, que en esta
+    máquina son minutos. Con `/ejecutar` esperando, el móvil se cansaba a los 10 s de
+    su `receiveTimeout` y pintaba «No pude ejecutar», con el token ya gastado y
+    la instalación a medias de hacer: un gesto que se hizo bien y se cuenta como
+    fallido.
+
+    Es el mismo argumento que ya está escrito en `POST /deploys/{id}/instalar`
+    («si se bloqueara la respuesta, pulsar "sí" se sentiría como la app colgada, y
+    quien aprueba desde el móvil no tiene a nadie a quien preguntarle qué pasó»).
+    Estaba aplicado a un endpoint y no al otro, que es justo el modo de fallo que
+    estas lecciones persiguen.
+
+    ## Y qué se pierde, dicho claro
+    La respuesta ya no trae el `result` de la tool. Viene con
+    `estado: "en_curso"`, y el desenlace se lee del JSONL y del aviso. Es una
+    pérdida real y es el precio: una tool de nivel 3 puede tardar lo que quiera, y
+    un HTTP no puede quedarse abierto ese tiempo sin que el cliente lo lea como
+    un fallo.
+    """
+    # El import va aquí y no arriba del módulo: `ToolNotAllowed` y `_execute`
+    # viven en `app.autopilot`, que importa el `main` (a través de memoria). Sin
+    # este import la función moría con `NameError` **en el hilo**, después de
+    # haber gastado el permiso y de haber contestado al móvil: el peor sitio
+    # posible, porque el cliente ya tiene su respuesta y no hay nadie mirando.
+    from .autopilot import ToolNotAllowed, _execute
+    from .deploy import avisar_fallo_telefono, avisar_telefono, avisar_trabajando
+
+    # «En marcha» antes de empezar. Antes solo se avisaba del fallo, así que una
+    # operación que salía bien terminaba **muda**: el aviso pedía tu OK, lo dabas,
+    # y a partir de ahí Aegis no te decía nada. Un canal que solo avisa de que
+    # algo va mal es peor que no tener canal, porque entrena a ignorar el que sí
+    # habla.
+    avisar_trabajando(pet_id, f"ejecutando {tool}")
+
     ok, resultado, error = True, "", ""
     try:
-        resultado = await asyncio.to_thread(_execute, tool, argumentos)
+        resultado = _execute(tool, argumentos)
     except ToolNotAllowed as exc:
         ok, error = False, str(exc)
-    except Exception as exc:  # noqa: BLE001 — el motivo vuelve al móvil, no se pierde
+    except Exception as exc:  # noqa: BLE001 — el motivo se queda escrito
         ok, error = False, f"{type(exc).__name__}: {exc}"[:500]
-
-    # `ok` es si la tool **corrió**, y las tools de Aegis no lanzan cuando
-    # deniegan: devuelven el motivo como texto ("ALTA RECHAZADA: …"). Pintar eso
-    # de "hecho" es el falso éxito que este repo ya pagó una vez (A-016, el
-    # veredicto que salía de `final_text`). Así que se mira el motivo, con una
-    # lista corta y explícita: heurística, y por eso el `result` sigue siendo la
-    # autoridad — esto solo evita que la interfaz diga "hecho" cuando no fue.
-    marca = _MOTIVOS_DE_RECHAZO
-    if ok and any(resultado.startswith(m) for m in marca):
+    if ok and any(resultado.startswith(m) for m in _MOTIVOS_DE_RECHAZO):
         ok = False
         error = resultado[:500]
     _escribir_jsonl_de_aprobacion(pet_id, fila, argumentos, resultado, ok, error)
-    return {"id": pet_id, "tool": tool, "ok": ok,
-            "result": resultado, "error": error,
-            "proyecto": fila["proyecto"]}
+    log.info("aprobacion %s: %s terminó (ok=%s): %s",
+             pet_id, tool, ok, resultado[:200])
+    # El desenlace va al aviso **solo si** esta ruta no publica el suyo. Una
+    # instalación avisa desde `instalar_en_telefono`, que es quien sabe que `adb`
+    # salió bien; si avisáramos aquí también, «instalado» podría llegar antes que
+    # «en marcha» y la bandeja terminaría diciendo que está instalando algo que ya
+    # terminó.
+    if not _avisa_por_si_mismo(tool):
+        if ok:
+            avisar_telefono({"id": pet_id, "razon": f"{tool} hecho"})
+        else:
+            avisar_fallo_telefono(pet_id, error or resultado[:300])
+
+
+def _lanza_ejecucion(pet_id: str, fila: dict, tool: str, argumentos: dict) -> None:
+    """El `run_in_executor` de verdad: un hilo cuyo fallo **no se propaga**.
+
+    ## Por qué hace falta y no es paranoia
+    Un `run_in_executor` entrega el callable a un hilo del pool: si ese callable
+    lanza, la excepción se queda en ese hilo y **nadie la ve**. Ni el móvil —que
+    ya recibió su respuesta y se le dijo que empezó—, ni los tests, que solo
+    miran la respuesta HTTP.
+
+    Pasó de verdad al escribir esto: la función usaba `ToolNotAllowed` sin
+    importarlo (el import estaba dentro del endpoint) y moría con `NameError`
+    **después** de gastar el permiso y de contestar. El móvil tenía un «en curso»,
+    no pasaba nada, y no había error en ninguna parte.
+
+    ## Por qué el aviso al teléfono y no solo el log
+    Un log que nadie mira no arregla un gesto que alguien hizo a distancia. El
+    aviso es lo mismo que usa `POST /deploys/{id}/instalar`: si no se puede
+    cumplir, se dice en el móvil, que es el único sitio donde quien aprobó puede
+    enterarse.
+    """
+    try:
+        _ejecutar_aprobacion_en_segundo_plano(pet_id, fila, tool, argumentos)
+    except Exception as exc:  # noqa: BLE001 — un hilo no puede propagar y punto
+        log.exception("la ejecución de la aprobación %s (%s) murió sin dejar "
+                      "rastro", pet_id, tool)
+        detalle = f"no pude ejecutar {tool}: {type(exc).__name__}: {exc}"[:300]
+        try:
+            _escribir_jsonl_de_aprobacion(pet_id, fila, argumentos, detalle,
+                                          False, detalle)
+        except Exception:  # noqa: BLE001 — ya estamos en el camino del fallo
+            log.exception("además no pude escribir el rastro de %s", pet_id)
+        try:
+            from .deploy import avisar_fallo_telefono
+            avisar_fallo_telefono(pet_id, detalle)
+        except Exception:  # noqa: BLE001 — el aviso es lo último que puede fallar
+            log.exception("además no pude avisar del fallo de %s", pet_id)
 
 
 def _escribir_jsonl_de_aprobacion(pet_id: str, fila: dict, argumentos: dict,

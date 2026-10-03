@@ -62,11 +62,13 @@ class NotificacionReceiver : BroadcastReceiver() {
         // Del intent solo se lee el **rótulo** del aviso (`hecho` / `fallo`).
         // Lo que decide algo sale de `/deploys`, no del intent: ver la nota sobre
         // `exported` en la cabecera de la clase.
-        val tipo = intent.getStringExtra("tipo") ?: "pendiente"
+        val tipo = intent.getStringExtra("tipo") ?: PENDIENTE
         val motivo = intent.getStringExtra("motivo").orEmpty()
+        val ts = intent.getStringExtra("ts")?.toDoubleOrNull() ?: 0.0
+        val petId = intent.getStringExtra("pet_id").orEmpty()
         Thread {
             try {
-                avisar(context.applicationContext, tipo, motivo)
+                avisar(context.applicationContext, tipo, motivo, ts, petId)
             } catch (e: Exception) {
                 // ## Por qué esto está y no parece que haga falta
                 // Una excepción en este hilo **no se ve**: no hay stacktrace en
@@ -83,18 +85,67 @@ class NotificacionReceiver : BroadcastReceiver() {
         }.start()
     }
 
-    private fun avisar(context: Context, tipo: String, motivo: String) {
+    /**
+     * Pinta el estado que le dice el puente, o se calla si ese estado ya es viejo.
+     *
+     * ## Por qué hay un solo aviso y no uno por cosa
+     * Antes eran dos ids: 4101 para «necesito tu OK» y 4102 para el resultado, a
+     * propósito, para que un «ya está» no borrara un «todavía necesito tu OK».
+     * Lo que pasó en la práctica es peor que ese riesgo: **4102 no lo cancelaba
+     * nadie nunca**, así que un aviso de un test quedó en la bandeja sin forma de
+     * quitarlo, y mientras tanto los avisos de resultado nunca se verificaban,
+     * porque el puente solo miraba el 4101 en `dumpsys`.
+     *
+     * Con un id, «no puede haber dos avisos de Aegis» deja de ser una intención y
+     * pasa a ser una propiedad. Y el riesgo que se temía —perder a la vista una
+     * decisión pendiente— se paga solo: el siguiente aviso de pendientes repinta
+     * el aviso de decisión.
+     *
+     * ## Por qué se guarda el `ts` en disco
+     * Los broadcasts van por `adb`, uno a uno, pero **sin orden entre llamadas
+     * distintas**: el puente avisa por teléfono y por emulador en procesos
+     * separados, y una respuesta lenta puede llegar después de un estado nuevo.
+     * Sin este guardia, un «instalado» tardío podía dejar la bandeja pidiendo un
+     * OK sobre algo que ya estaba hecho. `ts` es la marca de tiempo que pone el
+     * puente y contra la que se compara.
+     */
+    private fun avisar(
+        context: Context,
+        tipo: String,
+        motivo: String,
+        ts: Double,
+        petId: String,
+    ) {
         val nm = NotificationManagerCompat.from(context)
+        if (tipo != CUADRO && ts > 0.0 && ts < UltimoAviso.leer(context)) {
+            android.util.Log.i(TAG, "ignoro un aviso viejo: $tipo (ts=$ts)")
+            return
+        }
         when (tipo) {
+            // Todo se va. No se publica nada: un aviso que ya no vale tiene que
+            // poder irse **sin** que llegue otro aviso que lo tape.
+            LIMPIAR -> {
+                nm.cancel(ID)
+                UltimoAviso.borrar(context)
+            }
+
             // Aviso de resultado. Se publica aunque `/deploys` no conteste: el
             // resultado de una instalación no está en `/deploys`, así que si el
             // puente se cayó justo al terminar, la noticia sigue siendo real y
             // hay que contarla igual.
-            "hecho" -> publicarResultado(context, nm, "AEGIS · INSTALADO", "Ya está.")
-            "fallo" -> publicarResultado(
-                context, nm, "AEGIS · NO SE INSTALÓ",
-                motivo.ifBlank { "Algo impidió la instalación." }
+            HECHO -> publicarFinal(
+                context, nm, "AEGIS · INSTALADO", "Ya está en tu teléfono.", ts
             )
+            FALLO -> publicarFinal(
+                context, nm, "AEGIS · NO SE PUDO",
+                motivo.ifBlank { "Algo impidió que saliera adelante." }, ts
+            )
+
+            // En marcha. El único aviso *ongoing*: no se puede quitar con un dedo,
+            // porque entre tu «sí» y el resultado hay un trabajo y si el aviso se
+            // pudiera deslizar la bandeja volvería a quedarse muda justo en la
+            // parte que espera.
+            TRABAJANDO -> publicarTrabajando(context, nm, motivo, ts)
 
             // Enseñar el cuadro, sin abrir la app.
             //
@@ -109,9 +160,9 @@ class NotificacionReceiver : BroadcastReceiver() {
             // `exported=false` a propósito: si cualquier app del teléfono pudiera
             // abrirla, podría **aprobar una instalación**. Lanzarla desde el
             // proceso de la app es lo que deja esa puerta cerrada.
-            "cuadro" -> mostrarCuadro(context)
+            CUADRO -> mostrarCuadro(context)
 
-            else -> avisarPendientes(context, nm)
+            else -> avisarPendientes(context, nm, ts, petId)
         }
     }
 
@@ -124,7 +175,12 @@ class NotificacionReceiver : BroadcastReceiver() {
     }
 
     /** El aviso de «necesito tu OK», y su retirada cuando ya no queda nada. */
-    private fun avisarPendientes(context: Context, nm: NotificationManagerCompat) {
+    private fun avisarPendientes(
+        context: Context,
+        nm: NotificationManagerCompat,
+        ts: Double,
+        petId: String,
+    ) {
         // Antes de nada, se dice de dónde se está mirando y si hay con qué. Un
         // `null` sin más información es indistinguible de un puente apagado, de
         // un token caducado y de un host mal compilado — tres fallos con arreglo
@@ -154,23 +210,37 @@ class NotificacionReceiver : BroadcastReceiver() {
             // Se cobró todo. Se retira el aviso: dejarlo puesto es una mentira
             // esperando a que alguien la lea.
             nm.cancel(ID)
+            UltimoAviso.borrar(context)
             return
         }
 
-        publicar(context, nm, pendientes)
+        publicar(context, nm, pendientes, ts)
     }
 
-    /** Un aviso de resultado, que no lleva a ninguna decisión: solo informa. */
-    private fun publicarResultado(
+    /**
+     * Un aviso **final**, y caduca solo.
+     *
+     * ## Por qué `setTimeoutAfter` y no esperar a otro aviso
+     * `setAutoCancel(true)` solo lo quita al tocarlo. Y antes, como estos avisos
+     * iban a un id que nadie cancelaba, un «ya está» se quedaba en la bandeja
+     * para siempre: pasado un rato es ruido, y ruido es lo contrario de avisar.
+     *
+     * ## Por qué el toque no lleva a ninguna decisión
+     * Un «instalado» no abre el cuadro de decidir. Lleva a la app, que es donde
+     * se ve lo que pasó; mandar a un cuadro con la cola vacía sería un callejón.
+     */
+    private fun publicarFinal(
         context: Context,
         nm: NotificationManagerCompat,
         titulo: String,
         cuerpo: String,
+        ts: Double,
     ) {
         crearCanal(context)
         if (!nm.areNotificationsEnabled()) return
+        UltimoAviso.guardar(context, ts)
         nm.notify(
-            ID_RESULTADO,
+            ID,
             NotificationCompat.Builder(context, CANAL)
                 .setSmallIcon(R.drawable.aegis_mono)
                 .setLargeIcon(Icon.createWithResource(context, R.drawable.ic_launcher_foreground))
@@ -186,6 +256,49 @@ class NotificacionReceiver : BroadcastReceiver() {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .setAutoCancel(true)
+                .setTimeoutAfter(CADUCIDAD_MS)
+                .setContentIntent(abrirLaApp(context))
+                .build()
+        )
+    }
+
+    /**
+     * «Esto está en marcha», y no se puede quitar.
+     *
+     * La barra es **indeterminada** a propósito: `adb install` no da porcentaje y
+     * uno inventado sería peor que ninguno —un 40 % que no significa nada es una
+     * mentira con graphique. Lo que sí sabemos es que hay algo en marcha, y eso
+     * es lo que se dice.
+     */
+    private fun publicarTrabajando(
+        context: Context,
+        nm: NotificationManagerCompat,
+        que: String,
+        ts: Double,
+    ) {
+        crearCanal(context)
+        if (!nm.areNotificationsEnabled()) return
+        UltimoAviso.guardar(context, ts)
+        val cuerpo = que.ifBlank { "Un momento…" }
+        nm.notify(
+            ID,
+            NotificationCompat.Builder(context, CANAL)
+                .setSmallIcon(R.drawable.aegis_mono)
+                .setLargeIcon(Icon.createWithResource(context, R.drawable.ic_launcher_foreground))
+                .setContentTitle("AEGIS · EN MARCHA")
+                .setContentText(cuerpo)
+                .setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .bigText(cuerpo)
+                        .setBigContentTitle("AEGIS · EN MARCHA")
+                )
+                .setColor(COLOR_ACENTO)
+                .setColorized(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .setOngoing(true)
+                .setSilent(true)
+                .setProgress(0, 0, true)
                 .setContentIntent(irAlCuadro(context))
                 .build()
         )
@@ -195,6 +308,7 @@ class NotificacionReceiver : BroadcastReceiver() {
         context: Context,
         nm: NotificationManagerCompat,
         pendientes: List<Puente.Pendiente>,
+        ts: Double,
     ) {
         crearCanal(context)
 
@@ -251,8 +365,19 @@ class NotificacionReceiver : BroadcastReceiver() {
         // golpe para un aviso. El permiso se pide en Dart, con su explicación, y
         // al concederlo `MainActivity` reintenta este mismo aviso por broadcast.
         if (!nm.areNotificationsEnabled()) return
+        UltimoAviso.guardar(context, ts)
         nm.notify(ID, aviso)
     }
+
+    /** El toque de un aviso final: la app, donde se ve lo que pasó. */
+    private fun abrirLaApp(context: Context): PendingIntent =
+        PendingIntent.getActivity(
+            context, 1,
+            Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
     /** El toque: la ventana translúcida, no la app. */
     private fun irAlCuadro(context: Context): PendingIntent {
@@ -281,12 +406,71 @@ class NotificacionReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "Aegis"
 
+        /** Un solo aviso, un solo id.
+         *
+         * ## Por qué 4102 desapareció
+         * Existía para que el aviso de decisión y el de resultado no se pisaran.
+         * El resultado fue peor: 4102 **no lo cancelaba nadie nunca** (solo se
+         * cancelaba 4101, y solo cuando otro aviso veía la cola vacía), así que
+         * un aviso se quedó en la bandeja sin forma de quitarlo. Y como el puente
+         * verifica la entrega mirando `id=4101` en `dumpsys`, todos los avisos de
+         * resultado acababan en «AVISO NO VERIFICADO».
+         *
+         * ## Y 4101 no es un número arbitrario
+         * `ID_AVISO = 4101` en `bridge/app/deploy.py` **comprueba** este mismo
+         * número en `dumpsys` para decir si el aviso llegó. Si divergen, el
+         * broadcast se pierde y no hay error en ninguna parte. Si algún día
+         * cambia, cambia en los dos sitios a la vez.
+         */
         const val ID = 4101
         const val CANAL = "aegis"
 
-        /** Otro ID a propósito: el aviso de decisión y el de resultado no se
-         * pisan, y un "ya está" no borra un "todavía necesito tu OK". */
-        const val ID_RESULTADO = 4102
+        //: Los estados, con los mismos nombres que `ESTADO_*` en `deploy.py`.
+        const val PENDIENTE = "pendiente"
+        const val TRABAJANDO = "trabajando"
+        const val HECHO = "hecho"
+        const val FALLO = "fallo"
+        const val LIMPIAR = "limpiar"
+
+        /** Abrir el cuadro sin decidir. Nunca lo manda el puente hoy. */
+        const val CUADRO = "cuadro"
+
+        /** Cuánto vive un aviso final antes de irse solo. */
+        const val CADUCIDAD_MS = 45_000L
+
+        /**
+         * La marca del último aviso pintado, guardada en disco.
+         *
+         * ## Por qué en `SharedPreferences` y no en memoria
+         * El proceso se muere entre un aviso y otro —es un `BroadcastReceiver`, y
+         * Android lo mata para cuando quiere—, y un `var` en el companion
+         * volvería a cero. Con un aviso que se puede quedar puesto (el que no se
+         * podía quitar), perder la marca significa dejar de detectar los avisos
+         * viejos justo cuando más falta hace.
+         *
+         * ## Y por qué guardar el `ts` **del puente**
+         * Porque es el puente quien sabe en qué orden envió las cosas. La hora del
+         * reloj del teléfono no sirve: el teléfono puede tener la hora cambiada
+         * mientras el bridge no.
+         */
+        object UltimoAviso {
+            private const val CLAVE = "aegis.ultimo_aviso"
+
+            fun leer(context: Context): Double =
+                context.getSharedPreferences("aegis", Context.MODE_PRIVATE)
+                    .getFloat(CLAVE, 0f).toDouble()
+
+            fun guardar(context: Context, ts: Double) {
+                if (ts <= 0.0) return
+                context.getSharedPreferences("aegis", Context.MODE_PRIVATE)
+                    .edit().putFloat(CLAVE, ts.toFloat()).apply()
+            }
+
+            fun borrar(context: Context) {
+                context.getSharedPreferences("aegis", Context.MODE_PRIVATE)
+                    .edit().remove(CLAVE).apply()
+            }
+        }
 
         /// El celeste de la identidad (`aegis_palette.dart`).
         ///

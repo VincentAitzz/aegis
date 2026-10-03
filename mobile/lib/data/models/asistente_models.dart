@@ -153,6 +153,21 @@ class Autonomia {
         'pleno' => 'Trabajo solo en los proyectos marcados. Lo de fuera te lo pregunto.',
         _ => 'Trabajo solo en los proyectos que marques. El resto, solo lectura.',
       };
+
+  /// Si Aegis puede escribir en ese proyecto sin preguntar.
+  ///
+  /// Vive aquí y no en las pantallas porque hay dos preguntas con la misma
+  /// respuesta que se pueden desincronizar: si este proyecto está marcado, y si
+  /// por tanto a un run hay que ponerle la puerta de verificación. La segunda es
+  /// la que se olvidó: el móvil mandaba `verificar: false` fijo, y desde el
+  /// teléfono ninguna escritura pasaba por el verificador aunque el proyecto
+  /// estuviera marcado. La ruta de `curl` sí lo hacía, así que el mismo encargo se
+  /// verificaba o no según desde dónde saliera.
+  ///
+  /// Sin proyecto no hay nada que verificar, así que `''` y un alias raro
+  /// devuelven `false` los dos: sin destino no hay contra qué comprobar.
+  bool escribible(String alias) =>
+      alias.isNotEmpty && escritura.containsKey(alias);
 }
 
 /// Una nota tuya.

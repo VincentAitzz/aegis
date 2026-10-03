@@ -9,21 +9,45 @@ import '../../data/models/asistente_models.dart';
 /// `ok` es si la tool corrió **y no denegó**: las tools de Aegis devuelven el
 /// motivo como texto en vez de lanzar, así que un "hecho" sobre un "RECHAZADO"
 /// detrás sería el falso éxito que el bridge ya pagó una vez.
+/// Lo que devuelve `POST /aprobaciones/{id}/ejecutar`.
+///
+/// ## Por qué `estado` y no `ok`
+/// La ejecución va **en segundo plano**: una tool de nivel 3 puede ser la puerta
+/// completa del despliegue —`flutter analyze`, `flutter test` y el humo en el
+/// emulador— y eso son minutos. Con la respuesta esperando, el cliente se cansaba
+/// a los 10 s y pintaba «No pude ejecutar» con el token ya gastado y la
+/// instalación a medias: un gesto bien hecho que se contaba como fallido.
+///
+/// Así que la respuesta dice que **arrancó**, y el desenlace llega por el rastro y
+/// el aviso. `ok` queda para cuando viene `estado: "terminada"`.
 class EjecucionAprobada {
   const EjecucionAprobada({
     required this.tool,
-    required this.ok,
+    this.estado = 'en_curso',
+    this.detalle = '',
+    this.ok = false,
     this.resultado = '',
     this.error = '',
   });
 
   final String tool;
+
+  /// `en_curso` | `terminada`. Lo que sea nuevo tiene que saber nombrarse aquí.
+  final String estado;
+
+  /// Lo que el bridge responde, en una frase, para que el móvil lo enseñe sin
+  /// inventar un "hecho" que todavía no ha pasado.
+  final String detalle;
   final bool ok;
   final String resultado;
   final String error;
 
+  bool get terminada => estado == 'terminada';
+
   factory EjecucionAprobada.fromJson(Map<String, dynamic> j) => EjecucionAprobada(
         tool: (j['tool'] ?? '') as String,
+        estado: (j['estado'] ?? 'en_curso') as String,
+        detalle: (j['detalle'] ?? '') as String,
         ok: j['ok'] == true,
         resultado: (j['result'] ?? '') as String,
         error: (j['error'] ?? '') as String,
@@ -65,7 +89,23 @@ abstract interface class AgentRepository {
 
   /// Aprueba (o deniega) una instalación pendiente. Una aprobación es de un
   /// solo uso: sirve para instalar una vez.
+  ///
+  /// **Aprobar no instala.** Deja el token emitido, y hace falta llamar a
+  /// [instalarDeploy]. Quien approve tiene que encadenar las dos.
   Future<void> decideDeploy(String id, {required bool aprobar});
+
+  /// Instala un despliegue **ya aprobado**, sin que pase por el agente, y
+  /// devuelve el detalle que el bridge responde (que es una confirmación de que
+  /// **arranca**, no de que terminó).
+  ///
+  /// ## Por qué es una llamada aparte y no parte de [decideDeploy]
+  /// El token se gasta dentro del bridge y no sale hacia el agente, y por eso
+  /// instalar va por su propio endpoint. La razón para no fundirlas en el
+  /// cliente está medida: aprobar sin instalar se convirtió en medio gesto, y
+  /// quien aprobó desde la app se quedó con dos OK dados y **nada instalado**.
+  /// Separarlas en el repo hace que el error sea visible: si `_decidir` olvida
+  /// la segunda llamada, sale de aquí mirando.
+  Future<String> instalarDeploy(String id);
 
   /// Lanza un run de autopilot en segundo plano y devuelve ya su run_id.
   ///
@@ -84,6 +124,20 @@ abstract interface class AgentRepository {
 
   /// Progreso del run de autopilot. `AutopilotRun.finished` dice si paró.
   Future<AutopilotRun> autopilotStatus(String runId);
+
+  /// Pide que el run deje de empezar pasos.
+  ///
+  /// No es una cancelación: el paso que ya está corriendo **se termina** y queda
+  /// en la traza, porque `_execute` es síncrono y cortar a mitad dejaría una
+  /// escritura sin el paso que la explica. La parada es "no empieces otro".
+  Future<void> stopAutopilot(String runId);
+
+  /// Mete una instrucción en un run que ya está corriendo.
+  ///
+  /// Surte efecto en el **siguiente** paso, no en el que está en marcha: ese ya
+  /// tiene sus mensajes decididos, y cambiarlos dejaría la traza diciendo una
+  /// cosa y el resultado de la tool siendo otro.
+  Future<void> steerAutopilot(String runId, String text);
 
   /// Escribe la ficha de un proyecto, **sin pasar por el modelo**.
   ///

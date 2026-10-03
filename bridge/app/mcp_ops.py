@@ -777,7 +777,8 @@ def aegis_patch_file(path: str, old: str, new: str, replace_all: bool = False) -
 
 
 @mcp.tool()
-def build_apk(target: str = "emulador", force: bool = False) -> str:
+def build_apk(target: str = "emulador", force: bool = False,
+              humo: bool = False) -> str:
     """Compila el APK debug para un destino.
 
     ## target
@@ -798,6 +799,17 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
 
     Antes de compilar valida que el tema se haya recoloreado (si brand sigue
     siendo el magenta original y force=False, aborta con la ruta correcta).
+
+    ## `humo`
+
+    Tras compilar, este es el sitio donde se paga la puerta cara: `flutter
+    analyze`, `flutter test` y, con `humo=True`, el humo en el emulador. Se hace
+    aquí y no al instalar porque son minutos, y al instalar el aviso ya está en
+    pantalla y esperar en silencio se lee como «se colgó» (A-068).
+
+    El humo va apagado porque instala y arranca el emulador, y quien compila para
+    su propio uso no siempre lo quiere. Con `humo=True` el APK queda sellado
+    como verificado y se puede proponer instalar al momento.
     """
     from .dispositivos import DeviceError, api_host_para, apk_para, TARGETS
     base = target.split(":")[0]
@@ -902,12 +914,39 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
     if ok:
         from .deploy import escribir_sello
         escribir_sello(destino)
+    # Y ahora la puerta cara, aquí y no al instalar. Compilar es el sitio donde
+    # los minutos son gratis: al instalar, el aviso ya está en tu pantalla y
+    # «varios minutos de silencio» se lee como «se colgó» (A-068).
+    #
+    # `humo=False` por defecto: el humo instala y arranca el emulador, y quien
+    # compila para su propio uso no siempre lo quiere. El que sí lo quiere
+    # instala, y para entonces el sello ya está.
+    puerta = ""
+    verificado = False
+    if ok:
+        from .deploy import verificar_binario, escribir_verificado
+        v_ok, v_detalle = verificar_binario(destino, con_humo=humo)
+        puerta = v_detalle
+        if v_ok:
+            escribir_verificado(destino, v_detalle)
+            verificado = True
     diff = _short_diff()
+    # El verificado va **antes** del resumen y dicho claro si falta. Compilar y
+    # que la puerta se cierre después, en silencio, es lo que hizo que el aviso de
+    # instalación prometiera algo que no iba a pasar.
+    linea_puerta = (
+        f"verificado: {puerta}"
+        if verificado else
+        f"VERIFICADO NO: {puerta}\n"
+        "  este APK no se puede proponer para instalar hasta que la puerta esté "
+        "en verde."
+    )
     return (
         f"build_apk {'OK' if ok else 'FALLÓ'} (exit={proc.returncode}). "
         f"brand actual={brand}, api_host={api_host}\n"
         f"APK: {destino}\n"
         f"{anotado}\n"
+        f"{linea_puerta}\n"
         f"{diff}\n"
         f"--- salida (tail) ---\n{tail}"
     )

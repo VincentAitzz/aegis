@@ -1319,3 +1319,287 @@ blanco, deformados y con resolución mala.
   Y cuando no hay sello, no se afirma nada —«no comprobado» no es «verificado».
 - **La frase que resume el resto de esta lección**: una puerta que dice «listo»
   tiene que poder responder «¿listo para qué?». Si no puede, no está lista.
+
+## A-062 — Dos motores no son dos opciones: son dos sitios donde vive un guardarraíl
+
+- **Qué pasó** (2026-10-03): la pantalla de pedir misión tenía un interruptor
+  HERMES / AUTOPILOT, y era lo primero que te cruzabas al encargar algo. La
+  diferencia real entre los dos no era de capacidad: **los dos llamaban a las
+  mismas 18 tools de `mcp_ops.py`** — Hermes por MCP, el autopilot
+  llamándolas en proceso. El interruptor no elegía qué se podía hacer, elegía en
+  qué proceso vivía el bucle.
+- **Y por qué eso no es indifferent**: todo lo que hace que Aegis sea Aegis vive
+  en el bridge — los tres niveles de `autonomy.py`, la cola de aprobaciones, la
+  memoria con **el veredicto sacado de la traza** (A-016), los guardarraíles. Si
+  el bucle vive en Hermes (proceso aparte, `:8642`), cada uno de esos controles
+  hay que reimplementarlo al otro lado del socket. Dos motores son **dos sitios
+  donde puede vivir un guardarraíl**, y uno de los dos no los tenía.
+- **Y el bug que se escondía detrás**: el móvil mandaba `verificar: false`
+  **fijo** en cada run. Desde el teléfono, **ninguna escritura pasaba por el
+  verificador**, ni en un proyecto que ya estaba marcado como escribible. La
+  ruta de `curl` sí la tenía. El mismo encargo se comprobaba o no **según desde
+  dónde saliera**. Un interruptor que no hace nada pero que además cuelga de él
+  una decisión de seguridad es peor que un interruptor de más: por lo menos el
+  de más no promete nada.
+- **Regla**: **una opción de la UI tiene que cambiar lo que ejecuta, no solo por
+  dónde pasa.** Si dos caminos llegan a la misma capacidad, el selector es
+  ruido que además obliga a decidir algo que no importa. Y cuando la decisión
+  afecta a una verificación, sale de **datos** (`/autonomy`), nunca de un valor
+  que alguien escribió a mano en el cliente.
+- **De paso**: quitar Hermes del cliente no quitó lo único que tenía bueno. Se le
+  copiaron `stop` y `steer`, que es lo que hace un canal una conversación y no
+  una cola de espera. Y parar **no** es cancelar la tarea: `_execute` es
+  síncrono, así que la parada es un `Event` que el bucle consulta **antes de
+  pedirle nada más al modelo**. El paso en marcha se termina entero y se
+  registra; la traza sigue siendo la evidencia.
+
+## A-063 — `AnnotatedRegion` arregla el color del sistema, no el espacio
+
+- **Qué pasó** (2026-10-03): la cabecera del shell —marca, glifo y «en línea»—
+  se dibujaba **debajo de la barra de estado**. Tenía su
+  `AnnotatedRegion<SystemUiOverlayStyle>` puesto, con el color bien, y aun así se
+  solapaba: `AnnotatedRegion` decide el **color** del texto del sistema, no
+  cuánto hueco le deja. El hueco lo aplica `SafeArea`, y un `Container` de 52 px
+  dentro de `Scaffold.body` no lo lleva.
+- **Y un segundo bug del mismo origen**: los dos avisos flotantes estaban clavados
+  a `top: 52`, **suponiendo** que debajo de la cabecera empezaba el contenido. En
+  cuanto hay inset se montaban encima de la marca. Salen justo cuando peor se ve
+  la app —sin puente, o esperando tu OK— así que tapaban la marca en el peor
+  momento posible.
+- **Regla**: **el inset se cuenta en un solo sitio.** Hay una constante y una
+  función (`_finCabecera`), y los avisos la llaman. Tres números que se puedan
+  desincronizar son tres números que se van a desincronizar. Y cualquier `top`
+  clavado dentro de un `Stack` es una suposición sobre algo que el framework no te
+  ha prometido.
+- **El test que lo fija, y por qué es el que importa**: `mobile/test/inset_test.dart`
+  **inyecta** el inset (`tester.view.padding`), porque en un test vale 0 y sin
+  barra no hay solape posible —el test pasaría siempre, verde, sin comprobar nada.
+  Y afirma las dos direcciones: con inset la caja baja, sin inset se queda en 0.
+  La segunda es la que avisa si alguien "arregla" el solape con un padding fijo de
+  24, que en un móvil sin muesca no se nota.
+- **Cuidado con las unidades**: `tester.view.padding` va en **píxeles físicos** y
+  el `MediaQuery` los divide por `devicePixelRatio`. Con el ratio por defecto de
+  3, pedir 24 de status bar da 8 lógicos, y el test mide otra cosa de la que
+  cree. Fijar `devicePixelRatio = 1.0` hace físicos y lógicos lo mismo.
+
+## A-064 — Tocar `lib/` del móvil invalida el APK, y eso rompe 12 tests que no son del móvil
+
+- **Qué pasó** (2026-10-03): un cambio en `mobile/lib/` dejó **12 tests de
+  `bridge/tests/test_deploy.py` en rojo**, y el mensaje era `PuertaCerrada: El
+  APK no corresponde al código de ahora`.
+- **Por qué**: `_firma_del_codigo` hashea `pubspec.yaml`, `lib/**` y
+  `android/app/src/main/**` del móvil. Ese sello es lo que impide aprobar la
+  instalación de un APK viejo (A-061). Al tocar `lib/` sin recompilar, el APK del
+  teléfono pasa a estar viejo **de verdad**, y la puerta tiene razón.
+- **Lo que no es el fallo**: los tests. Fallaban en `test_deploy.py` y el cambio
+  era en `ahora_page.dart`, que es lo que más desorienta: no es que el test esté
+  mal, es que la suite **cubre el móvil** aunque el fichero no sea del móvil.
+- **Regla**: **tras tocar `mobile/lib/`, recompilar el APK antes de fiarse de la
+  suite del bridge.** Es el mismo guardarraíl de A-061 funcionando, y su mensaje
+  —«compílalo antes»— es literalmente la instrucción. Y si el rojo aparece en un
+  fichero que no tocaste, antes de culpar al test: mira si el red es del proyecto
+  entero, no del fichero.
+
+## A-065 — Aprobar una instalación desde la app no instalaba nada
+
+- **Qué pasó** (2026-10-03): se probó el flujo de actualización de verdad, con
+  Aegis pidiendo la instalación y la persona aprobándola **desde el móvil**.
+  Resultado: dos OK dados, ningún `POST /deploys/{id}/instalar` en el log, y
+  `lastUpdateTime` del teléfono sin cambiar. **La app instalada seguía siendo la
+  de antes.** La persona vio un error y no se le ocurrió que el botón estaba mal,
+  porque desde dentro tiene toda la pinta de funcionar.
+- **Por qué**: el bridge separa a propósito la aprobación de la instalación.
+  `POST /deploys/{id}` emite el token; `POST /deploys/{id}/instalar` lo gasta
+  **dentro del bridge** y arranca la instalación en un hilo aparte, para que el
+  agente nunca llegue a verlo. El docstring de `deploy_aprobar` lo dice:
+  «quien aprueba desde el móvil encadena las dos».
+- **Y el cliente no las encadenaba**: `decideDeploy` era lo único que llamaba, y
+  luego un `refrescar()`. El método `instalarDeploy` **no existía** en el repo
+  del móvil. El contrato estaba escrito en el bridge y el cliente lo incumplía
+  en silencio: no había ningún error, ningún aviso, ninguna llamada que delatara
+  la falta.
+- **Por qué es peor de lo que parece**: A-016 teachó que un veredicto que sale de
+  `final_text` en vez de la traza es una mentira. Esto es lo mismo por el otro
+  lado: **no fue el agente el que mintió, fue el cliente**. Un "hecho" en la
+  interfaz con un "no instalado" detrás. Y el fallo solo se ve con el teléfono en
+  la mano: los tests no lo cogían porque no había ningún test de este camino.
+- **Regla**: **un endpoint que obliga a encadenar dos llamadas está partido, y la
+  parte que encadena tiene que tener su propio nombre en el repositorio.** Si
+  aprobar y ejecutar viven en el mismo método del cliente, no se puede aprobar sin
+  instalar —y no se puede instalar sin que sea imposible saltarse la aprobación.
+  La separación se puede quedar en el bridge; lo que no puede es *depender de que
+  el cliente se acuerde* sin que se note si se olvida.
+- **Y cuando el gesto es «ejecutar», el gesto tiene que ejecutar**: quien aprueba
+  un despliegue a distancia no tiene a nadie a quien preguntar. Si tras pulsar
+  "sí" no se dice nada, o se dice algo que no es lo que pasó, el fallo se come la
+  confianza en todo lo demás.
+
+## A-066 — Una acción, dos colas de aprobación: el 409 no era el fallo
+
+- **Contexto** (2026-10-03): del mismo fallo que A-065, la parte que confundió el
+  diagnóstico. Instalar en el teléfono pasa por **dos** puertas distintas:
+  1. la de **autonomía**: `install_apk` es nivel 3, así que Aegis deja la petición
+     `ok-…` y para con `fin: "esperando_ok"`;
+  2. la de **despliegue**: `install_apk` tiene además su puerta interna
+     (`deploy.py`), que exige verificación en verde y una autorización propia.
+- **Lo que se vio**: aprobar la primera, pulsar «Ejecutar» → `409 Conflict`, tres
+  veces. El 409 **no era el fallo**: era la consecuencia. El token de autonomía es
+  de un solo uso, el primer «Ejecutar» lo gastó (correctamente), y los siguientes
+  chocaban con «ese permiso ya se usó». La fila quedó `gastada` y sin token, que
+  es exactamente lo que debe pasar.
+- **El coste real**: el mensaje de `409` es *técnicamente* cierto y *prácticamente*
+  engañoso. Dice «ya se usó», que es verdad, y no dice «la instalación se paró
+  aquí porque le faltaba una segunda autorización», que es lo que pasó. Quien lo
+  lee busca un token gastado por error y no llega nunca a la segunda puerta.
+- **Regla**: **un 409 tiene que poder responder «por qué ahora no», no solo «por qué
+  no antes».** Si una acción encadena puertas, el estado que se devuelve después de
+  la primera tiene que señalar que **falta la siguiente**, con su nombre. Y el
+  cliente, cuando una acción suya termina en un estado intermedio, tiene que ir a
+  la siguiente puerta por su cuenta —o decir que se queda ahí, con el nombre de lo
+  que falta.
+
+## A-067 — La puerta puede pasar en verde y no dejar rastro de que pasó
+
+- **De paso** (2026-10-03): `install_apk` con aprobaciónarlo todo transitioned a
+  «no instalado» porque el APK ya estaba viejo… no: porque `pasar_puerta_deploy`
+  comprobó sello, verificación y ruta, todo en verde, y aun así `pedir_deploy`
+  dejó una segunda petición. La puerta **funcionó**: su trabajo era no instalar sin
+  autorización, y no instaló.
+- **Lo que faltaba era una afirmación**: la respuesta decía «NO INSTALADO, y es lo
+  correcto» pero no decía **qué** faltaba ni en qué cola. Un mensaje de puerta
+  cerrada que no dice por dónde se vuelve a entrar es una puerta que hay que
+  buscar.
+- **Regla**: **`NO INSTALADO` tiene que traer el siguiente paso con su id.** Ya lo
+  trae el texto de `install_apk` (`id de petición: deploy-…`), y esa parte estaba
+  bien: el problema era que **el cliente no la seguía**. La puerta es un contrato
+  de ida y vuelta, y si el que tiene que dar el siguiente paso no lo da, el
+  contrato está a medias por mucho que la puerta sea correcta.
+
+## A-068 — La puerta que se pasa después de tu «sí» es una puerta en el sitio equivocado
+
+- **Qué pasó** (2026-10-03): aprobar una instalación y esperar era esto: `flutter
+  analyze`, `flutter test` y el humo en el emulador, **después** de que pulsaras
+  «sí». El aviso decía «se instala en segundo plano», el Toast decía lo mismo, y
+  luego venía un silencio de varios minutos. Y si la puerta se cerraba después,
+  ese «sí» había servido para que approvingas una instalación que no iba a
+  ocurrir.
+- **La puerta se movió al compilar.** `build_apk` verifica y sella
+  `<apk>.verificado` con la firma del **binario**; instalar solo comprueba que ese
+  sello siga cuadrando y que el teléfono esté y alcance al bridge. Entre tu «sí» y
+  el APK instalado queda un `adb install`.
+- **Lo que no se puede mover al compilar**: que el teléfono **alcance** al bridge.
+  Depende del cable, de Tailscale y de si la app está encendida, y cambia sin
+  avisar. Verificarlo al compilar daría un verde que Caduca.
+- **Lo que ya decía el texto**: el docstring de `instalar_pendiente` afirmaba
+  «analyze, tests y humo ya se comprobaron cuando `install_apk` pidió la
+  autorización». No era verdad: se comprobaban al instalar. El código ahora
+  cumple lo que el docstring llevaba tiempo prometiendo.
+- **Regla**: **una comprobación se pone donde el coste es gratis y el aviso
+  todavía no está en la pantalla de nadie.** Compilar es gratis; instalar, con tu
+  dedo puesto, no. Y si una puerta tiene partes que caducan y partes que no, se
+  parte: cada mitad en su sitio, con un sello que ate la parte de arriba a la de
+  abajo.
+- **Corolario**: un `.sello` y un `.verificado` son dos preguntas y van en dos
+  ficheros. En uno habrías tenido que elegir, y las dos respuestas se habrían
+  mezclado: un APK compilado a mano nunca verificado habría pasado por verificado
+  porque su código era el de ahora.
+
+## A-069 — Un aviso por estado, y no dos avisos que se pisan
+
+- **Qué pasó** (2026-10-03): había **dos** ids de notificación. `4101` para «necesito
+  tu OK» y `4102` para el resultado. Solo se cancelaba el primero, y solo cuando
+  otro aviso de pendientes veía la cola vacía. Resultado: **un aviso de un test se
+  quedó en la bandeja sin forma de quitarlo**, y mientras tanto todos los avisos
+  de resultado acababan en «AVISO NO VERIFICADO», porque `_hay_aviso_aegis` solo
+  miraba el 4101 en `dumpsys`.
+- **El argumento a favor de dos ids era bueno y el resultado, malo**: se separaron
+  para que un «ya está» no borrara un «todavía necesito tu OK». Esa preocupación es
+  real, pero se resolvió creando un estado que **nadie borra**, que es peor: un
+  aviso que se queda para siempre enseñando algo falso entrena a ignorar los avisos.
+- **Ahora hay un id y cuatro estados** —`pendiente`, `trabajando`, `hecho`,
+  `fallo`, más `limpiar`— que se sustituyen **en sitio**. «No puede haber dos
+  avisos de Aegis» deja de ser una intención y pasa a ser una propiedad. Y el
+  riesgo que se temía se paga solo: el siguiente aviso de pendientes repinta el de
+  decisión.
+- **Y cada estado se retira solo**: los finales llevan `setTimeoutAfter(45 s)`.
+  `setAutoCancel(true)` solo quita el aviso al tocarlo, que no es lo mismo que
+  cuando deja de valer.
+- **Regla**: **un aviso por operación, y su ciclo entero en el mismo sitio.** Un
+  aviso tiene que poder *irse solo* cuando lo quedice dejó de ser cierto, y eso
+  no puede depender de que llegue otro aviso que lo tape: si no hay nada nuevo
+  que avisar, ese otro aviso no llega nunca.
+- **Corolario**: el estado se ordena con un `ts` que pone **el puente**, no la hora
+  del teléfono. Los broadcasts van por adb uno a uno pero sin orden entre llamadas
+  distintas, y sin ese guardia un «instalado» tardío podía dejar la bandeja
+  pidiendo un OK sobre algo ya hecho. Y se guarda en `SharedPreferences`, no en un
+  `var`: el proceso es un `BroadcastReceiver` y Android lo mata cuando quiere.
+
+## A-070 — Un toast que promete lo que no pasa es peor que un toast que no está
+
+- **Qué pasó** (2026-10-03): el cuadro superpuesto (`OverlayActivity`) aprobaba,
+  pintaba un Toast con «Aprobado. Se instala en segundo plano.» y cerraba. **No
+  instalaba nada.** `POST /deploys/{id}` solo emite el token; el token lo gasta
+  `POST /deploys/{id}/instalar`, y `Puente.instalar()` —que existía, con un
+  docstring prometiendo el flujo entero— **no lo llamaba nadie**.
+- **Y era el mismo fallo por los dos lados.** En Dart, `decideDeploy` sin
+  `instalarDeploy` detrás (A-065). En Kotlin, `decidir` sin `Puente.instalar`
+  detrás. Dos clientes, el mismo eslabón ausente, y el docstring de Kotlin
+  describiendo un flujo que no ocurría.
+- **La razón de fondo**: el token **no sale del bridge**, a propósito —se gasta
+  dentro, que es lo único que hace que un token de un solo uso siga siendo de un
+  solo uso—. Esa decisión obliga a que aprobar e instalar sean **dos** llamadas.
+  Separarlas está bien; que se puedan olvidar por separado, no.
+- **Regla**: **quien encadena las dos llamadas tiene que tener los dos métodos con
+  nombre en su repositorio.** Si aprobar y ejecutar viven en el mismo método del
+  cliente, no se puede aprobar sin instalar, y no se puede instalar sin saltarse
+  la aprobación. La separación puede quedarse en el servidor; lo que no puede es
+  *depender de que el cliente se acuerde* sin que se note si se olvida.
+- **Y cuando el gesto es a distancia, el desenlace va al sitio que sobrevive a la
+  app.** El `adb install -r` mata el proceso de la app por su cuenta: no hay que
+  cerrar nada a mano, pero tampoco se puede mantener un widget con el resultado de
+  algo que ya te ha matado. Por eso el estado vive en el aviso.
+
+## A-071 — Fundir dos avisosdisabled weakens la verificación, si no se comprueba el estado
+
+- **Qué pasó** (2026-10-03): al unificar los dos ids de notificación (A-069), la
+  verificación dejó de comprobar nada. `_hay_aviso_aegis` miraba «¿hay una
+  notificación de Aegis con `id=4101`?», y con un solo id eso es **siempre cierto**:
+  el aviso del estado anterior sigue ahí mientras el nuevo se publica en el hilo
+  del receptor.
+- **Medido en el emulador**: tras pedir `hecho`, `dumpsys` seguía enseñando
+  `AEGIS · EN MARCHA` y el puente respondía «aviso entregado y verificado».
+- **Por qué con dos ids no pasaba**: el aviso de resultado usaba el 4102, así que
+  encontrar el 4101 era justamente la prueba de que el aviso de decisión **no** se
+  había tocado. Fusionar quitó esa propiedad por el camino, sin que se notara: el
+  código era idéntico y la respuesta seguía siendo verde.
+- **Regla**: **cuando una comprobación se debilita por un cambio estructural, hay
+  que reescribirla, no dejarla como estaba.** Aquí «existe el aviso» pasó a no
+  significar nada y la prueba siguió llamándose igual. Ahora se comprueba el
+  **título** del estado pedido (`MARCA_ESTADO`).
+- **Y el mock tenía el mismo agujero**: el `dumpsys` falso enseñaba un
+  `NotificationRecord` sin título, así que cualquier estado nuevo daba «no
+  verificado» —el fallo visible— mientras un mock que siempre dijera «está» habría
+  pasado todo. Un doble que no puede fallar no es un doble.
+- **Corolario**: **un «sí» que no se puede refutar es un «sí» que no comprueba
+  nada.** Cuando una aserción pasa siempre, lo que se está midiendo es que el test
+  no falla, no lo que dice medir.
+
+## A-072 — Cuatro maneras de decidir a quién avisas, y la que nadie prueba está mal
+
+- **Qué pasó** (2026-10-03): `avisar_intermedio` caía al emulador cuando no había
+  teléfono, porque el aviso de decisión tiene que estar donde se decide. Los otros
+  tres —`hecho`, `fallo` y `limpiar`— iban solo al teléfono.
+- **Consecuencia medida**: en una máquina sin teléfono conectado, **el aviso
+  atascado del emulador no se podía quitar nunca**. `limpiar` miraba el teléfono,
+  que no existía, y se iba sin hacer nada diciendo «aviso limpiado».
+- **Por qué es la clase de fallo que más cuesta ver**: la ruta del emulador no
+  estaba rota en la máquina de trabajo —ahí sí había teléfono—, así que todo
+  parecía bien. El fallo solo aparece donde el otro aparato no está, que es
+  exactamente donde nadie mira porque ya no hay nada que mirar.
+- **Regla**: **una decisión que se toma en varios sitios se toma en uno, y todos
+  los sitios la llaman.** Cuatro copias no es robustez: es cuatro oportunidades de
+  que una se quede sin probar. Y el helper se llama `_destino_aviso`, no
+  `_destino_telefono`, porque la decisión ya no es «el teléfono».
+- **Corolario**: cuando un aviso **tiene** que poder irse, comprobarlo en el caso
+  fácil («hay teléfono, funciona») no dice nada del difícil («no hay teléfono»).
+  Los dos casos van en el mismo test o en ninguno.

@@ -17,6 +17,7 @@ El modelo decide QUÉ hacer; el autopilot decide CÓMO ejecutarlo.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -291,7 +292,9 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         autonomy: Any = None,
                         token: str = "",
                         fase: str = "",
-                        estado_base: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                        estado_base: Optional[dict[str, Any]] = None,
+                        parar: Optional[asyncio.Event] = None,
+                        extra: Optional[asyncio.Queue] = None) -> dict[str, Any]:
     """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza.
 
     `gate` es el corrector de una sola llamada por paso: `await gate(step, tool,
@@ -303,6 +306,22 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     `on_step` es `await on_step(step, entry)` y se llama con cada entrada de la
     traza en cuanto existe. Sin él el run es una caja negra: en un 7B un paso
     puede tardar medio minuto, y el móvil necesita ver que avanza.
+
+    `parar` y `extra` son el **control del run en marcha**, y viven aquí y no en
+    el endpoint porque el bucle es el único que sabe dónde está el paso. Un run
+    de autopilot no se puede parar cancelando la tarea de asyncio —el `await` del
+    modelo está a punto de devolver y el `finally` se comería el resultado a
+    medias— ni se puede dirigir desde fuera sin tocar la lista `messages`.
+
+    ## Por qué el corte es **entre pasos**, no en mitad de uno
+    `_execute` es síncrono y ya se está escribiendo cuando leas esto: no hay
+    punto seguro dentro de una tool. Un paso que ya empezó se termina y se
+    registra entero. La parada es por lo tanto «no empieces otro», que es la
+    misma garantía que da un interruptor de proceso, y es honesta: el móvil
+    muestra la traza real, sin el último paso a medias.
+
+    `parar` se comprueba **antes** de pedirle nada al modelo, no después: así un
+    run parado entre pasos no llega a gastar un paso más en inferencia.
 
     `autonomy` decide **antes** de ejecutar si una llamada está permitida. No es
     un filtro de la traza: si una tool no está autorizada, `_execute` no llega a
@@ -326,6 +345,40 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=300.0,
                                                        write=30.0, pool=5.0)) as client:
         for step in range(1, max_steps + 1):
+            # La parada se mira antes de gastar una inferencia. El paso que ya
+            # está en marcha no se interrumpe —`_execute` es síncrono y ya se
+            # está escribiendo— así que parar significa «no empieces otro».
+            if parar is not None and parar.is_set():
+                log.info("autopilot %s: parado por la persona en el paso %d "
+                         "(%d pasos en la traza)", run_id, step, len(trace))
+                return {
+                    "model": model,
+                    "answer": f"Parado a petición tuya tras {len(trace)} paso(s). "
+                              f"La traza de abajo es lo que se llegó a ejecutar.",
+                    "steps": len(trace),
+                    "trace": trace,
+                    "fin": "parado",
+                }
+            # Lo que la persona escriba a mitad de run entra como un turno más.
+            # No interrumpe el paso en curso: se drena aquí, así que surte efecto
+            # en el siguiente, que es el mismo criterio que la parada.
+            steering = 0
+            while extra is not None and not extra.empty():
+                try:
+                    texto = str(extra.get_nowait()).strip()
+                except asyncio.QueueEmpty:  # pragma: no cover — carrera con otro lector
+                    break
+                if not texto:
+                    continue
+                steering += 1
+                messages.append({
+                    "role": "user",
+                    "content": f"INSTRUCCIÓN DE QUIEN TE MANDÓ (llega a mitad de "
+                               f"run, aplícala a lo que hagas de aquí en adelante): {texto}",
+                })
+            if steering:
+                log.info("autopilot %s: %d instrucción(es) del usuario aplicadas "
+                         "antes del paso %d", run_id, steering, step)
             r = await client.post(
                 f"{ollama_url.rstrip('/')}/v1/chat/completions",
                 json={"model": model, "stream": False, "messages": messages, "tools": tools},

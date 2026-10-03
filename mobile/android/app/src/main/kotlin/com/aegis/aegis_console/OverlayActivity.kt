@@ -377,28 +377,62 @@ class OverlayActivity : Activity() {
 
         Thread {
             val r = Puente.decidir(id, aprobar, porQue)
-            // Aprobar dispara la instalación: el puente la hace él, y aquí solo
-            // se le pide. El token no sale de aquí.
-            runOnUiThread { terminar(r) }
+            // Aprobar **encadena** la instalación, y esto no era opcional.
+            //
+            // ## El fallo que esto arregla
+            // `POST /deploys/{id}` solo emite el token: el token lo gasta
+            // `POST /deploys/{id}/instalar`, dentro del bridge, para que el agente
+            // nunca lo vea. Aquí se aprobaba, se pintaba un Toast que decía «se
+            // instala en segundo plano» y se cerraba… sin instalar. Dos OK dados
+            // y `lastUpdateTime` del teléfono sin cambiar. Aprobado de verdad,
+            // nada instalado, y con un Toast que decía lo contrario.
+            //
+            // ## Por qué el token se queda aquí
+            // Por eso existe `Puente.instalar()`: el token **no** sale del
+            // bridge. Aquí no hay token, ni lo hay antes ni después: lo que sale
+            // de `decidir` es un "sí, guardado", y `instalar` es "hazlo".
+            // Encadenar las dos es lo que convierte el gesto en algo.
+            val instalado = if (r != null && aprobar) Puente.instalar(id) else null
+            runOnUiThread { terminar(r, instalado) }
         }.start()
     }
 
-    private fun terminar(r: String?) {
+    /**
+     * @param r lo que dijo `/deploys/{id}`: `null` si no hubo respuesta.
+     * @param instalado lo que dijo `/deploys/{id}/instalar`: `null` si no se llamó
+     *   (denegaste), o si la llamada falló. Los tres casos se distinguen, y no
+     *   querer distinguirlos es lo que dejó el Toast mintiendo.
+     */
+    private fun terminar(r: String?, instalado: String?) {
         when {
-            r != null && aprobarPendiente -> {
-                avisar("Aprobado. Se instala en segundo plano.")
-                finish()
+            // No hubo respuesta: la decisión no se guardó. Se dice y se reabre el
+            // cuadro, que sigue en pie con lo que se había pintado. Cerrar sin más
+            // haría creer que sí.
+            r == null -> {
+                _decidiendo = false
+                avisar("No pude hablar con el puente. Tu decisión no se guardó.")
+                pintar(Puente.pendientes())
             }
-            r != null -> {
+
+            // Denegado. El motivo queda escrito y Aegis lo lee la próxima vez.
+            !aprobarPendiente -> {
                 avisar("Denegado. El motivo queda guardado para Aegis.")
                 finish()
             }
-            // Falló la llamada, no la decisión: aquí no se guarda nada y hay que
-            // decirlo, porque si se cierra sin más parece que sí. Y se reabre el
-            // cuadro, que sigue en pie con lo que se había pintado.
+
+            // Aprobado y la instalación arrancó.
+            instalado != null -> {
+                avisar("Aprobado. $instalado")
+                finish()
+            }
+
+            // Aprobado pero la instalación no arrancó. Se dice con esas palabras,
+            // y se reabre: sin esto, un Toast de "aprobado" y nada instalado es
+            // justo lo que pasó.
             else -> {
                 _decidiendo = false
-                avisar("No pude hablar con el puente. Tu decisión no se guardó.")
+                avisar("Aprobado, pero no pude arrancar la instalación. Inténtalo otra vez.")
+                botonera?.isEnabled = true
                 pintar(Puente.pendientes())
             }
         }

@@ -33,12 +33,18 @@ void main() {
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 320));
     }
-    // Autopilot es el único motor que ejecuta tools: es el que devuelve el run
-    // al que hay que relanzarle un permiso.
-    await tester.tap(find.text('AUTOPILOT'));
+    return repo;
+  }
+
+  /// Abre el desplegable de fases, que es donde viven los chips.
+  ///
+  /// Las fases están plegadas a propósito —solo hacen falta mientras se piensa, y
+  /// visibles por defecto invitan a pagar el prompt sin necesitarlas—, así que
+  /// cualquier test que elija una tiene que abrirlo como lo haría una persona.
+  Future<void> abrirFases(WidgetTester tester) async {
+    await tester.tap(find.text('Cómo trabajar'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 320));
-    return repo;
   }
 
   FakeAgentRepository repoConPeticion() => FakeAgentRepository()
@@ -122,7 +128,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     // El selector de fases es lo que hace esto cómodo: el relanzado tiene que
-    // salir de la misma pantalla donde se escribió el encargo.
+    // salir de la misma pantalla donde se escribió el encargo. Está plegado, pero
+    // existe y está a mano.
+    await abrirFases(tester);
     expect(find.text('IDEA'), findsOneWidget);
     expect(find.text('ARQUITECTURA'), findsOneWidget);
 
@@ -157,6 +165,31 @@ void main() {
     expect(find.textContaining('Alta de prueba'), findsOneWidget);
   });
 
+  testWidgets('ejecutar en curso enseña «arranca», no un fallo vacío', (
+    tester,
+  ) async {
+    // El fallo medido (A-066): `/ejecutar` tardaba **minutos** —install_apk es la
+    // puerta completa: analyze, tests y humo— y el cliente se cansaba a los 10 s.
+    // Ahora el bridge responde ya con `estado: "en_curso"`.
+    //
+    // Lo que se afirma es que ese `en_curso` se pinta como lo que es. El modo de
+    // fallo anterior habría sido pintar `ok == false`, que en una respuesta sin
+    // `ok` da `false` siempre: «No pude ejecutar: » con nada detrás, que se lee
+    // igual que un fallo.
+    final repo = await montar(tester, repoConPeticion());
+    await tester.tap(find.text('Sí, adelante'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    repo.enCurso = true;
+    await tester.tap(find.text('Ejecutar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.textContaining('arranca'), findsOneWidget);
+    expect(find.textContaining('No pude ejecutar'), findsNothing);
+  });
+
   testWidgets('lo aprobado explica cuál de los dos botones es cuál', (tester) async {
     await montar(tester, repoConPeticion());
     await tester.tap(find.text('Sí, adelante'));
@@ -169,6 +202,7 @@ void main() {
     final repo = await montar(tester, FakeAgentRepository());
     await tester.enterText(find.byType(TextField).first, 'aterriza la idea');
     await tester.pump();
+    await abrirFases(tester);
     await tester.tap(find.text('ARQUITECTURA'));
     await tester.pump();
     // Al elegirla se explica para qué sirve: una fase cambia lo que Aegis se

@@ -491,6 +491,110 @@ def sello_de(apk: Path) -> Path:
     return apk.with_name(apk.name + ".sello")
 
 
+def verificado_de(apk: Path) -> Path:
+    """Dónde vive el **verificado**: el sello de que este binario pasó la puerta.
+
+    ## Por qué un fichero aparte del `.sello`
+    Son dos preguntas distintas y no se pueden confundir:
+    - `.sello` responde «¿este binario salió del código de ahora?» — es de origen.
+    - `.verificado` responde «¿este binario **pasó** analyze, tests y humo?» — es
+      de calidad.
+
+    Con un solo fichero había que elegir, y las dos respuestas se mezclaban: un
+    APK compilado a mano pero nunca verificado pasaba por verificado porque su
+    código era el de ahora, que es justo el falso éxito que A-016 ya pagó en otro
+    sitio.
+    """
+    return apk.with_name(apk.name + ".verificado")
+
+
+def escribir_verificado(apk: Path, detalle: str = "") -> str:
+    """Deja constancia de que este APK pasó la verificación. Lo llama la puerta.
+
+    Guarda la firma del **binario**, no la del código: si se recompila, el
+    verificado deja de cuadrar aunque el código sea idéntico, que es lo correcto
+    — lo que se verificó fue *ese* fichero.
+    """
+    firma = _huella_binario(apk)
+    if not firma:
+        return ""
+    cuerpo = firma if not detalle else f"{firma} · {detalle.strip()[:200]}"
+    try:
+        verificado_de(apk).write_text(cuerpo + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("no pude escribir el verificado de %s: %s", apk.name, exc)
+    return firma
+
+
+def apk_verificado(p: Path | None = None) -> bool:
+    """¿Pasó este APK la puerta recently, tal y como está ahora en disco?"""
+    apk = p or APK_TELEFONO
+    try:
+        guardado = verificado_de(apk).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not guardado:
+        return False
+    return guardado.split(" · ")[0] == _huella_binario(apk)
+
+
+def apk_sin_verificar(p: Path | None = None) -> str:
+    """Por qué este APK no puede instalarse todavía, o "" si puede."""
+    apk = p or APK_TELEFONO
+    if apk_verificado(apk):
+        return ""
+    existe = verificado_de(apk).exists()
+    if existe:
+        return ("el APK se recompiló después de verificarse: lo que se comprobó no "
+                "es el binario que hay. Vuelve a compilar y verificar.")
+    return ("este APK no ha pasado la puerta todavía (analyze, tests y humo). "
+            "Compílalo con build_apk(target='telefono'), que verifica antes de "
+            "ofrecer instalar: así no te pido que apruebes algo que después no "
+            "pasa.")
+
+
+def verificar_binario(apk: Path, con_humo: bool = True) -> tuple[bool, str]:
+    """La puerta cara: analyze, tests y humo. Se ejecuta **al compilar**.
+
+    ## Por qué aquí y no al instalar
+    Medido (2026-10-03): la puerta corría al instalar, después de que aprobaras.
+    `flutter analyze` + `flutter test` + el humo son minutos, así que el aviso
+    decía «se instala» y luego había varios minutos de silencio antes de que
+    pasara algo — y si la puerta se cerraba, tu «sí» había servido para pedirte
+    que aprobaras una instalación que no iba a ocurrir.
+
+    Verificando al compilar, el aviso aparece **cuando ya no hay nada que
+    comprobar**: lo que queda entre tu «sí» y el APK en el teléfono es un
+    `adb install` de segundos. Y el docstring de `instalar_pendiente` ya prometía
+    esto («analyze, tests y humo ya se comprobaron cuando `install_apk` pidió la
+    autorización»): el código ahora cumple lo que el texto decía.
+
+    El humo es opcional porque quien compila para su propio uso no siempre quiere
+    instalar en el emulador, y porque tarde un minuto. La puerta de instalar **no**
+    lo vuelve a pasar: ya está en el `.verificado`.
+    """
+    if (desactualizado := apk_desactualizado(apk)):
+        return False, desactualizado
+    fallos = []
+    for nombre, fn in (("analyze", verificar_analisis), ("tests", verificar_tests)):
+        ok, detalle = fn()
+        if not ok:
+            fallos.append(f"{nombre}: {detalle}")
+    # El humo se salta si ya hay rojo. Cuesta alrededor de un minuto e instala y
+    # arranca el emulador: si analyze ya está en rojo su resultado no va a cambiar
+    # la conclusión, solo a hacer esperar más.
+    if con_humo and not fallos:
+        humo_ok, humo_detalle = humo_una_vez()
+        if not humo_ok:
+            fallos.append(f"humo en el emulador: {humo_detalle}")
+    else:
+        humo_detalle = "sin humo en esta compilación"
+    if fallos:
+        return False, "\n  ".join(fallos)
+    detalle = "analyze, tests" + (" y humo" if con_humo else "")
+    return True, f"{detalle} en verde · {humo_detalle}"
+
+
 def escribir_sello(apk: Path) -> str:
     """Deja el sello que dice de qué código salió este APK. Lo llama la compilación.
 
@@ -593,17 +697,32 @@ def pedir_deploy(razon: str, lanzar: bool = False) -> dict:
     return peticion
 
 
-def _hay_aviso_aegis(dump: str) -> bool:
-    """¿Hay una notificación viva de Aegis en ese `dumpsys`?
+
+
+def _hay_aviso_aegis(dump: str, estado: str = "") -> bool:
+    """¿Hay una notificación viva de Aegis en ese `dumpsys`, **en ese estado**?
 
     Se mira el **registro**, no que el comando saliera bien. Un `exit=0` con el
     aviso ausente es el peor resultado posible: parece que avisó y no avisó. Y es
     exactamente lo que pasaba (ver `_avisar_app`).
+
+    ## Por qué el estado se comprueba y no solo la existencia
+    Con un solo aviso, la existencia no dice nada: el aviso anterior sigue ahí
+    mientras el nuevo se publica en otro hilo. Así que se mira la marca del
+    estado. Para `pendiente` no se busca marca: su título depende de cuántas hay
+    («NECESITO TU OK» o «N DECISIONES PENDIENTES») y no hay una fija.
     """
-    for linea in dump.splitlines():
-        if "pkg=" + PAQUETE in linea and f"id={ID_AVISO}" in linea:
-            return True
-    return False
+    espera = MARCA_ESTADO.get(estado, "")
+    hay_aviso = any("pkg=" + PAQUETE in linea and f"id={ID_AVISO}" in linea
+                    for linea in dump.splitlines())
+    if not hay_aviso:
+        return False
+    if not espera:
+        return True
+    # El título va en su propia línea del registro, con `android.title=String (…)`.
+    # Se busca en el volcado entero: recorrer el `NotificationRecord` para leer su
+    # título es más código para el mismo dato.
+    return "android.title" in dump and espera in dump
 
 
 def _permiso_avisos(dev) -> str:
@@ -613,7 +732,7 @@ def _permiso_avisos(dev) -> str:
     return out.strip() if code == 0 else ""
 
 
-def _verificar_aviso(dev, intentos: int = 6) -> str:
+def _verificar_aviso(dev, intentos: int = 6, estado: str = "") -> str:
     """Espera a que el aviso aparezca, y si no aparece, lo dice y por qué.
 
     ## Por qué esto existe
@@ -629,7 +748,7 @@ def _verificar_aviso(dev, intentos: int = 6) -> str:
     for _ in range(intentos):
         code, out = disp._adb(["shell", "dumpsys", "notification", "--noredact"],
                               timeout=60, serial=dev.serial)
-        if code == 0 and _hay_aviso_aegis(out):
+        if code == 0 and _hay_aviso_aegis(out, estado):
             return "aviso entregado y verificado"
         time.sleep(1.0)
 
@@ -647,7 +766,50 @@ def _verificar_aviso(dev, intentos: int = 6) -> str:
     )
 
 
-def _avisar_app(dev, tipo: str = "pendiente", motivo: str = "") -> str:
+#: Los cuatro estados de un aviso, y lo único que la app necesita saber.
+#:
+#: ## Por qué un estado y no el par pendiente/hecho
+#: Antes el aviso distinguía «necesito tu OK» (id 4101) de «ya está» (id 4102), y
+#: los dos convivían porque cancelarlos era trabajo de alguien. Resultado
+#: medido: un aviso de un test que llegó al móvil y **no se podía quitar**, y
+#: mientras tanto los avisos de resultado nunca se verificaban, porque
+#: `_hay_aviso_aegis` solo miraba el 4101.
+#:
+#: Con un solo estado y un solo id, «no puede haber dos avisos de Aegis» deja de
+#: ser una intención y pasa a ser una propiedad: o hay un aviso, o no hay nada.
+ESTADO_PENDIENTE = "pendiente"
+ESTADO_TRABAJANDO = "trabajando"
+ESTADO_HECHO = "hecho"
+ESTADO_FALLO = "fallo"
+ESTADO_LIMPIAR = "limpiar"
+
+#: Cuánto vive un aviso final antes de borrarse solo. Un aviso que se queda para
+#: siempre en la bandeja es ruido pasado un rato, y era justo lo que pasaba con
+#: el 4102: nadie lo cancelaba y `setAutoCancel` solo lo quita al tocarlo.
+CADUCIDAD_FINAL_MS = 45_000
+
+#: La marca que cada estado deja en el aviso. Es lo que permite **comprobar** que
+#: el estado que se quería publicar está, y no el anterior.
+#:
+#: ## Por qué hace falta ahora y antes no
+#: Antes `_hay_aviso_aegis` solo miraba que hubiera una notificación de Aegis. Con
+#: dos ids eso bastaba: publicar el resultado usaba el 4102, así que si el 4101
+#: seguía ahí era porque el aviso de decisión **no** se había tocado.
+#:
+#: Con un id, no: los estados se sustituyen en sitio, así que «hay un aviso de
+#: Aegis» es cierto **siempre**, incluso cuando lo que se acaba de publicar es otra
+#: cosa. Verificado: tras `hecho`, `dumpsys` seguía enseñando `EN MARCHA` y el
+#: puente respondía «entregado y verificado». Es A-042 por sexta vez: un éxito que
+#: nadie comprobó, y esta vez lo caused el arreglo de ayer.
+MARCA_ESTADO = {
+    ESTADO_TRABAJANDO: "EN MARCHA",
+    ESTADO_HECHO: "INSTALADO",
+    ESTADO_FALLO: "NO SE PUDO",
+}
+
+
+def _avisar_app(dev, tipo: str = ESTADO_PENDIENTE, motivo: str = "",
+                pet_id: str = "") -> str:
     """Despierta al receptor de Aegis y **comprueba** que el aviso llegó.
 
     ## Por qué un broadcast y no `cmd notification post`
@@ -662,25 +824,39 @@ def _avisar_app(dev, tipo: str = "pendiente", motivo: str = "") -> str:
     Ahora la publica la propia app: el puente solo la despierta. Así el aviso es
     de Aegis de verdad —icono, sonido, toque y permiso— y el toque abre el cuadro
     de decisión en lugar de nada.
+
+    ## Por qué `pet_id` y `ts` viajan ahora
+    `pet_id` para que la app pueda ignorar un aviso de una petición que ya no
+    existe, y `ts` para que un aviso **tardío** no pise uno más nuevo: los
+    broadcasts van por `adb`, que los entrega uno a uno pero sin orden entre
+    llamadas distintas, y sin esto un «instalado» que llegaba tarde podía dejar
+    la bandeja diciendo «necesito tu OK» sobre algo que ya estaba hecho.
     """
-    # El `tipo` viaja en el broadcast **solo para saber qué rotular**. Los datos
+    args = ["shell", "am", "broadcast", "-a", ACCION_AVISAR,
+            "-n", f"{PAQUETE}/.NotificacionReceiver", "--es", "tipo", tipo]
+    # El `tipo` viaja en el broadcast **solo para saber qué pintar**. Los datos
     # que deciden algo —qué hay pendiente, si se puede instalar— los va siempre a
     # preguntar la app al bridge, y no llegan en el intent. Por eso el extra no
     # es una puerta: el peor caso de que alguien mande `tipo=hecho` falseo es un
     # rótulo equivocado, y la app no habilita nada por eso.
-    args = ["shell", "am", "broadcast", "-a", ACCION_AVISAR,
-            "-n", f"{PAQUETE}/.NotificacionReceiver", "--es", "tipo", tipo]
     if motivo:
         # Solo si hay motivo. `--es motivo ""` no es un extra vacío: `adb` se come
         # el argumento y el broadcast sale con `Argument expected after "motivo"`,
         # que es un fallo de puente en el sitio más tonto posible.
         args += ["--es", "motivo", motivo[:300]]
+    if pet_id:
+        args += ["--es", "pet_id", pet_id]
+    args += ["--es", "ts", f"{time.time():.3f}"]
     code, out = disp._adb(args, timeout=60, serial=dev.serial)
     if code != 0:
         return f"aviso falló (exit={code}): {out[:120]}"
     if "Broadcast completed" not in out:
         return f"aviso sin confirmar: {out[:120]}"
-    return _verificar_aviso(dev)
+    if tipo == ESTADO_LIMPIAR:
+        # No hay nada que verificar: `limpiar` no publica, cancela. Preguntar por
+        # él en `dumpsys` daría «no verificado» siempre, que es ruido, no un dato.
+        return "aviso limpiado"
+    return _verificar_aviso(dev, estado=tipo)
 
 
 def _ultimo_aviso() -> tuple[float, str]:
@@ -690,6 +866,32 @@ def _ultimo_aviso() -> tuple[float, str]:
 
 
 _AVISO: tuple[float, str] = (0.0, "")
+
+
+def _destino_aviso(destino: str) -> tuple[disp.Device | None, str]:
+    """A qué aparato se avisa, y a cuál se intentó. `(device, nombre)`.
+
+    ## Por qué es un helper y no una línea en cada sitio
+    `avisar_intermedio` ya tenía el "si el destino principal no está, se va al
+    otro", y los otros tres lo tenían solo con `disp.telefono()`. Medido: con
+    `limpiar` mandada al teléfono a propósito, el aviso del emulador no se podía
+    quitar nunca. Cuatro Ways de decidir lo mismo es una forma segura de que uno
+    se olvide del otro, y el que se olvida es siempre el que nadie prueba.
+
+    ## Y por qué el destino por defecto
+    `AVISO_INTERMEDIO`, igual que el aviso de decisión: el aviso que hay que
+    decidir va donde se decide.
+    """
+    orden = (["telefono", "emulador"] if destino == "telefono"
+             else ["emulador", "telefono"])
+    for candidato in orden:
+        try:
+            d = disp.telefono() if candidato == "telefono" else disp.emulador()
+        except disp.DeviceError:
+            d = None
+        if d is not None:
+            return d, candidato
+    return None, destino
 
 
 def avisar_intermedio(peticion: dict) -> str:
@@ -710,19 +912,7 @@ def avisar_intermedio(peticion: dict) -> str:
     if destino == "ninguno":
         return "avisos desactivados (AEGIS_AVISO_INTERMEDIO=ninguno)"
 
-    # Si el destino principal no está, se va al otro. Un aviso que no se puede
-    # entregar no es un aviso, y aquí ya se sabe si hay teléfono.
-    orden = ["telefono", "emulador"] if destino == "telefono" else ["emulador", "telefono"]
-    dev = None
-    probado = destino
-    for candidato in orden:
-        try:
-            d = disp.telefono() if candidato == "telefono" else disp.emulador()
-        except disp.DeviceError:
-            d = None
-        if d is not None:
-            dev, probado = d, candidato
-            break
+    dev, probado = _destino_aviso(destino)
     if dev is None:
         return f"no pude avisar: no hay {probado} conectado por adb"
 
@@ -737,23 +927,29 @@ def avisar_intermedio(peticion: dict) -> str:
 
     global _AVISO
     _AVISO = (ahora, clave)
-    return f"{_avisar_app(dev)} ({probado})"
+    return f"{_avisar_app(dev, ESTADO_PENDIENTE, pet_id=peticion.get('id', ''))} ({probado})"
 
 
 def avisar_telefono(peticion: dict) -> str:
     """Aviso **final** al teléfono real: la instalación se hizo.
 
-    Este es el único aviso que llega a tu móvil por una instalación ya hecha, y
-    llega una vez, cuando ya no hay nada que decidir. Si no está conectado por
-    adb, se dice: no se finge que se avisó.
+    ## Y por qué ahora usa el mismo id que el de «necesito tu OK»
+    Antes iba a un id aparte (4102) que **nadie cancelaba nunca**, así que un
+    «ya está» se quedaba en la bandeja para siempre y el aviso de decisión
+    seguía encima diciendo que faltaba tu OK. Con un solo id, publicar el final
+    **reemplaza** al de decisión por el mecanismo de siempre, y se dice también
+    lo que hace con él la app: caduca a los 45 s.
+
+    Es lo contrario de lo que se temía al separarlos («un 'ya está' no debe borrar
+    un 'todavía necesito tu OK'»): con varios pendientes, se avisa del final y el
+    siguiente broadcast de pendientes repinta el aviso de decisión. Perderlo un
+    momento es mejor que mantenerlo para siempre.
     """
-    try:
-        dev = disp.telefono()
-    except disp.DeviceError as exc:
-        return f"no pude avisar: {exc}"
+    dev, probado = _destino_aviso(AVISO_INTERMEDIO)
     if dev is None:
-        return "no pude avisar: tu teléfono no está conectado por adb"
-    return _avisar_app(dev, tipo="hecho")
+        return f"no pude avisar: no hay {probado} conectado por adb"
+    return _avisar_app(dev, ESTADO_HECHO,
+                       pet_id=peticion.get("id", "") if isinstance(peticion, dict) else "")
 
 
 def avisar_fallo_telefono(pet_id: str, motivo: str) -> str:
@@ -765,14 +961,50 @@ def avisar_fallo_telefono(pet_id: str, motivo: str) -> str:
     un "sí" que terminó en nada y sin ninguna señal de que pasó. Un
     fallo mudo es peor que un fallo ruidoso: el primero hace que la siguiente vez
     no apruebes nada por si acaso.
+
+    ## Y ahora también cuando algo que no es una instalación
+    `_lanza_ejecucion` lo llama cuando un hilo muere, y antes **no** había aviso
+    de éxito para nada que no fuera instalar: `db_migrate` o `adb_connect`
+    terminaban mudos. Con el aviso siendo el canal de estado de una operación, un
+    «no se hizo» sin su «sí, se hizo» es un canal que solo sabe quejarse.
     """
-    try:
-        dev = disp.telefono()
-    except disp.DeviceError as exc:
-        return f"no pude avisar: {exc}"
+    dev, probado = _destino_aviso(AVISO_INTERMEDIO)
     if dev is None:
-        return "no pude avisar: tu teléfono no está conectado por adb"
-    return _avisar_app(dev, tipo="fallo", motivo=motivo)
+        return f"no pude avisar: no hay {probado} conectado por adb"
+    return _avisar_app(dev, ESTADO_FALLO, motivo=motivo, pet_id=pet_id)
+
+
+def avisar_trabajando(pet_id: str, que: str = "instalando la app") -> str:
+    """El aviso pasa a «esto está en marcha» y **no se puede quitar**.
+
+    Se publica cuando la operación arranca, no cuando acaba, porque entre tu
+    «sí» y el resultado hay un `adb install`. Es el único estado *ongoing*: si se
+    pudiera quitar con un dedo, la bandeja volvería a quedarse muda justo en la
+    parte que espera.
+    """
+    dev, probado = _destino_aviso(AVISO_INTERMEDIO)
+    if dev is None:
+        return f"no pude avisar: no hay {probado} conectado por adb"
+    return _avisar_app(dev, ESTADO_TRABAJANDO, motivo=que, pet_id=pet_id)
+
+
+def avisar_limpiar() -> str:
+    """Que no quede nada de Aegis en la bandeja.
+
+    ## Por qué existe, y por qué tiene que poder pedirse
+    Un aviso que ya no vale tiene que poder irse **sin** que llegue otro aviso que
+    lo tape. Pasó de verdad: quedó en la bandeja el aviso de un test y no había
+    forma de quitarlo, porque solo se cancelaba cuando otro aviso de pendientes
+    veía la cola vacía —y si no volvía a haber nada que decidir, ese otro aviso
+    nunca llegaba.
+
+    Se llama al abrir la app: es el único momento en que se sabe que hay un
+    receptor vivo y que `/deploys` se puede preguntar de verdad.
+    """
+    dev, probado = _destino_aviso(AVISO_INTERMEDIO)
+    if dev is None:
+        return f"no pude avisar: no hay {probado} conectado por adb"
+    return _avisar_app(dev, ESTADO_LIMPIAR)
 
 
 def aprobar(pet_id: str, decision: str = "aprobar", motivo: str = "") -> dict:
@@ -833,10 +1065,26 @@ def pendientes() -> list[dict]:
 # -- La puerta completa ------------------------------------------------------
 
 def pasar_puerta_deploy(lanzar: bool = False) -> disp.Device:
-    """Todo lo que tiene que estar en verde antes de tocar el teléfono.
+    """Lo **barato**, y solo lo barato, antes de tocar el teléfono.
 
     Devuelve el **dispositivo verificado**, o lanza `PuertaCerrada` con el motivo.
-    Se comprueba aquí, no se acepta que el agente diga que comprobó.
+
+    ## Lo que ya NO está aquí, y por qué
+    Analyze, tests y humo se comprueban al **compilar** (`verificar_binario`) y
+    quedan sellados en `<apk>.verificado`. Aquí solo se comprueba que ese sello
+    siga cuadrando con el binario que hay ahora mismo.
+
+    Antes esta función era la puerta completa, y se ejecutaba **después** de que
+    aprobaras: varios minutos de silencio con tu dedo puesto en un botón, y un
+    «sí» que acababa en nada si la puerta se cerraba después. Ahora, entre tu
+    «sí» y el APK instalado hay un `adb install`.
+
+    ## Lo que sigue aquí, y no por capricho
+    - que el sello de origen cuadre con el código (un APK de antes no se instala);
+    - que el `.verificado` cuadre con **este** binario;
+    - que el teléfono esté y **alcance** al bridge. Eso último no se puede
+      verificar al compilar: depende del cable, de Tailscale y de si la app está
+      encendida, y cambia sin avisar.
 
     ## Por qué devuelve el device y no su serial
     Porque la puerta acaba de resolver *qué* teléfono es, con todos los controles
@@ -850,7 +1098,7 @@ def pasar_puerta_deploy(lanzar: bool = False) -> disp.Device:
     `instalar_en_telefono`, que espera un `Device`. Revienta con
     `AttributeError: 'str' object has no attribute 'serial'` — pero **en un
     hilo en segundo plano**, un minuto y medio después de que el usuario pulsara
-    «sí». El test unitario no lo vio porque fijaba el mock a un `Device`: el
+    «sí». El test unitario no lo vio porque fijó el mock a un `Device`: el
     test estaba mintiendo sobre la firma real, que es la forma más común de que
     un test de contrato no sea un test de contrato. De ahí el test de tipo de
     abajo.
@@ -860,17 +1108,10 @@ def pasar_puerta_deploy(lanzar: bool = False) -> disp.Device:
         raise PuertaCerrada(
             "tu teléfono no está conectado por adb, así que no puedo instalar. "
             "Las pruebas siguen bien: van al emulador, que replica el galaxy a17.")
-    ok, detalle = verificar_analisis()
-    if not ok:
-        raise PuertaCerrada(f"analyze en rojo, no instalo:\n  {detalle}")
-    ok, detalle = verificar_tests()
-    if not ok:
-        raise PuertaCerrada(f"los tests fallan, no instalo:\n  {detalle}")
-    ok, detalle = humo_una_vez()
-    if not ok:
-        raise PuertaCerrada(
-            "el humo en el emulador no pasa, así que no instalo en tu teléfono. "
-            f"Prueba primero ahí, que no interrumpe a nadie:\n  {detalle}")
+    if (desactualizado := apk_desactualizado(APK_TELEFONO)):
+        raise PuertaCerrada(desactualizado)
+    if (sin_verificar := apk_sin_verificar(APK_TELEFONO)):
+        raise PuertaCerrada(sin_verificar)
     # El APK del teléfono lleva la dirección del bridge dentro. Si el teléfono no
     # la alcanza, la app instala, abre y no ve nada: sin error y sin aviso.
     try:

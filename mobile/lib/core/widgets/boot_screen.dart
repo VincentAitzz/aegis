@@ -195,7 +195,11 @@ class _ArranqueUi extends StatelessWidget {
     );
     return ColoredBox(
       color: AegisPalette.bg0,
-      child: Center(
+      // Sin `SafeArea` la calavera —que mide 320 px de alto— se metía debajo del
+      // reloj en pantalla con barra de estado. Es la misma razón por la que la
+      // cabecera del shell lo lleva.
+      child: SafeArea(
+        child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -239,6 +243,7 @@ class _ArranqueUi extends StatelessWidget {
           ],
         ),
       ),
+        ),
     );
   }
 }

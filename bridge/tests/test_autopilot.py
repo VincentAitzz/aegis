@@ -339,3 +339,170 @@ class TestOnStepReal(unittest.TestCase):
         tools_en_traza = [t.get("tool") for t in result["trace"] if t.get("tool")]
         self.assertTrue(tools_en_traza, f"no pidió tools: {result['trace']}")
         self.assertEqual([t for _, t in vistos], tools_en_traza)
+
+
+class TestControlDeRun(unittest.TestCase):
+    """Parar y dirigir un run de autopilot, que era lo que solo sabía hacer Hermes.
+
+    ## Por qué esto se añadió al canal único
+    Con un solo motor, la app perdió la única ventaja real que tenía Hermes: no
+    se podía parar un run ni decirle nada mientras corría. Un bucle que ejecuta
+    tools de verdad en tu disco, sin forma de cortarlo, no es un canal de
+    comunicación: es unabove que hay que esperar.
+
+    ## Por qué parar **no** es cancelar la tarea
+    `_execute` es síncrono: cortar a mitad deja una escritura sin el paso que la
+    explicó, y la traza —que es la evidencia— diría una cosa que no ocurrió. Por
+    eso la parada es un `Event` que el bucle consulta **antes de pedirle nada
+    más al modelo**: el paso en marcha se termina entero y se registra, y no
+    empieza otro.
+    """
+
+    def test_el_bucle_acepta_parar_y_extra(self):
+        import inspect
+        from app.autopilot import run_autopilot
+        params = inspect.signature(run_autopilot).parameters
+        self.assertIn("parar", params)
+        self.assertIn("extra", params)
+
+    def test_las_rutas_de_parar_y_dirigir_existen(self):
+        from app.main import app
+        pares = {(r.path, tuple(sorted(r.methods))) for r in app.routes
+                 if hasattr(r, "methods")}
+        self.assertIn(("/autopilot/{run_id}/stop", ("POST",)), pares)
+        self.assertIn(("/autopilot/{run_id}/steer", ("POST",)), pares)
+
+    def test_el_trim_no_secome_un_run_vivo(self):
+        # Con `parar`, `extra` y `task` dentro del run, podar uno que corre le
+        # borra justo lo que lo hace controlable: quien pulsara parar recibiría
+        # un 404 y el steer se iría a un queue sin dueño, sin error visible.
+        from app.main import _AUTOPILOT_RUNS, _AUTOPILOT_RUNS_MAX, _autopilot_trim
+        _AUTOPILOT_RUNS.clear()
+        self.addCleanup(_AUTOPILOT_RUNS.clear)
+
+        for i in range(_AUTOPILOT_RUNS_MAX):
+            _AUTOPILOT_RUNS[f"v{i}"] = {"run_id": f"v{i}", "status": "running"}
+        for i in range(7):
+            _AUTOPILOT_RUNS[f"t{i}"] = {"run_id": f"t{i}", "status": "completed"}
+
+        _autopilot_trim()
+
+        for i in range(_AUTOPILOT_RUNS_MAX):
+            self.assertIn(f"v{i}", _AUTOPILOT_RUNS,
+                          f"el run vivo v{i} se podó: se vuelve incontrolable")
+        # Los terminados sí se van: sobraban 7 y había 7 terminados.
+        self.assertEqual([r for r in _AUTOPILOT_RUNS if r.startswith("t")], [])
+
+    def test_parar_un_run_terminado_no_da_error(self):
+        # Idempotencia: el botón puede quedar pulsado tras terminar el run, y eso
+        # no es un fallo que haya que mostrarle a nadie.
+        import asyncio
+        from app import main as main_mod
+
+        async def caso():
+            _AUTOPILOT_RUNS = main_mod._AUTOPILOT_RUNS
+            _AUTOPILOT_RUNS.clear()
+            try:
+                _AUTOPILOT_RUNS["t"] = {"run_id": "t", "status": "completed"}
+                return await main_mod.autopilot_stop("t")
+            finally:
+                _AUTOPILOT_RUNS.clear()
+
+        r = asyncio.run(caso())
+        self.assertFalse(r["parado"])
+        self.assertIn("ya había terminado", r["detalle"])
+
+    def test_parar_un_run_que_no_existe_explica_por_que(self):
+        # Un 404 a secas haría pensar que el id nunca existió. El run ocurrió y su
+        # traza está en el JSONL: decirlo es la diferencia entre un error y un
+        # dato.
+        import asyncio
+        from app import main as main_mod
+        from fastapi import HTTPException
+
+        async def caso():
+            main_mod._AUTOPILOT_RUNS.clear()
+            try:
+                await main_mod.autopilot_stop("no-existe")
+            except HTTPException as exc:
+                return exc
+
+        exc = asyncio.run(caso())
+        self.assertEqual(exc.status_code, 404)
+        self.assertIn("no está vivo", str(exc.detail))
+
+    def test_dirigir_apila_y_el_bucle_lo_drena(self):
+        # La cola, no una lista: el endpoint corre en otra tarea y no puede tocar
+        # `messages` del bucle mientras este está a mitad de un `await`.
+        import asyncio
+        from app import main as main_mod
+
+        async def caso():
+            store = main_mod._AUTOPILOT_RUNS
+            store.clear()
+            try:
+                store["r"] = {"run_id": "r", "status": "running",
+                              "parar": asyncio.Event(), "extra": asyncio.Queue()}
+                r = await main_mod.autopilot_steer(
+                    "r", main_mod.SteerIn(text="usa el estilo del otro"))
+                cola = store["r"]["extra"]
+                self.assertTrue(r["aplicada"])
+                self.assertFalse(cola.empty())
+                return cola.get_nowait()
+            finally:
+                store.clear()
+
+        self.assertEqual(asyncio.run(caso()), "usa el estilo del otro")
+
+    def test_dirigir_un_run_terminado_no_promete(self):
+        import asyncio
+        from app import main as main_mod
+
+        async def caso():
+            store = main_mod._AUTOPILOT_RUNS
+            store.clear()
+            try:
+                store["t"] = {"run_id": "t", "status": "completed"}
+                return await main_mod.autopilot_steer("t", main_mod.SteerIn(text="otra"))
+            finally:
+                store.clear()
+
+        r = asyncio.run(caso())
+        self.assertFalse(r["aplicada"])
+
+    def test_el_estado_no_trieda_serializar_los_objetos_vivos(self):
+        # El dict del run guarda `parar`, `extra` y `task`, que son objetos de
+        # asyncio y no son JSON. Un `AutopilotStatus(**run)` depende de que
+        # pydantic los ignore por defecto; nombrar los campos que salen es lo que
+        # hace que este endpoint no se pueda romper al añadir control de un run.
+        import asyncio
+        from app import main as main_mod
+
+        async def caso():
+            store = main_mod._AUTOPILOT_RUNS
+            store.clear()
+            try:
+                store["r"] = {"run_id": "r", "status": "running", "steps": 2,
+                              "trace": [{"step": 1, "tool": "projects_list"}],
+                              "answer": None, "fin": None, "error": None,
+                              "parar": asyncio.Event(), "extra": asyncio.Queue(),
+                              "task": None}
+                st = await main_mod.autopilot_status("r")
+                st.model_dump_json()   # si se colara un Event, esto revienta
+                return st
+            finally:
+                store.clear()
+
+        st = asyncio.run(caso())
+        self.assertEqual(st.run_id, "r")
+        self.assertEqual(st.steps, 2)
+        self.assertEqual(st.status, "running")
+
+    def test_el_prefijo_reconoce_un_run_propio(self):
+        # Reconocer un run de autopilot por el prefijo, y no preguntando al buffer:
+        # un run ya podado sigue siendo reconocible, y un id de Hermes nunca
+        # empieza por aquí.
+        from app.main import _AUTOPILOT_PREFIX
+        self.assertEqual(_AUTOPILOT_PREFIX, "autopilot-")
+        self.assertTrue("autopilot-abc123".startswith(_AUTOPILOT_PREFIX))
+        self.assertFalse("run_abc123".startswith(_AUTOPILOT_PREFIX))

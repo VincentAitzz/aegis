@@ -142,6 +142,17 @@ class AgentRepositoryImpl implements AgentRepository {
   }
 
   @override
+  Future<String> instalarDeploy(String id) async {
+    final r = await _dio.post<Map<String, dynamic>>(
+      '${config.httpBase}/deploys/$id/instalar',
+    );
+    // Devuelve el detalle y no un `void`: quien aprueba tiene que poder decir
+    // "arranca" y no "hecho", porque la instalación va en un hilo aparte y el
+    // resultado llega en el aviso, no en esta respuesta.
+    return (r.data?['detalle'] as String?) ?? 'la instalación arranca ya';
+  }
+
+  @override
   Future<String> startAutopilot({
     required String prompt,
     String? project,
@@ -174,6 +185,19 @@ class AgentRepositoryImpl implements AgentRepository {
       '${config.httpBase}/autopilot/$runId',
     );
     return AutopilotRun.fromJson(r.data!);
+  }
+
+  @override
+  Future<void> stopAutopilot(String runId) async {
+    await _dio.post<Map<String, dynamic>>('${config.httpBase}/autopilot/$runId/stop');
+  }
+
+  @override
+  Future<void> steerAutopilot(String runId, String text) async {
+    await _dio.post<Map<String, dynamic>>(
+      '${config.httpBase}/autopilot/$runId/steer',
+      data: jsonEncode({'text': text}),
+    );
   }
 
   @override

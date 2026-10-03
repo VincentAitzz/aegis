@@ -502,6 +502,16 @@ class TestEjecutarLoAprobado(_Piso):
     ## Lo que se comprueba
     Que ejecuta lo aprobado, que **gasta** el permiso, que no ejecuta una tool que
     no es de nivel 3 (sería saltarse su propia puerta) y que deja rastro.
+
+    ## Y por qué aquí se espera a que termine
+    `/ejecutar` responde **ya** y ejecuta en un hilo (A-066): una tool de nivel 3
+    puede ser la puerta completa del despliegue —analyze, tests y humo— y eso son
+    minutos, así que con la respuesta esperando el móvil se cansaba a los 10 s y
+    pintaba «No pude ejecutar» con el token ya gastado y el trabajo a medias.
+
+    Los tests **no** accordingly-adaptan el contrato asserting `ok`/`result` en la
+    respuesta: affirmarían el bug. Afirman lo que de verdad importa — que el
+    efecto ocurre — esperando a su efecto, y que la respuesta dice `en_curso`.
     """
 
     def setUp(self) -> None:
@@ -554,27 +564,58 @@ class TestEjecutarLoAprobado(_Piso):
         self.a.resolver(pid, "aprobar")
         return pid
 
-    def test_ejecuta_la_llamada_aprobada(self):
-        pid = self._pedir()
+    def _esperar(self, condicion, segundos=15):
+        """Espera a que el hilo de la ejecución llegue a su efecto.
+
+        Sin esto los tests afirmarían o bien `ok` en una respuesta que ya no lo
+        trae, o bien «no pasó nada», que tampoco es cierto: la ejecución va en
+        segundo plano y llega. Se espera **al efecto**, no al hilo.
+        """
+        import time as _t
+        fin = _t.time() + segundos
+        while _t.time() < fin:
+            if condicion():
+                return True
+            _t.sleep(0.05)
+        return False
+
+    def _ejecutar(self, pid):
         r = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
         self.assertEqual(r.status_code, 200, r.text)
-        cuerpo = r.json()
-        self.assertTrue(cuerpo["ok"], cuerpo.get("error"))
+        return r.json()
+
+    def test_ejecuta_la_llamada_aprobada(self):
+        pid = self._pedir()
+        cuerpo = self._ejecutar(pid)
         self.assertEqual(cuerpo["tool"], "project_create")
+        # La respuesta dice que **arrancó**, y solo eso. Este es el contrato: un
+        # `ok` aquí mentiría sobre un trabajo que todavía no ha terminado.
+        self.assertEqual(cuerpo["estado"], "en_curso")
         # Se ejecutó DE VERDAD: el alta se ve en el registro del workspace de
-        # mentira. Afirmar sobre el texto del resultado solo probaría la cadena.
-        entrada = json.loads((self.ws / "registro" / "acme.json").read_text(
-            encoding="utf-8"))
-        self.assertEqual(entrada["alias"], "acme")
+        # mentira. Afirmar sobre el texto de la respuesta solo probaría la cadena.
+        alta = self.ws / "registro" / "acme.json"
+        self.assertTrue(self._esperar(alta.exists),
+                        "la llamada aprobada no llegó a ejecutarse en segundo plano")
+        self.assertEqual(json.loads(alta.read_text(encoding="utf-8"))["alias"],
+                         "acme")
 
     def test_una_denegacion_de_la_tool_no_se_pinta_como_hecho(self):
         """La tool dice que no y devuelve texto, sin lanzar. Si esto se pintara
         como 'hecho', estaríamos repitiendo el falso éxito de A-016."""
         pid = self._pedir(args={"alias": "otro", "area": "/etc", "kind": "producto"})
-        r = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
-        self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["ok"])
-        self.assertIn("área", r.json()["error"])
+        import tempfile
+        from pathlib import Path as _P
+        tmp = _P(tempfile.mkdtemp())
+        with mock.patch.object(self.mod, "_runs_dir", lambda: tmp):
+            self._ejecutar(pid)
+            rastro = tmp / f"aprobacion-{pid}.jsonl"
+            self.assertTrue(self._esperar(rastro.exists),
+                            "la ejecución no dejó rastro")
+            cuerpo = json.loads(rastro.read_text(encoding="utf-8")
+                                .strip().splitlines()[-1])["payload"]
+        # El veredicto sale del rastro, que es lo que el móvil acaba leyendo.
+        self.assertNotEqual(cuerpo.get("fin"), "task.failed",
+                            "una denegación de la tool no puede cerrarse como hecha")
 
     def test_el_permiso_se_gasta_y_no_se_repite(self):
         pid = self._pedir()
@@ -600,6 +641,38 @@ class TestEjecutarLoAprobado(_Piso):
         self.assertEqual(r.status_code, 400)
         self.assertIn("nivel 3", r.json()["detail"])
 
+    def test_un_hilo_que_murie_avisa_en_vez_de_desaparecer(self):
+        """El fallo que casi no se ve: una excepción en el hilo de la ejecución.
+
+        Pasó al escribir esto: la función usaba `ToolNotAllowed` sin importarlo y
+        moría con `NameError` **después** de gastar el permiso y de responder al
+        móvil. El cliente tenía un «en curso», no pasaba nada, y ningún test se
+        enteró porque todos miraban la respuesta HTTP — que era correcta.
+
+        Así que se comprueban las dos cosas que un hilo sí puede hacer aunque
+        reviente: dejar el rastro y avisar al teléfono.
+        """
+        import tempfile
+        from pathlib import Path as _P
+        tmp = _P(tempfile.mkdtemp())
+        pid = self._pedir()
+        with mock.patch.object(self.mod, "_runs_dir", lambda: tmp), \
+             mock.patch.object(self.mod, "_ejecutar_aprobacion_en_segundo_plano",
+                               side_effect=RuntimeError("el hilo reventó")), \
+             mock.patch("app.deploy.avisar_fallo_telefono") as avisar:
+            r = self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
+            self.assertEqual(r.status_code, 200, r.text)
+            # La respuesta sigue siendo correcta: el fallo es del hilo, no de la
+            # puerta. Por eso no puedeNbajarse a un 500.
+            self.assertEqual(r.json()["estado"], "en_curso")
+            ruta = tmp / f"aprobacion-{pid}.jsonl"
+            self.assertTrue(self._esperar(ruta.exists),
+                            "un hilo que murió no dejó rastro: el gesto se pierde")
+            self.assertTrue(self._esperar(lambda: avisar.called),
+                            "un hilo que murió no avisó: nadie se entera")
+            aviso = avisar.call_args[0][1]
+            self.assertIn("el hilo reventó", aviso)
+
     def test_deja_rastro_en_el_jsonl(self):
         import json as _json
         import tempfile
@@ -607,9 +680,13 @@ class TestEjecutarLoAprobado(_Piso):
         tmp = _P(tempfile.mkdtemp())
         with mock.patch.object(self.mod, "_runs_dir", lambda: tmp):
             pid = self._pedir()
-            self.client.post(f"/aprobaciones/{pid}/ejecutar", headers=self.cab)
-            lineas = (_P(tmp) / f"aprobacion-{pid}.jsonl").read_text(
-                encoding="utf-8").strip().splitlines()
+            self._ejecutar(pid)
+            # El rastro lo escribe el hilo, así que puede no estar todavía: se
+            # espera a que exista en vez de leerlo a la carrera.
+            ruta = _P(tmp) / f"aprobacion-{pid}.jsonl"
+            self.assertTrue(self._esperar(ruta.exists),
+                            "la ejecución en segundo plano no dejó JSONL")
+            lineas = ruta.read_text(encoding="utf-8").strip().splitlines()
         eventos = [_json.loads(x)["event"] for x in lineas]
         self.assertIn("tool.completed", eventos)
         self.assertIn("task.done", eventos)

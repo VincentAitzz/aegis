@@ -49,6 +49,19 @@ class FakeAgentRepository implements AgentRepository {
   List<String> tokensGastados = [];
   List<String> fasesLanzadas = [];
   List<String> promptsLanzados = [];
+  List<String> proyectosLanzados = [];
+
+  /// Si cada run salió con la puerta de verificación. Vacía significa que aún no
+  /// se lanzó nada: una lista vacía pasa el `isEmpty` de cualquier `every`, así
+  /// que el assert tiene que mirar que no esté vacía antes.
+  List<bool> verificacionesLanzadas = [];
+
+  /// Que `/ejecutar` responda como el bridge de verdad: `en_curso`. Ver A-066.
+  bool enCurso = false;
+
+  /// Los runs a los que se pidió parar y los textos con los que se dirigió.
+  final List<String> parados = [];
+  final List<String> dirigidos = [];
   List<String> ejecutadasFake = [];
 
   /// Lo que el repo falso dice que Aegis hace. Por defecto, quieto: los tests
@@ -104,8 +117,20 @@ class FakeAgentRepository implements AgentRepository {
   @override
   Future<DeployState> deployState() async => despliegues;
 
+  /// Lo que se decidió y lo que se instaló, en orden. El orden es el punto: un
+  /// approve sin su `/instalar` detrás es exactamente el fallo que se cubría, y
+  /// una lista de llamadas sueltas no lo delata.
+  final List<String> deploys = [];
+
   @override
-  Future<void> decideDeploy(String id, {required bool aprobar}) async {}
+  Future<void> decideDeploy(String id, {required bool aprobar}) async =>
+      deploys.add('${aprobar ? 'aprobar' : 'denegar'}:$id');
+
+  @override
+  Future<String> instalarDeploy(String id) async {
+    deploys.add('instalar:$id');
+    return 'la instalación arranca ya; el aviso del móvil confirma al terminar';
+  }
 
   @override
   Future<ProjectInfo> writeFicha({
@@ -126,6 +151,11 @@ class FakeAgentRepository implements AgentRepository {
     String? fase,
   }) async {
     promptsLanzados.add(prompt);
+    if (project != null && project.isNotEmpty) proyectosLanzados.add(project);
+    // Se registra aparte de `promptsLanzados` porque es el dato que se olvidó: el
+    // móvil mandaba `verificar: false` fijo, y desde aquí ninguna escritura pasaba
+    // por el verificador ni en un proyecto marcado.
+    verificacionesLanzadas.add(verify);
     if (token != null && token.isNotEmpty) tokensGastados.add(token);
     if (fase != null && fase.isNotEmpty) fasesLanzadas.add(fase);
     return 'autopilot_test';
@@ -145,6 +175,16 @@ class FakeAgentRepository implements AgentRepository {
         answer: 'listo',
         fin: 'sin_tools',
       );
+
+  // El fake se queda en silencio a propósito: los tests que suben un run
+  // comprueban cómo se pinta, no que el bucle se deje dirigir. Registrar las
+  // llamadas sí es útil, y por eso están en `parados` y `dirigidos`.
+  @override
+  Future<void> stopAutopilot(String runId) async => parados.add(runId);
+
+  @override
+  Future<void> steerAutopilot(String runId, String text) async =>
+      dirigidos.add(text);
 
   @override
   Stream<AgentEvent> streamTask(String runId) => const Stream.empty();
@@ -214,8 +254,20 @@ class FakeAgentRepository implements AgentRepository {
     // anota. Un fake que "hace" lo que se le pide acaba mintiendo en el test.
     final p = aprobacionesFake.where((a) => a.id == id).toList();
     aprobacionesFake = [...aprobacionesFake.where((a) => a.id != id)];
+    // Permite fingir la respuesta real del bridge, que es `en_curso` (A-066).
+    if (enCurso) {
+      return EjecucionAprobada(
+        tool: p.isEmpty ? 'project_create' : p.first.tool,
+        estado: 'en_curso',
+        detalle: 'la llamada arranca ya; el rastro y el aviso confirman al terminar',
+      );
+    }
+    // `estado: "terminada"` a propósito: el bridge responde `en_curso` y ejecuta
+    // después, así que el camino de «terminada con resultado» necesita su propio
+    // fake. El `en_curso` real lo cubre `deploy_flow_test`.
     return EjecucionAprobada(
       tool: p.isEmpty ? 'project_create' : p.first.tool,
+      estado: 'terminada',
       ok: p.isNotEmpty,
       resultado: p.isEmpty ? '' : 'Alta de prueba',
     );

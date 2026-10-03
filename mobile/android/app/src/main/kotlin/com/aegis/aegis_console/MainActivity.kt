@@ -13,6 +13,35 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
+    /**
+     * Al abrir la app, se reconcilia el aviso con lo que hay de verdad.
+     *
+     * ## Por qué hace falta y no solo «publicar pendientes»
+     * Publicar pendientes ya cubría el caso normal. El que no cubría era el
+     * **aviso que ya no vale**: quedó uno de un test en la bandeja sin forma de
+     * quitarlo, porque el único sitio que cancelaba era un aviso de pendientes
+     * que veía la cola vacía —y si no volvía a haber nada que decidir, ese otro
+     * aviso nunca llegaba. Un aviso que se queda para siempre enseñando algo
+     * falso es peor que ninguno.
+     *
+     * Por eso primero se **limpia** y luego se pregunta. Son dos broadcasts y no
+     * uno: «limpia» no lee nada y no falla nunca, y «pendientes» sí lee. Si se
+     * hicieran a la vez, un fallo de red dejaría la bandeja vacía por un motivo
+     * que no es «no hay nada», que es exactamente la mentira que hay que evitar.
+     */
+    override fun onStart() {
+        super.onStart()
+        if (!concedePermiso()) return
+        android.content.Intent(this, NotificacionReceiver::class.java)
+            .setAction(ACCION_AVISAR)
+            .putExtra("tipo", NotificacionReceiver.LIMPIAR)
+            .let { sendBroadcast(it) }
+        android.content.Intent(this, NotificacionReceiver::class.java)
+            .setAction(ACCION_AVISAR)
+            .putExtra("tipo", NotificacionReceiver.PENDIENTE)
+            .let { sendBroadcast(it) }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -61,6 +90,7 @@ class MainActivity : FlutterActivity() {
             if (concedePermiso()) {
                 android.content.Intent(this, NotificacionReceiver::class.java)
                     .setAction(ACCION_AVISAR)
+                    .putExtra("tipo", NotificacionReceiver.PENDIENTE)
                     .let { sendBroadcast(it) }
             }
         }

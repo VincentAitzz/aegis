@@ -24,6 +24,29 @@ import '../../core/widgets/hud_overlay.dart';
 import '../providers/agent_providers.dart';
 import 'aegis_section.dart';
 
+/// El alto de la cabecera, **sin** contar la barra del sistema.
+///
+/// ## Por qué es una constante y no se lee del sitio donde se dibuja
+/// Los dos avisos de abajo son `Positioned`, y tienen que apoyarse *justo*
+/// debajo de la cabecera. Si cada uno calculase su `top` por su cuenta habría
+/// tres números que se pueden desincronizar; aquí hay uno y una función.
+///
+/// ## Por qué se suma el inset
+/// Antes la cabecera era un `Container` de 52 px pelados dentro de
+/// `Scaffold.body`, sin `SafeArea`: en cualquier dispositivo con barra de estado
+/// la marca y los primeros píxeles de cada sección salían **debajo** del reloj.
+/// Y los avisos clavados a `top: 52` se montaban encima de la cabecera, que es
+/// un bug aparte del solape.
+const double _marcaAlto = 52.0;
+
+/// Dónde termina la cabecera contando la barra del sistema.
+///
+/// `MediaQuery.paddingOf` y no `MediaQuery.of`: no reconstruye a quien la
+/// llama cuando cambia el inset, que es justo lo que pasa al abrir y cerrar el
+/// teclado.
+double _finCabecera(BuildContext context) =>
+    _marcaAlto + MediaQuery.paddingOf(context).top;
+
 class AegisShell extends ConsumerStatefulWidget {
   const AegisShell({super.key});
 
@@ -112,9 +135,19 @@ class _Marca extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 52,
-      padding: const EdgeInsets.fromLTRB(16, 6, 12, 4),
+    // El `SafeArea` va **por fuera** del borde, no dentro del padding: el borde
+    // tiene que caer justo bajo el texto de la cabecera, y con el inset
+    // mezclado en el `padding` la línea se separaba de la marca.
+    return SafeArea(
+      bottom: false,
+      child: Container(
+        // La clave existe para poder medir la cabecera en un test. `_marcaAlto`
+        // es un número en un fichero y lo natural es que nadie lo compruebe: si
+        // mañana alguien lo cambia a 60, el único síntoma es que el aviso se
+        // solapa, y eso solo se ve en el emulador.
+        key: const Key('aegis.cabecera'),
+        height: _marcaAlto,
+        padding: const EdgeInsets.fromLTRB(16, 6, 12, 4),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AegisPalette.line)),
       ),
@@ -144,6 +177,7 @@ class _Marca extends StatelessWidget {
             ),
           ),
         ],
+      ),
       ),
     );
   }
@@ -255,7 +289,7 @@ class _AvisoSinPuente extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Positioned(
-      top: 52,
+      top: _finCabecera(context),
       left: 0,
       right: 0,
       child: Material(
@@ -311,7 +345,7 @@ class _AvisoSinPermiso extends ConsumerWidget {
     if (pendiente) return const SizedBox.shrink();
 
     return Positioned(
-      top: 52,
+      top: _finCabecera(context),
       left: 0,
       right: 0,
       child: Material(
