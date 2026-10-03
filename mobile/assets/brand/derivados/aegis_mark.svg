@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Glifo de Aegis: escudo abierto con núcleo vivo.
+
+     Es la misma geometría que `lib/core/widgets/aegis_mark.dart`, hecha aquí en
+     SVG para derivar el ícono del lanzador. Los dos viven separados a propósito:
+     la app pinta el glifo en vivo (con pulso) y el lanzador necesita un PNG
+     estático, y una imagen no puede latir.
+
+     Las medidas salen de `_MarkPainter` con S=676 sobre un lienzo de 1024:
+     radio del arco 243.4 (0.72 r), trazo 43.9 (0.13 r), hueco de 0.62 rad a
+     cada lado del eje vertical. S=676 porque es el 66% central que sobrevive a
+     la máscara del lanzador —18 dp de inset por lado sobre un lienzo de 108 dp—,
+     y el comentario de `pubspec.yaml` explica por qué 18 y no 12.
+
+     Si cambias la geometría del glifo, cambia esto también, y comprueba el
+     resultado **enmascarado**, no el PNG: un icono solo se juzga después de que
+     el sistema le aplique su máscara (A-024).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#000000"/>
+  <!-- El hueco de abajo (0.62 rad a cada lado) es lo que hace que esto se lea
+       como casquete y no como una diana. -->
+  <path d="M 371 710 A 243.4 243.4 0 1 1 654.6 709.2"
+        fill="none" stroke="#FFB020" stroke-width="43.9" stroke-linecap="round"/>
+  <!-- El núcleo, en el punto medio del latido: el lanzador es una imagen fija, y
+       el pulso solo existe dentro de la app. -->
+  <circle cx="512" cy="512" r="70" fill="#FFB020"/>
+</svg>

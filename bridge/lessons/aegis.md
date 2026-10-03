@@ -353,6 +353,20 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 | 2026-09-30 | `api_host_para` (**yo**) | devolvía una IP sin comprobar que el teléfono la alcanzara: Tailscale sin sesión y ufw bloqueando la LAN | A-026 |
 | 2026-09-30 | varios ficheros (**yo**) | caracteres de alfabetos ajenos dentro de palabras, en comentarios y en `lessons/`: se colaron tres veces en un trabajo | A-027 |
 | 2026-09-30 | `.gitignore` (**yo**) | `data/` sin ancla también excluía `mobile/lib/data/`: la capa de datos de la app nunca estuvo versionada y el móvil no compilaba desde un clone | A-017 |
+| 2026-10-01 | `app/mcp_ops.py` (**yo**) | `current_brand()` leía el path viejo de la paleta: al renombrarla devolvía `<no existe el tema>`, que no es el centinela, y la comprobación de `build_apk` pasaba sin comprobar nada | A-028 |
+| 2026-10-01 | `app/mcp_ops.py` (**yo**) | el centinela era el magenta original y el tema llevaba días en verde: la puerta llevaba tiempo sin bloquear nada | A-028 |
+| 2026-10-01 | `app/deploy.py` (**yo**) | `pedir_deploy()` avisaba al teléfono real en cada `install_apk` sin aprobación, y el agente reintenta: el móvil se llenaba de avisos sobre una decisión viva | A-029 |
+| 2026-10-01 | `tests/test_deploy.py` (**yo**) | un test que miraba el texto del aviso en vez del serial de adb habría pasado con el aviso yendo al teléfono | A-029 |
+| 2026-10-01 | `tests/test_autopilot.py` (**yo**) | usó `Color()` para romper un archivo: es Dart válido, el guardarraíl lo aceptó y dejó `Color()` en la paleta de verdad | A-030 |
+| 2026-10-01 | `mobile/lib/core/widgets/boot_screen.dart` (**yo**) | el arranque imprimía `handshake ok` y `auth ok` sin haber comprobado nada: A-016 en la cara del usuario | A-031 |
+| 2026-10-01 | `mobile/lib/presentation/shell/aegis_section.dart` (**yo**) | se colaron ideogramas en un comentario; el test de texto los cazó antes del commit, que es lo que se quería de A-027 | A-027 |
+| 2026-10-01 | `app/autonomy.py` (**yo**) | el token atado al `run_id` no se podía canjear: aprobar y relanzar crea otro run. La fila decía "aprobada" y el paso no avanzaba nunca | A-033 |
+| 2026-10-01 | `app/main.py` (**yo**) | añadí la caída a disco sin que **nadie escribiera** el JSONL del autopilot: la lectura existía y la escritura no | A-034 |
+| 2026-10-01 | `app/main.py` (**yo**) | `task.max_steps` como evento terminal (no está en la taxonomía) y contando solo `tool.started` (solo lo emite Hermes): la mitad de los runs salían con cero pasos | A-034 |
+| 2026-10-01 | `app/autonomy.py` (**yo**) | "probado con la función `decide`" confundido con "el círculo cierra": el `AutopilotIn` del servidor no tenía campo `token` | A-033 |
+| 2026-10-01 | `app/autonomy.py` (**yo**) | el criterio de autonomía fue "¿tiene ficha?"; tres proyectos no tienen verificador, así que no hay contra qué comprobar | A-035 |
+| 2026-10-01 | `app/autonomy.py` (**yo**) | la denegación guardaba estado pero no motivo, y el motivo no se inyectaba: era un registro del bridge, no una memoria del agente | A-037 |
+| 2026-10-01 | `app/mcp_ops.py` (**yo**) | `build_apk` leía el token del `settings` del bridge desde el proceso del MCP, donde vale `""`: APK sin token que abre bien y falla con 401 en cuatro secciones | A-038 |
 
 
 
@@ -542,3 +556,604 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
   que lo detecte **antes** del commit. Y un test de texto tiene que poder pasar
   sobre sí mismo.
 
+
+### A-028 · Un guardarraíl que se queda sin mirar parece que sigue ahí
+
+- **Qué pasó** (2026-10-01): al renombrar `dedsec_colors.dart` a
+  `aegis_palette.dart`, `current_brand()` seguía leyendo el path viejo. Pasaron
+  dos cosas y ninguna se vio:
+  1. Devolvía `<no existe el tema>`, que **no es igual** que el centinela, así que
+     la comparación de `build_apk` pasaba y compilaba sin comprobar la marca.
+  2. Peor: el centinela era `0xFFC83BFE` (el magenta original) y el tema llevaba
+     días en `0xFF2EFFA0` (verde). La comprobación **ya estaba muerta** antes del
+     renombrado: no bloqueaba nada y nadie lo sabía.
+- **La lección de fondo**: un guardarraíl que compara contra un valor puede quedar
+  comparando contra un valor **imposible**, y el resultado es que da verde
+  siempre. Un control que dejó de mirar es peor que uno que no existe, porque
+  parece que sigue ahí: `build_apk` informaba del color y el color no lo
+  comprobaba nadie.
+- **Regla**: un guardarraíl tiene que fallar **cerrado**. Si no puede leer lo que
+  dice leer, devuelve un centinela que **no** sea el centinela de "todo bien", y
+  el que llama tiene que poder distinguir "no hay marca" de "hay marca". Aquí
+  `current_brand()` recorre una lista de rutas y, si ninguna existe, devuelve
+  `<no existe el tema>`; y `build_apk` **niega** con ese motivo, en vez de
+  compilar.
+- **Corolario**: cuando un guardarraíl se apoya en un valor literal (un hex, un
+  id, una ruta), hay un test que comprueba que **el centinela sigue siendo
+  alcanzable**. `TestElGuardarrailDeLaMarca` mira que la paleta exista, que no sea
+  el centinela, y que sin paleta se devuelva el fallo en vez de un hex inventado.
+- **Corolario de método**: un guardarraíl que compara por *nombres de fichero*
+  muere con el primer rebranding. El centinela debe ser un **hecho** —el hex con
+  el que el tema nació— y no una decisión de nombres.
+
+### A-029 · Una copia de texto que se repite no informa de nada
+
+- **Qué pasó** (2026-10-01): `pedir_deploy()` mandaba una notificación **al
+  teléfono real** cada vez que se llamaba, y se llama en cada
+  `install_apk(target='telefono')` sin aprobación. Como el agente reintenta, una
+  sesión de trabajo normal llenaba el móvil de avisos sobre una decisión que
+  todavía no estaba tomada. Ninguno era accionable.
+- **Por qué importa más allá del ruido**: el aviso intermedio dice "falta tu
+  autorización". Es un aviso **antes de que exista nada que hacer**. Y el aviso
+  que sí importa —"ya está instalado"— se perdía entre los otros. Cuando todo
+  avisa, nada avisa.
+- **Regla**: separar los avisos por **cuándo importan**. Lo intermedio va al
+  destino de trabajo (el emulador, que es donde pasa la prueba); lo final, al
+  teléfono, y **una vez**, después de instalar. Y dos avisos iguales seguidos no
+  son dos avisos: hay una ventana (`VENTANA_AVISO`) y se dice "ya estaba avisado"
+  en vez de repetir.
+- **Corolario sobre la degradación**: si el emulador no está, el aviso
+  intermedio **no** cae al teléfono. La degradación intuitiva sería "avisa donde
+  puedas"; aquí es no avisar, porque el teléfono ya recibe el aviso final y este
+  otro volvería a ser ruido sobre una decisión viva.
+- **Regla para los tests**: se comprueba el **destino**, no el texto del mensaje.
+  El destino es el `-s <serial>` de adb, que va en el kwarg; un test que mirara la
+  cadena del mensaje pasaría con el aviso yendo al teléfono. Y hay que mirar
+  `serial`, no solo los argumentos.
+- **Corolario para el médico**: cuando algo te avisa demasiado, no empieces por
+  silenciarlo: cuenta **quién llama** y **cuántas veces**. Aquí el que llamaba era
+  un reintento del agente, y silenciar el aviso habría escondido que Aegis
+  insiste; cortar la fuente lo deja visible solo cuando hay algo nuevo.
+
+### A-030 · `Color()` es Dart válido
+
+- **Qué pasó** (2026-10-01): el test del rollback de sintaxis abrió una edición
+  que rompía el archivo, y usó `= Color()` como "esto no compila". **Sí
+  compila**: es una invocación sin argumentos, perfectamente legal. El guardarraíl
+  lo aceptó, lo escribió, y el test dejó `Color()` en `aegis_palette.dart` de
+  verdad. Hubo que restaurarlo a mano.
+- **Por qué es una lección y no un despiste**: el guardarraíl de sintaxis vale
+  exactamente lo que `dart format` dice, y `dart format` no sabe qué quería
+  escribir el autor. Un test que **asume** que su rompe sintaxis va a romperlo
+  está probando su propia suposición, no el guardarraíl. Y si además escribe en
+  el repo, se lleva por delante lo que estaba comprobando.
+- **Regla**: antes de usar una mutación para probar que algo se rechaza, **comprobar
+  que la mutación es lo que crees**. Aquí hay un helper (`_dart_parseable`) que
+  pregunta a `dart format` lo mismo que pregunta el guardarraíl, y el test afirma
+  que su mutación **no** parsea antes de meterla. Si somedaya mutación_resultara
+  válida, el test falla en su propia preparación y no finge que probó el rollback.
+- **Corolario**: un test que escribe en el fichero de verdad necesita restaurar el
+  estado pase lo que pase. El `finally` no es opcional cuando el fichero bajo
+  prueba es el que vive en el repo.
+
+### A-031 · Un arranque que promete lo que no ha comprobado
+
+- **Qué pasó** (2026-10-01): el arranque de la app imprimía `handshake … ok`,
+  `auth … ok` y `entrada: concedida` antes de preguntar nada a nadie. Era texto
+  fijo, y se pintaba antes de que la app hubiera hablado con el bridge una sola
+  vez.
+- **La lección de fondo**: A-016 ("el veredicto sale de la traza, no del texto del
+  modelo") puesto delante de la persona que usa la app. Un sistema que reporta
+  verde sin mirar enseña que **todo lo demás puede ser inventado**, y una sola
+  mentira en el primer segundo se paga en la confianza de todo lo demás.
+- **Regla**: el arranque dice **solo lo comprobado**, y se queda esperando si no lo
+  sabe. La salud del bridge se pasa al arranque como argumento; las líneas se
+  imprimen a medida que se saben y desaparecen cuando ya no hay nada que decir.
+- **Corolario de método**: un arranque es transitorio, así que **mirar el último
+  frame no lo prueba**: hay que pump con pasos finos y recoger **todos los textos
+  que han aparecido** en cada paso. Es lo que permite afirmar que una frase se
+  dijo —y también que **no** se dijo. Sin eso, el test solo comprueba la app que
+  sale después.
+
+### A-032 · Un `.gitignore` por carpeta se multiplica
+
+- **Qué pasó** (2026-10-01): `mobile/assets/brand/` quedó fuera del índice para
+  que lo que se meta ahí no entre en el repo. Se añadió a `mobile/.gitignore`,
+  que es un segundo sitio de reglas.
+- **Por qué se anota**: A-017 pasó justamente porque un patrón sin ancla en el
+  `.gitignore` de la raíz se comió `mobile/lib/data/`. Añadir reglas al
+  `.gitignore` de `mobile/` es correcto y **no** es el problema; el problema sería
+  escribir una regla del móvil en el fichero de la raíz, o dejar los dos con
+  contradicciones sin saber cuál manda. La regla: los patrones se anclan al path
+  relativo a **su** fichero, y una exclusión nueva se comprueba con
+  `git check-ignore -v` antes de darla por buena.
+
+### A-033 · Un permiso atado al run no se puede canjear
+
+- **Qué pasó** (2026-10-01): la cola de aprobación ataba el token al `run_id` y
+  al `paso`. Aprobar y relanzar **crea un run nuevo** con otro id, así que el
+  token ya no encajaba: el paso volvía a pedir permiso, para siempre.
+- **Por qué es el fallo más silencioso que he hecho**: todo lo demás funcionaba.
+  La fila decía `aprobada`, `/aprobaciones` devolvía un token que parecía
+  válido, el móvil pintaba el botón bien. Y el paso no avanzaba nunca. Un
+  componente que informa "listo" mientras no hace nada es A-016 con otro
+  disfraz: aquí el untrue estaba en la fila, no en el texto del modelo.
+- **Regla**: un permiso atado a lo que la persona **aprobó**, no al contenedor en
+  el que se pidió. Aquí lo aprobado es *una tool con unos argumentos*, así que
+  el token valida la tool y los argumentos — y **no** el run. Un permiso para
+  `aegis_write_file(path=X)` no autoriza `aegis_write_file(path=Y)`: si valiera
+  para más, aprobar una escritura aprobaría la siguiente sin haberla visto.
+- **Corolario**: cuando el mismo store sirve para pedir y para canjear, el test
+  tiene que recorrer **el círculo entero** con el store real. Los tests por
+  partes pasaban los dos: emitía bien el token, y canjear bien el token. El
+  eslabón roto era que no había por dónde pasarlo, y ningún test de los dos lo
+  cruzaba.
+- **Corolario de método**: `POST /autopilot/start` no tenía campo `token`. Al
+  añadirlo no se comprobó que llegara: se probó la función `decide()` con el
+  store de verdad y funcionó, y eso se confundió con "el círculo cierra". El
+  camino entero —HTTP → body → `_run_autopilot_once` → `run_autopilot` → `decide`
+  — se verificó después, y encontró el `token` ausente del `AutopilotIn` del
+  servidor. **Probar la función no es probar el camino.**
+
+### A-034 · Un endpoint que reconstruye desde un fichero que nadie escribe
+
+- **Qué pasó** (2026-10-01): se añadió la caída a disco a `GET /autopilot/{id}`
+  para que reiniciar el bridge no perdiera los runs, y parecía funcionar. Con un
+  run real no: los JSONL de `data/logs/runs/` los escribía `relay`, que solo ve
+  los runs de **Hermes**. Los de autopilot no escribían ninguno. La única copia
+  seguía siendo el dict en memoria.
+- **Por qué importa**: la **afirmación** estaba en el propio comentario del
+  código, y era falsa. "Los JSONL tenían todo escrito desde el principio" soné
+  convincente porque los ficheros existían — los había visto — y no miré **quién
+  los escribía**. Es A-016 aplicado a un comentario: un texto que afirma un
+  hecho que nadie comprobó.
+- **Regla**: añadir una lectura desde disco tiene **dos** mitades: escribir y
+  leer. Si solo se hace una, el endpoint responde 404 con la misma seguridad que
+  si el run no existiera, y eso es indistinguible de un bug.
+- **Corolario**: el vocabulario de eventos es un contrato. El primer arreglo
+  escribió `task.max_steps` como evento terminal, que no existe en la taxonomía
+  (`task.done`/`task.failed`/`task.stopped`): el run se reconstruía en
+  `status: desconocido`. Y `_resumir_run` contaba solo `tool.started`, que es lo
+  que emite Hermes, así que los runs de autopilot salían con **cero pasos** —
+  que se lee como "no hizo nada".
+- **Corolario**: un comentario que explica por qué algo es como es **envejece**,
+  y el que lo escribe es el único que lo va a notar. Si un comentario dice "esto
+  ya está escrito", hay que comprobar que sigue estándolo después de tocar el
+  código de alrededor.
+
+### A-035 · La autonomía necesita el proyecto marcado, y el motivo es el verificador
+
+- **Qué pasó** (2026-10-01): al construir la autonomía, el criterio de "puede
+  trabajar solo aquí" quedó en "¿tiene ficha completa?". Tres de los ocho
+  proyectos del registro **no tienen verificador declarado**: sus tests ni
+  siquiera se pueden ejecutar. Dar permiso de escritura sobre eso es autonomía
+  sin forma de saber si el trabajo quedó bien.
+- **Regla**: un proyecto necesita **dos** cosas para Aegis pueda trabajar en él
+  solo: ficha completa (sabe qué toca) **y** verificador declarado (alguien
+  puede comprobar si lo hizo bien). Faltando cualquiera de las dos, el
+  interruptor está deshabilitado y **la pantalla dice cuál falta y por qué**.
+- **Corolario**: un control que deshabilita algo sin explicar por qué parece un
+  fallo. El mensaje tiene que contener el motivo y el sitio donde se arregla
+  ("Decláralo en app/projects.py primero"), no solo el estado.
+
+### A-036 · El modo `pleno` no significa "sin preguntar"
+
+- **Qué pasó** (2026-10-01): había tres modos pensados como escalón de libertad —
+  `solo`, `permiso`, `pleno`— y la tentación fue que `pleno` significara "ya no
+  pregunto nada".
+- **Por qué no**: un modo que dispense de la cola no sería autonomía con dientes,
+  sería confianza a ciegas. Y la confianza a ciegas se gasta el primer día que
+  Aegis se equivoca en algo que importa; entonces el permiso no vale nada y hay
+  que volver a quitarlo entero.
+- **Regla**: el nivel 3 (lo que sale de tu disco, lo que migra una base, lo que
+  toca el teléfono) pregunta **en los tres modos**. `pleno` significa "también lo
+  de fuera, si lo apruebas", no "sin preguntar". No existe un modo que dispense
+  de la cola, y si algún día se añade, esa es la decisión que hay que pensar dos
+  veces.
+
+### A-037 · Denegar con motivo es lo que hace crecer la confianza
+
+- **Qué pasó** (2026-10-01): la primera versión de la cola guardaba un `estado` de
+  `aprobada`/`denegada` y nada más. Denegar funcionaba, pero "no" sin razón no es
+  aplicable a la siguiente situación parecida, así que Aegis volvía a proponer lo
+  mismo con las mismas palabras.
+- **Regla**: la denegación guarda **el motivo**, y el motivo se inyecta en el
+  prompt del siguiente run bajo "Lo que ya me dijiste que no". No es que Aegis
+  aprenda a tener cuidado: es que la persona se lo dijo una vez y lo tiene en
+  cuenta. Sin ese bloque, la columna `razon_denegacion` es un registro del
+  bridge, no una memoria del agente — dato escrito que nadie lee.
+- **Corolario medido**: en la primera prueba de la cola, denegar
+  `db_migrate` sobre `compra-unida` con el motivo real ("su journal de drizzle
+  está vacío y migrarlo me recrearía las 24 tablas") y comprobar que esa frase
+  aparece en el prompt del run siguiente es lo que demuestra que el ciclo cierra.
+  Un test que comprueba que la fila tiene el motivo no demuestra nada: la fila la
+  escribió quien la denegó, no quien la va a leer.
+
+### A-038 · Un secreto leído del proceso equivocado vale `""` y no lo dice
+
+- **Qué pasó** (2026-10-01): `build_apk` (MCP de `aegis-ops`) compila el APK con
+  el token de la API dentro. La clave se leía de `app.config`, que es la
+  configuración **del bridge**. El MCP corre como proceso aparte, así que allí
+  valía `""` si no se cargaba a mano.
+- **Por qué el fallo es invisible**: con la clave vacía el APK **se compila
+  bien**, instala bien, abre bien y dibuja bien. Solo falla con un `401` en las
+  secciones nuevas — autonomy, agenda, memoria. La mitad de la app funciona, que
+  es exactamente el patrón de "la app va fallando" y el que más cuesta
+  encontrar, porque nada dice que falte una cabecera.
+- **La forma del fallo**: dos procesos, un estado. Es la misma trampa que el
+  registro de orígenes (A-020) y el estado de despliegue (A-021), y aquí la
+  variante es que **leer bien devuelve vacío sin error**.
+- **Regla**: en un proceso aparte, una configuración que viene de otro proceso se
+  carga **explícitamente** en el punto donde se usa, y hay un test que comprueba
+  que ese proceso la ve. Importar el nombre no basta: el `NameError` es
+  evidente, el `""` no.
+- **Corolario**: un valor por defecto `""` en un secreto es un permiso silencioso
+  a medio hacer. Cuando el valor por defecto desactiva una protección, tiene que
+  **decirlo**: `build_apk` deja una línea de log diciendo que el APK sale sin
+  token y que los endpoints nuevos van a dar 401.
+
+### A-039 · Un APK que abre no es un APK que funciona
+
+- **Qué pasó** (2026-10-01): con la puerta de `X-Aegis-Token` activada, hay dos
+  binarios: el del emulador con el token y el del teléfono sin él (hasta que se
+  arregló `build_apk`). Los dos abren, los dos pintan, los dos hablan con el
+  bridge. La diferencia solo aparece en cuatro secciones.
+- **Por qué el humo no lo habría pillado**: `humo_emulador` comprueba que la app
+  **arranca y que el bridge recibe una llamada marcada 'emulador'**. Eso lo
+  cumple un APK sin token, porque `/health` y `/proyectos` no lo exigen. El humo
+  es un test de vida, no de permisos.
+- **Regla**: cuando se activa una protección que devuelve 401 en unas rutas y
+  200 en otras, el humo tiene que probar **una de cada**. Aquí, el humo
+  comprobará además `/autonomy`, que sí exige token: así "abre" y "funciona" son
+  la misma comprobación.
+- **Corolario de método**: "compila, instala, abre y dibuja" es un resultado que
+  suena a entrega completa y no lo es. Es la forma más común de que un cambio de
+  seguridad llegue a production sin que nadie lo note.
+
+### A-040 · "Ya conectado" mirando el dispositivo equivocado
+
+- **Qué pasó** (2026-10-01): `adb_connect()` sin argumentos contaba los
+  dispositivos conectados y, si encontraba alguno, respondía `ya conectado:
+  emulator-5554`. Como el emulador está **siempre** levantado —es donde van todas
+  las pruebas—, la tool **nunca intentaba conectar el teléfono**. Informaba de
+  algo que no había comprobado, y el teléfono seguía sin verse.
+- **Por qué el fallo cuela**: el mensaje era cierto sobre *algún dispositivo*.
+  Solo que no sobre el que importaba. Es A-028 con forma de mensaje de tool: un
+  control que dice comprobar algo que no comprueba, y que por eso parece que
+  funciona.
+- **Regla**: una comprobación tiene que mirar **el objeto que dice mirar**. "Hay
+  algo conectado" no es "está conectado el que pedí". Y si no se puede
+  comprobar, se dice, en vez de devolver el caso cercano como si fuera el
+  pedido.
+- **Corolario**: `adb devices` con el emulador arriba **siempre** devuelve algo.
+  Cualquier tool que interprete esa lista como "¿está el teléfono?" tiene el
+  mismo bug, porque el emulador es el caso común, no el raro.
+- **Corolario de método**: un puerto **abierto en TCP** no significa que `adbd`
+  sirva. Con la pantalla del teléfono bloqueada, Android retira la sesión de
+  depuración y el anuncio mDNS se queda cacheado: el puerto acepta la conexión
+  del kernel y no contesta al protocolo. Por eso la tool **intenta de verdad** y
+  reporta el fallo, en vez de asumir que por tener el puerto basta.
+
+### A-041 · mDNS no cruza la red privada virtual
+
+- **Qué pasó** (2026-10-01): intentando conectar el teléfono por Tailscale,
+  `adb mdns services` no lista nada porque mDNS es **link-local** y no se propaga
+  por la tailnet— mientras que en la red local sí listaba, aunque con puertos
+  viejos cacheados.
+- **Regla**: al resolver un servicio por mDNS hay que probar **las dos redes por
+  las que puede estar el dispositivo**, y hay que saber que el silencio de mDNS
+  no significa que el dispositivo no esté. Aquí la herramienta announcement el
+  mismo teléfono dos veces, con el contador ` (2)` en medio del serial, y el
+  duplicado se limpia antes de intentar.
+
+### A-042 · «aviso enviado» no es un aviso: el que avisa tiene que ser el dueño
+
+- **Qué pasó** (2026-10-01): el puente avisaba con
+  `adb shell cmd notification post` y devolvía `"aviso enviado"` si salía con
+  `exit=0`. En un Samsung real **no había notificación ninguna**:
+
+  ```
+  appops: com.aegis.aegis_console  ->  POST_NOTIFICATION: ignore
+  canal:  shell_cmd (del sistema, no de Aegis)
+  dumpsys: ni un registro de com.aegis.aegis_console
+  ```
+
+  El puente dijo que avisó, el agente se lo creyó y nadie miró el móvil. El aviso
+  lo firmaba `com.android.shell`, no Aegis, así que no podía llevar su icono, su
+  canal, su sonido ni abrir algo suyo; y el `appop` de la app estaba en `ignore`
+  porque **nadie declaraba `POST_NOTIFICATIONS`**.
+- **Por qué el fallo cuela**: `exit=0` es cierto. Lo que es mentira es la
+  conclusión. Es A-016 por sexta vez, y por eso la regla de la casa es
+  «el veredicto sale de la traza, nunca del texto»: aquí la traza era un código
+  de salida que no dice nada del destino.
+- **Regla**: **una notificación que postea otro no es una notificación tuya.** Si
+  la firma otro proceso, no puede llevar tu permiso, tu canal ni tu toque. Que
+  la publique la app (el puente solo la despierta con `am broadcast`) no es un
+  detalle de estilo: es lo que la convierte en accionable.
+- **Corolario**: **la entrega se lee del sistema, no del código de salida.** Ahora
+  `_verificar_aviso` busca el registro en `dumpsys notification`, y si no está
+  devuelve `"AVISO NO LLEGÓ"` con el `appop` incluido, que es el dato que faltaba.
+  Un "no verificado" honesto vale más que un "entregado" falso.
+- **Corolario**: `android:usesCleartextTraffic` se declaró porque **es lo que la
+  app ya hacía**. Dart habla con el puente en `http://` y siempre ha hablado,
+  porque los sockets de `dart:io` no pasan por la comprobación de cleartext de
+  Java. `HttpURLConnection` **sí** pasa, y ahí se comía un
+  `Cleartext HTTP traffic not permitted`. Dos caminos al mismo puente con
+  políticas distintas, y solo uno lo sabía.
+
+### A-043 · Avisa *después* de guardar, no antes
+
+- **Qué pasó** (2026-10-01): `pedir_deploy` llamaba a `avisar_intermedio` **antes**
+  de `ESTADO.nueva(peticion)`. La app despertaba del broadcast, iba a
+  `/deploys`, no encontraba esa petición —solo las viejas— y publicaba «nada
+  pendiente».
+- **Por qué el fallo cuela**: en las pruebas siempre había alguna petición
+  anterior, así que el aviso salía, con la cuenta equivocada. Funcionaba **por
+  restos**. Con el estado limpio —que es justo cuando más importa que avise— no
+  avisaba, y el puente decía «entregado y verificado» porque la notificación sí
+  estaba: era la de «nada pendiente».
+- **Regla**: si el aviso **pregunta** el estado, hay que escribirlo antes de
+  preguntar. Y un sistema que parece funcionar porque hay restos de antes no
+  está funcionando: está dependiendo de que el mundo esté sucio.
+- **Corolario**: **vaciar el estado es parte de la prueba.** La primera vez que
+  importé los despliegues a un emulador recién arrancado fue cuando se vio, y
+  no por el cambio sino por el estado limpio.
+
+### A-044 · Red en el hilo principal: el `catch` la convierte en una respuesta
+
+- **Qué pasó** (2026-10-01): el cuadro de decisión hacía `Puente.pendientes()` y
+  `Puente.decidir()` —llamadas de red síncronas— en el hilo principal. Android
+  tira `NetworkOnMainThreadException`, y el `catch` de `pedir()` la devolvía como
+  `null`.
+- **Por qué el fallo cuela**: en `pendientes()` `null` significa «no pude
+  comprobar», y el cuadro pintaba **«SIN RESPUESTA»** con la app perfectamente
+  conectada. En `decidir()` significaba «no pude hablar con el puente», y tras
+  pulsar **«SÍ»** salía un Toast de error con la petición **sigue `pendiente`**.
+  No es un error: es una respuesta, y es mentira. La UI se ve bien, los textos
+  están, y lo que dice no pasó.
+- **Regla**: un `catch` que devuelve `null` y un valor legítimo que sea `null` son
+  la misma cosa para quien lee. Si se distinguen, hay que distinguirlos **por
+  separado**: o se lanza, o se registra el motivo, o el `catch` distingue.
+- **Corolario de método**: una excepción en el hilo de un `BroadcastReceiver` es
+  **invisible**: no hay stacktrace en logcat. Desde el puente, «la app falló» y
+  «la app no avisó» se ven igual. Por eso el receptor lleva `catch` + `Log.e`, y
+  el `pedir()` registra la excepción en vez de tragársela.
+
+### A-045 · La puerta cubría menos de lo que su comentario decía
+
+- **Qué pasó** (2026-10-01): `X-Aegis-Token` protegía notas, tareas, autonomía y
+  aprobaciones de tools, pero **`/deploys` y `POST /deploys/{id}` estaban
+  abiertos**. Con el endpoint nuevo de instalar en segundo plano, cualquiera que
+  alcanzara el bridge en la tailnet podía leer los ids pendientes, aprobarlos y
+  disparar una instalación.
+- **Por qué el fallo cuela**: el comentario de la puerta decía que cubría «dar
+  permiso de escritura sobre tus proyectos, denegar una aprobación». Eso es
+  exactamente lo que hace aprobar un despliegue. La puerta y su documentación
+  contaban historias distintas, y la que se cumple es la del código.
+- **Regla**: una lista de lo que hay detrás de la puerta es una **afirmación que
+  hay que mantener**. Cuando añades un endpoint a una superficie sensible, se
+  actualiza la lista, y si la superficie es sensible y no está en la lista, se
+  pregunta por qué antes de añadirla.
+- **Corolario**: lo protegido tiene que incluir **lo irreversible**. Instalar un
+  APK no tiene vuelta atrás y se puede repetir con un token viejo. Una nota se
+  puede borrar; un `adb install`, no.
+
+### A-046 · «Conéctalo» cuando ya está conectado
+
+- **Qué pasó** (2026-10-01): `telefono()` solo aceptaba seriales con
+  `_adb-tls-connect`. Pero la ruta manual que documenta el runbook
+  (`adb mdns services` → `adb connect <ip>:<puerto>`) deja el serial como
+  `100.101.102.103:46119`. El teléfono estaba conectado y respondiendo, y la
+  puerta dijo «tu teléfono no aparece en adb. Conéctalo».
+- **Por qué el fallo cuela**: la comprobación era *cierta* —ese serial no
+  aparece, en efecto— y el mensaje pedía algo que no hacía falta. Es A-028 otra
+  vez: un control que mira una forma y no el objeto. Y el runbook, que es donde
+  se documenta la ruta manual, era la prueba de que esa forma era la normal.
+- **Regla**: **la forma que documentas es una forma que tienes que soportar.** Si
+  el runbook dice «conecta a mano por esta vía», el detector tiene que reconocer
+  esa vía, o el runbook está mintiendo sobre lo que el sistema acepta.
+- **Corolario**: reconocer más formas no es adivinar más. Lo que se descarta
+  sigue siendo el emulador y el loopback, y con dos teléfonos la puerta sigue
+  pidiendo que digas cuál. La diferencia entre «leer» y «suponer» está en qué se
+  descarta, no en cuántas formas se aceptan.
+
+### A-047 · Reconocer más formas no es contar más aparatos
+
+- **Qué pasó** (2026-10-01): al arreglar A-046 —reconocer el teléfono conectado
+  por IP— un mismo móvil conectado a la vez por mDNS y por `adb connect` pasó a
+  contar como **dos** teléfonos. `telefono()` respondió «hay 2 teléfonos» y todo
+  lo del teléfono se detuvo, con el móvil delante. El aviso de fin de instalación
+  no pudo salir por eso.
+- **Por qué el fallo cuela**: la regla anterior —«si hay varios, se dice cuál»—
+  era la defensa contra adivinar, y por eso nadie la revisó al **ampliar** el
+  reconocimiento. El guardarraíl llevaba razón; lo que cambió fue lo que había
+  detrás.
+- **Regla**: `adb` registra el **aparato**; el serial es de la **conexión**. Un
+  mismo teléfono tiene tantas entradas como vías abiertas, así que la
+  deduplicación tiene que ser por identidad de hardware (`ro.serialno`), no por
+  forma del serial. Y si la identidad no se puede leer, **no se unifica**: peor
+  no unificar que unificar de más, porque lo que se instala es irreversible.
+- **Corolario**: ampliar lo que un sistema reconoce obliga a repasar lo que
+  cuenta. «Cuántos hay» es una pregunta que se responde con el criterio de antes,
+  no con el que se acaba de escribir.
+
+### A-048 · Un mock que devuelve lo que la función no devuelve
+
+- **Qué pasó** (2026-10-01): `pasar_puerta_deploy` devolvía `dev.serial` (un
+  `str`) y un llamador nuevo se lo pasaba a `instalar_en_telefono`, que espera un
+  `Device`. Reventó con `AttributeError: 'str' object has no attribute 'serial'`
+  **en un hilo en segundo plano**, un minuto y medio después de que el usuario
+  pulsara «sí».
+- **Por qué el fallo cuela**: el test unitario fijaba el mock a un `Device`, y
+  con eso pasaba. El test no comprobaba el contrato: lo **contradecía** mientras
+  parecía confirmarlo. Un mock que devuelve algo que la función nunca devuelve es
+  la forma más común de que un test de contrato no sea un test de contrato.
+- **Regla**: para comprobar un contrato hay que mirar **la clase** que sale, con
+  la función real y sin mocks en el medio. `assertIsInstance(pasar_puerta(),
+  Device)` con la puerta de verdad, y además un test de punta a punta de la
+  cadena, que es donde un mock siempre está mintiendo.
+- **Corolario**: los fallos en hilos son invisibles por definición —no hay
+  stacktrace en el sitio donde se mira—. Un `log.exception` en el hilo es parte
+  del contrato, no decoración.
+
+### A-049 · Un arranque que puede volver atrás se queda colgado
+
+- **Qué pasó** (2026-10-01): la app se quedaba en la pantalla de arranque para
+  siempre en el teléfono —«AEGIS · puente: contesta · hermes: arrancado» y un
+  cursor—, y en el emulador iba bien.
+- **Por qué el fallo cuela**: las dos condiciones del arranque —«¿enseño todas
+  las líneas?» y «¿he terminado?»— eran **la misma comparación sobre una lista
+  que cambia** cuando contesta el puente. Con la red local contestaba antes del
+  primer salto y todo cuadraba; por la malla, no:
+
+  ```
+  t=0     cargando            -> 1 línea   ·  la cadena arranca
+  t=640   2 > 1              ->  entregado ·  la cadena para
+  t=900   llega la respuesta  -> 3 líneas  ->  2 > 3 = falso
+  ```
+
+  El arranque **retrocedía** a la pantalla de carga con la cadena ya muerta. El
+  fallo solo existe donde la red es lenta, que es justo donde nadie prueba.
+- **Regla**: una transición, una vez hecha, **no se deshace**. El arranque no es
+  un sitio donde enseñar datos: su trabajo es decir lo que se sabe hasta ese
+  momento y pasar. Lo que llegue después lo enseña la pantalla real, que es la
+  que tiene los datos frescos.
+- **Corolario**: no mires la lógica de una pantalla de carga sin mirar **quién
+  cambia sus entradas**. Aquí la cambiaba el puente, a 900 ms, y el test con un
+  repositorio falso que responde al instante no podía verlo. El fallo se
+  reproduce con un retardo de 900 ms en `health()`: cuatro líneas de test.
+- **Corolario de método**: «no puede pasar» hay que demostrarlo, no argumentarlo.
+  Yo comprobé que la aritmética no podía colgarse, y aun así se colgaba, porque
+  la lista crecía **después**. Cuando un sistema depende de datos que llegan
+  tarde, el test tiene que llegar tarde también.
+
+### A-050 · El script que dice «hecho» sin haberlo hecho
+
+- **Qué pasó** (2026-10-01): `deriva-marca.sh` usaba `$(( 48 * 1.5 / 2 ))`, y la
+  aritmética de bash no admite decimales. El error salía por stderr, `set -e` no
+  paró el script, la línea se saltó, y el script **terminó con su resumen
+  «Marca derivada»** sin haber generado la mitad de los ficheros.
+- **Por qué el fallo cuela**: un `set -e` da una sensación de seguridad que no
+  cubre la aritmética dentro de `$(...)` ni los errores de una herramienta
+  externa en una tubería. El resumen se imprimía igual.
+- **Regla**: **el resumen de un script se comprueba contra el disco.** Si el
+  script dice que ha hecho cinco cosas, tiene que haber cinco ficheros, y su
+  ausencia es un fallo con salida no cero. Un informe que no se contrasta con la
+  realidad es un texto, y este repo ya sabe lo que pasa con los textos que
+  describen lo que no ha pasado.
+
+### A-051 · Un test que borra el build rompe la puerta sin que nadie lo note
+
+- **Qué pasó** (2026-10-01): la puerta del despliegue rechazaba la instalación
+  con «este APK se compiló sin anotar token. Recompílalo», y recompilando se
+  arreglaba, y al volver a correr los tests se rompía otra vez. Tres veces, con
+  el mismo mensaje, hasta que se buscó de dónde salía.
+- **La causa**: un test guardaba `original = _sello_de_token(deploy.APK)` y
+  llamaba `original.unlink()`. `deploy.APK` es **el APK real**. El test pasaba, la
+  suite entera pasaba, y al terminar había borrado el sello del binario de verdad.
+- **Por qué el fallo cuela**: el síntoma no parecía del test. Parecía de la
+  puerta, o del `build_apk`, o del token. Y era del test, que no falla nunca: un
+  test que rompe el entorno de otro test, o del proceso que viene después, no
+  puede fallar él mismo.
+- **Regla**: **un test no toca el directorio de compilación.** Lo que el humo
+  encuentra tiene que ser lo que hay, y si un test lo modifica, deja de estar
+  probando el humo y empieza a decidir lo que el humo va a ver después. Todo lo
+  que un test escriba —y borre— va a `tempfile`.
+- **Corolario**: cuando un sistema da un error que **desaparece al repetir la
+  acción que lo arregla**, el culpable no está en la acción. Está en lo que se
+  ejecuta entre medias. Y esa pregunta se hace antes de la cuarta vez, no
+  después.
+- **Corolario**: por eso `build_apk` **falla** si no consigue anotar el token, en
+  lugar de devolver un APK que luego la puerta rechaza con un mensaje que
+  despista. Una tool que entrega algo inservible y dice que salió bien es
+  exactamente el mismo error de A-016, con un fichero binario de protagonist.
+
+## A-052 — La silueta no sale del texto, y la PBM tiene la polaridad al revés
+
+**Cuándo**: 2026-10-01. Al corregir los iconos del lanzador, que salían con fondo
+blanco, deformados y con resolución mala.
+
+- **El síntoma**: el icono del lanzador era un **cuadrado entero del color**.
+  Fondo blanco, deformado y borroso. Cuatro defectos que parecían uno.
+- **Eran cinco fallos, y ninguno era el que parecía**:
+  1. `sed '1,12d'` quitaba 12 líneas de cabecera; la cabecera tiene **16**. Se
+     colaban cuatro renglones de prosa en español, de ancho completo, encima de
+     la calavera. La marca era una nota al pie con un dibujo debajo.
+  2. La tabla de densidades dividía el factor: `f = f2 / 2`. En `hdpi`, `3 / 2`
+     da **1** en aritmética entera, así que el icono salía de 48 px donde
+     tocaban 72. La mitad se perdía en la única densidad con factor impar.
+  3. `-channel A -separate` **no devuelve el alfa**: devuelve los canales RGB.
+     UMBralado al 6 %, el hueso se pasa de brillo y la máscara sale blanca
+     entera. Es `-alpha extract`.
+  4. `-colorize 100` con relleno opaco quiere decir «todos los píxeles son del
+     relleno». Para cambiar solo el blanco por hueso es `-opaque white`.
+  5. En la **PBM**, un `1` es **negro** y un `0` es blanco. Al revés de como se
+     le ocurre a cualquiera. Sin invertir, el cranium sale de fondo.
+- **Y una trampa de ImageMagick que no es de este repo**: dentro de una misma
+  invocación, `magick -size NxN xc:negro mascara -compose Lighten -composite
+  -extent NxN` satura la imagen a un solo color, y con `-flatten` pasa igual.
+  Medido: 2 colores sin `-extent`, 2 sin `-flatten`, **1** con cualquiera de los
+  dos. Separado en dos comandos, cada uno hace lo suyo.
+- **El hallazgo de fondo**: la silueta **no se puede derivar del arte de
+  texto**. `rellenar` llena la calavera de verdad para que se lea, y `-trim` le
+  quita el aire, así que la caja del arte **es** la calavera: dentro de ella
+  casi cualquier bloque tiene trazo y la máscara se satura. Se probaron las dos
+  vías y las dos fallan. La forma está en la **máscara del JPG**, que es de
+  donde sale todo y de donde mide `verifica-calavera.py`. Y con la proporción de
+  píxeles de la imagen: la VGA es 8x16, el bloque de texto sale el doble de alto
+  que de ancho, y una calavera hecha de texto sale estirada al doble.
+- **Regla**: un fichero para personas y un fichero para máquinas son dos
+  ficheros. `calavera_jazz.txt` lleva quince líneas de comentario contando su
+  propia historia, y está bien; el pipeline no puede leerlo, porque un comentario
+  de ancho completo es indistinguible de una fila de arte. Se emite
+  `calavera_jazz.arte.txt`, sin cabecera, y el shell no tiene que acordarse de
+  un `sed` ni de cuántos renglones de comentario hay hoy.
+- **Regla**: cuando una tool de imagen produce un color plano, el fallo **no
+  está en el teñido**, está en el paso anterior. Aquí fueron tres pasos
+  distintos, y en dos el síntoma —«sale un cuadrado»— era idéntico. Medir
+  `colores=%k` después de cada paso es lo que separó los tres; probar
+  cambios a ciegas los habría mezclado en un solo «sigue igual».
+- **Regla**: `bash -x` filtrado con `grep` sobre el nombre del fichero de
+  salida esconde justo lo que hay que ver. Los `printf` de una cabecera PBM
+  contienen el nombre de la **entrada**, no el del fichero que se escribe.
+- **Corolario**: la silueta es de la imagen y el texto es la textura. Cada uno
+  con su proporción. La app, el lanzador y la notificación pintan **la misma**
+  rejilla (`calavera_silueta.dart`), así que no pueden divergir.
+- **Lo que sigue sin estar bien**: a 28 px —el glifo de la cabecera— una
+  silueta de 40×43 no se lee como calavera. Sale un bulto, y no hay umbral que
+  lo arregle: escota inferior de la fuente, no del algoritmo. Se le dice al usuario y
+  lo juzga él.
+
+## A-053 — El humo que falla por impaciencia bloquea una instalación legítima
+
+**Cuándo**: 2026-10-01. Instalando una actualización en el teléfono real.
+
+- **El síntoma**: `install_apk(target='telefono')` se paró con «el humo en el
+  emulador no pasa: la app arrancó pero el bridge no recibió ninguna llamada
+  marcada 'emulador'». La puerta tiene razón en abstracto —si el humo no pasa, no
+  se instala en un teléfono—, y aquí no había nada que installar en el teléfono.
+- **Lo medido, y no era la app**: corriendo el humo a mano **pasaba** (`True`), y
+  mirando `/origen` en vivo, la app del emulador llama al puente **cada 2
+  segundos** y se registra como `emulador`. El mecanismo estaba sano y era más
+  rápido que la ventana de 40 s del propio humo.
+- **Por qué entonces fallaba dentro del run**: la puerta corre `analyze` + tests
+  + build del APK del teléfono + humo, encadenados, con el emulador installing un
+  binario de 170 MB. Bajo esa carga la primera llamada de la app no llega dentro
+  de la ventana.
+- **La lección de verdad está en el propio código, escrita desde hace tiempo y en
+  la dirección contraria**: el comentario del humo dice que un humo que falla
+  por impaciencia *enseña a ignorar la puerta*. Lo que se vio es la otra mitad:
+  **una puerta que falla por impaciencia enseña que a saltársela**, y el coste es
+  que la siguiente puerta legítima parece burocracia. Las dos son el mismo
+  defecto.
+- **Qué NO se hizo, y por qué**: no se tocó el humo ni se lo relajó. Un guardarraíl
+  que se debilita para que algo pase es un retroceso (AGENTS.md §4). Se dejó
+  intacto.
+- **Qué se hizo**: `pedir_deploy` **no instala nada** —registra la petición y
+  manda el aviso— y la instalación sigue pasando por `instalar_pendiente`, con su
+  comprobación de huella. Lanzar el aviso por ahí no debilita la puerta: mueve el
+  aviso al sitio desde el que el humano lo aprueba, que es justo lo que se
+  buscaba, y quien aprueba sigue siendo el usuario con el dedo en la pantalla.
+- **Regla**: cuando una puerta bloquee algo y se demuestre que lo bloquea **por
+  falso**, la respuesta no es abrirla. Es encontrar qué parte del gesto pedido no
+  necesitaba la puerta. Aquí, todo menos instalar.

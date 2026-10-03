@@ -96,6 +96,29 @@ curl -s -X POST http://127.0.0.1:8000/autopilot \
 Síncrono: devuelve `answer`, `steps`, `trace` y `fin` (por qué terminó). Es lo
 que usa el resto del operarlo y los scripts.
 
+### Cuando Aegis necesita tu OK
+
+`app/autonomy.py` reparte las 18 tools en tres niveles. Si un run.topa una tool
+de nivel 3 (`db_migrate`, `neon_branch`, `install_apk`, `build_apk`,
+`project_create`, `adb_connect`, `deploy_smoke`), **no ejecuta**: deja una
+petición y termina con `fin: "esperando_ok"`.
+
+```bash
+curl -s localhost:8000/aprobaciones                # lo que espera tu OK
+curl -s -X POST localhost:8000/aprobaciones/<id> \
+  -H 'Content-Type: application/json' -d '{"decision":"aprobar"}'   # -> token
+# relanzas con ese token:
+curl -s -X POST localhost:8000/autopilot/start \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"aegis","prompt":"<lo mismo>","token":"<token>"}'
+```
+
+**Denegar con motivo** es lo que hace crecer la confianza: el motivo se inyecta
+en el prompt del siguiente run, y Aegis no vuelve a proponerlo. Sin motivo,
+denegar es un "no" que no se puede aplicar a la siguiente situación parecida.
+
+El token valida **la llamada, no el run**, y es de un solo uso (A-033).
+
 ### Desde el móvil, o cuando el run puede tardar
 
 `POST /autopilot` es síncrono y un paso puede tardar medio minuto: para no
@@ -219,6 +242,22 @@ cd bridge && bash bin/probe-toolcall.sh qwen2.5:7b    # capacidad de tool-callin
 # El proyecto que toca el agente
 node scripts/check-syntax.mjs <archivos>               # solo sintaxis
 ```
+
+## 7.1 La autonomía, en una frase
+
+Aegis lee y comprueba lo que quiera sin avisarte. Para **escribir** necesita que
+le marques el proyecto en `Ajustes → Proyectos` del móvil, y el interruptor solo
+se activa si ese proyecto **tiene verificador declarado**: sin él no hay contra
+qué comprobar que el trabajo quedó bien. Y lo que sale de tu disco te lo pregunta
+siempre, con el motivo escrito.
+
+```bash
+curl -s localhost:8000/autonomy            # modo, proyectos marcados, pendientes
+curl -s -X POST localhost:8000/autonomy/modo -d '{"modo":"solo"}'   # solo|permiso|pleno
+```
+
+`pleno` **no** significa "sin preguntar": el nivel 3 pregunta en los tres modos.
+No existe un modo que dispense de la cola (A-036).
 
 ## 8. Proyectos que opera el agente
 

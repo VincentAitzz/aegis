@@ -28,9 +28,36 @@ from mcp.server.fastmcp import FastMCP
 
 log = logging.getLogger("aegis.bridge.mcp_ops")
 
+#: Se leen aquí y no como import global porque `mcp_ops` se carga en el proceso
+#: del MCP, que es **distinto** del bridge: la clave llega por su propia variable
+#: de entorno, y leerla de la configuración del otro proceso daría vacío sin
+#: avisar —y un APK sin token que solo falla en 401 (A-038).
+from .config import get_settings
+
+settings = get_settings()
+
 ROOT = Path("/RUTA/AL/WORKSPACE/aegis")
 MOBILE = ROOT / "mobile"
-THEME = MOBILE / "lib/core/theme/dedsec_colors.dart"
+#: La paleta de la app. `build_apk` la lee para no compilar un APK con una marca
+#: que no es la de Aegis.
+#:
+#: Antes este path era `dedsec_colors.dart` y el nombre de la clase iba dentro.
+#: Un rebranding no debería obligar a tocar el guardarraíl: si el fichero se
+#: renombra y esta constante no se actualiza, `current_brand()` devuelve
+#: `<no existe el tema>`, la comparación contra el centinela **no** da igual y la
+#: puerta deja de comprobar lo que dice comprobar. En silencio. Por eso la
+#: comprobación es de estructura y no de color: sobrevive a los rebranding.
+THEME = MOBILE / "lib/core/theme/aegis_palette.dart"
+
+#: Todos los nombres por los que puede estar la paleta. El primero es el bueno;
+#: los otros son por los que pasó el repo, para que un árbol a medio migrado
+#: siga siendo verificable en vez de dar la paleta por perdida en silencio.
+RUTAS_PALETA = (
+    MOBILE / "lib/core/theme/aegis_palette.dart",
+    MOBILE / "lib/core/theme/aegis_colors.dart",
+    MOBILE / "lib/core/theme/dedsec_colors.dart",
+)
+
 APK = MOBILE / "build/app/outputs/flutter-apk/app-debug.apk"
 
 # La raíz del repo de Aegis. Las demás raíces y los verificadores por proyecto
@@ -43,7 +70,15 @@ FLUTTER = "/RUTA/A/FLUTTER/bin"
 DEFAULT_MESH_IP = "100.101.102.103"                     # galaxy-a17 por Tailscale
 DEFAULT_MESH_PORT = "43679"                            # puerto adb de respaldo
 DEFAULT_MESH_DEVICE = f"{DEFAULT_MESH_IP}:{DEFAULT_MESH_PORT}"
-LEGACY_BRAND = "0xFFC83BFE"                    # magenta original del tema
+#: El centinela: el hex con el que el tema nació, antes de tener identidad. Si
+#: `brand` sigue siendo este, la app todavía no es Aegis.
+#:
+#: ## Por qué sigue siendo un hex, y no el nombre de la clase
+#: Porque es lo único que no depende de una decisión de nombres. `AegisPalette`
+#: se puede renombrar mañana y esta puerta seguiría funcionando; `0xFFC83BFE` es
+#: un hecho sobre el color que se está buscando. Lo que sí era frágil era
+#: comprobar **el archivo**, y eso ya no se hace.
+LEGACY_BRAND = "0xFFC83BFE"
 
 _BRAND_RE = re.compile(r"brand\s*=\s*Color\(0x([0-9A-Fa-f]{8})\)")
 
@@ -400,13 +435,27 @@ def neon_branch(project: str, branch: str = "") -> str:
 
 
 def current_brand() -> str:
-    """Devuelve el hex actual de DedsecColors.brand en el repo del host."""
-    try:
-        text = THEME.read_text()
-    except FileNotFoundError:
-        return "<no existe el tema>"
-    m = _BRAND_RE.search(text)
-    return ("0x" + m.group(1).upper()) if m else "<no encontrado>"
+    """El hex de `brand` en la paleta del host, o qué le falta.
+
+    ## Por qué busca por una lista de rutas
+    Este valor decide si `build_apk` compila. Si el fichero se renombra y aquí
+    no se busca el nuevo nombre, devuelve `<no existe el tema>` — que no es igual
+    que el centinela, así que la comprobación pasa y el APK sale con lo que
+    hubiera. Un guardarraíl que deja de mirar cuando le cambian el nombre es peor
+    que uno que no existe, porque parece que sigue ahí.
+
+    El orden es el de la historia del rebranding: primero el nombre propio, y
+    los antiguos detrás para que un repo a medio migrar siga siendo verificable.
+    """
+    for ruta in RUTAS_PALETA:
+        try:
+            text = ruta.read_text()
+        except OSError:
+            continue
+        m = _BRAND_RE.search(text)
+        if m:
+            return "0x" + m.group(1).upper()
+    return "<no existe el tema>"
 
 
 def _short_diff() -> str:
@@ -700,6 +749,11 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
     fallo más difícil de detectar en una prueba. Por eso el destino no se
     adivina: va explícito.
 
+    ## El token va incluido
+    Si `AEGIS_API_KEY` está puesta en `bridge/.env`, el APK se compila con ella
+    dentro. El valor **no** se devuelve en el mensaje: un secreto que sale por
+    la cola del agente es un secreto en la historia del repositorio.
+
     Antes de compilar valida que el tema se haya recoloreado (si brand sigue
     siendo el magenta original y force=False, aborta con la ruta correcta).
     """
@@ -712,11 +766,18 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
     except DeviceError as exc:
         return f"NO COMPILADO. {exc}"
     brand = current_brand()
+    if brand == "<no existe el tema>":
+        return (
+            "NO COMPILADO: no encuentro la paleta de Aegis. La he buscado en:\n"
+            + "".join(f"  {r}\n" for r in RUTAS_PALETA)
+            + "No compilo sin saber de qué color es la marca: un APK con la paleta "
+            "equivocada se instala igual y no se nota hasta que se abre."
+        )
     if not force and brand == LEGACY_BRAND:
         return (
             f"El tema aún NO tiene el tono nuevo: brand = {brand}.\n"
             "Edita primero el archivo host:\n"
-            f"  {ROOT}/mobile/lib/core/theme/dedsec_colors.dart\n"
+            f"  {THEME}\n"
             "  (busca `static const Color brand = Color(...)`)\n"
             "Después vuelve a llamar build_apk. No compilo un APK sin el cambio."
         )
@@ -727,6 +788,19 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
         f"--dart-define=API_HOST={api_host}",
         f"--dart-define=AEGIS_ORIGIN={base}",
     ]
+    # El token de la API de operación viaja con el APK. **Nunca se imprime**: va
+    # dentro del binario y volvería a la cola de trabajo del agente, que es
+    # exactamente el sitio donde un secreto no debe estar.
+    #
+    # Por qué se mete aquí y no solo en el manual: un APK compilado sin él abre,
+    # pinta, y falla **solo** en las secciones nuevas con un 401. Es el fallo que
+    # más se parece a "la app va Fallando" y el que más cuesta encontrar, porque
+    # la mitad de la app funciona.
+    if settings.aegis_api_key:
+        cmd.append(f"--dart-define=AEGIS_TOKEN={settings.aegis_api_key}")
+    else:
+        log.info("build_apk: AEGIS_API_KEY vacía; el APK sale sin token y los "
+                 "endpoints nuevos responderán 401")
     try:
         proc = _run(cmd, cwd=MOBILE)
     except subprocess.TimeoutExpired:
@@ -742,12 +816,49 @@ def build_apk(target: str = "emulador", force: bool = False) -> str:
         destino.write_bytes(APK.read_bytes())
         APK.unlink()
         movido = destino.exists()
+        # Anota con qué token se compiló. Sin esto el humo no puede distinguir
+        # "abrió" de "funciona": un APK sin token abre, dibuja y habla con el
+        # bridge igual (A-039).
+        #
+        # ## Por qué se **comprueba** y no se da por hecho
+        # La puerta se cierra con «hay clave puesta pero este APK se compiló sin
+        # anotar token. Recompílalo», y eso es un mensaje desconcertante cuando
+        # lo que hiciste fue justo recompilar. Se llegó a esa situación porque
+        # anotar es una escritura que puede fallar en silencio (`OSError` → un
+        # `log.warning` que nadie ve) y el resultado —un APK que no puede pasar
+        # la puerta— no se refleja en la respuesta de la tool. Ahora el resultado
+        # del sellado se **devuelve**, y quien lee sabe si el APK sirve.
+        anotado = "no se anoto el token (el APK no podra pasar la puerta)"
+        if movido and settings.aegis_api_key:
+            from .deploy import _sello_de_token, anotar_token_del_apk
+            anotar_token_del_apk(destino, settings.aegis_api_key)
+            if not _sello_de_token(destino).exists():
+                # ## Por qué esto es un fallo y no un aviso
+                # Un APK sin sello **no puede pasar la puerta**: el humo lo
+                # rechaza con «se compiló sin anotar token. Recompílalo», que es
+                # un mensaje desconcertante cuando lo que hiciste fue justo
+                # recompilar. Pasó varias veces antes de que esto existiera, y en
+                # cada una el misterio era el mismo: el `log.warning` de dentro de
+                # `anotar_token_del_apk` no lo veía nadie, porque la tool
+                # respondía como si todo fuera bien.
+                #
+                # Anotar es una escritura que puede fallar. Si falla, la tool
+                # devuelve un fallo con salida distinta de cero, no un APK que no
+                # sirve y un mensaje que dice que sí.
+                return (f"build_apk FALLÓ al anotar el token de "
+                        f"{destino.name}: ese APK no podría pasar la puerta de "
+                        "despliegue. Sin sello, el humo no puede distinguir "
+                        "'abrió' de 'funciona' (A-039).")
+            anotado = f"token anotado en {_sello_de_token(destino).name}"
+        elif movido:
+            anotado = "sin token (AEGIS_API_KEY vacia: los endpoints nuevos daran 401)"
     ok = proc.returncode == 0 and movido
     diff = _short_diff()
     return (
         f"build_apk {'OK' if ok else 'FALLÓ'} (exit={proc.returncode}). "
         f"brand actual={brand}, api_host={api_host}\n"
         f"APK: {destino}\n"
+        f"{anotado}\n"
         f"{diff}\n"
         f"--- salida (tail) ---\n{tail}"
     )
@@ -804,20 +915,87 @@ def _mdns_adb_port() -> str:
 
 @mcp.tool()
 def adb_connect(target: str = "") -> str:
-    """Conecta adb al teléfono por Tailscale. Sin argumentos descubre el puerto.
+    """Conecta adb al teléfono. Sin argumentos descubre el puerto por mDNS.
 
     El puerto de depuración inalámbrica cambia cada vez que se reinicia en el
-    teléfono, así que se resuelve con mDNS + la IP fija de la tailnet.
+    teléfono, así que se resuelve con mDNS sobre la IP de la tailnet y, si el
+    teléfono no está en la tailnet, sobre la IP de la LAN.
+
+    ## Por qué mira si el **teléfono** está conectado, no si hay algo conectado
+    La versión anterior contaba dispositivos conectados y, si encontraba alguno,
+    respondía "ya conectado". Con el emulador siempre levantado —que es lo
+    normal, porque es donde van todas las pruebas— eso significaba que **nunca
+    intentaba conectar el teléfono**: la tool seńalaba éxito y el teléfono
+    seguía sin verse. Es un fallo que informa de algo que no ha comprobado, que
+    es A-016 con forma de mensaje de tool.
+
+    Además, que un puerto esté **abierto en TCP no significa que adbd sirva**:
+    cuando la pantalla del teléfono se bloquea, Android retira la sesión de
+    depuración y el anuncio mDNS se queda cacheado. Por eso se intenta de verdad
+    y se reporta el fallo, en vez de asumir que por tener el puerto basta.
     """
+    from . import dispositivos as disp
     if not target:
-        _, out = _adb(["devices"], timeout=30)
-        connected = [ln.split()[0] for ln in out.splitlines()[1:]
-                     if len(ln.split()) >= 2 and ln.split()[1] == "device"]
-        if connected:
-            return f"ya conectado: {', '.join(connected)}"
-        target = f"{DEFAULT_MESH_IP}:{_mdns_adb_port() or DEFAULT_MESH_PORT}"
+        ya = disp.telefono()
+        if ya is not None:
+            return f"tu teléfono ya está conectado: {ya.serial}"
+        candidatos = _puertos_mdns()
+        if not candidatos:
+            return (
+                "No encuentro el teléfono por mDNS. Tres motivos posibles, en "
+                "orden:\n"
+                "  1. La pantalla está bloqueada: Android apaga la depuración "
+                "inalámbrica al bloquearla, y el anuncio que ves es viejo.\n"
+                "  2. La depuración inalámbrica está apagada "
+                "(Ajustes → Developers).\n"
+                "  3. El teléfono no está en la misma red que el portátil.\n"
+                "Con la pantalla encendida, vuelve a llamarme.")
+        partes = []
+        for host, puerto in candidatos:
+            code, out = _adb(["connect", f"{host}:{puerto}"], timeout=30)
+            partes.append(f"{host}:{puerto} -> {out.strip() or f'exit={code}'}")
+            if code == 0 and "connected to" in out:
+                return "conectado: " + "; ".join(partes)
+        return ("No pude conectar por ninguno de los puertos anunciados:\n  "
+                + "\n  ".join(partes)
+                + "\nSi el puerto está abierto y adb no contesta, casi siempre "
+                  "es que la pantalla del teléfono está bloqueada. Desbloquéala "
+                  "con la depuración inalámbrica encendida y vuelve a llamarme.")
     code, out = _adb(["connect", target], timeout=30)
     return f"connect {target} (exit={code}): {out}"
+
+
+def _puertos_mdns() -> list[tuple[str, str]]:
+    """Los pares (host, puerto) que adb anuncia para el teléfono, y solo él.
+
+    ## Por qué se quitan las repeticiones
+    adb anuncia el mismo teléfono dos veces y marca el duplicado con ` (2)`, con
+    el contador en medio del serial. Sin quitarlo, se intenta dos veces el mismo
+    puerto y el mensaje dice que fallaron dos, que se lee como dos teléfonos.
+
+    ## Por qué los dos hosts
+    mDNS es link-local: no cruza la tailnet. Si el teléfono está en la red
+    privada se anuncia con su IP de LAN; si está fuera, con la de Tailscale. Se
+    prueban los dos, y el orden no importa porque `adb connect` dice cuál aceptó.
+    """
+    proc = _run([ADB + "/adb", "mdns", "services"], timeout=20)
+    vistos: set[tuple[str, str]] = set()
+    for line in (proc.stdout or "").splitlines():
+        if "_adb-tls-connect" not in line or ":" not in line:
+            continue
+        ultimo = line.rsplit(":", 1)[-1].strip()
+        if not ultimo.isdigit():
+            continue
+        host = line[: line.rindex(":")].split()[-1]
+        if "." in host and not host.endswith(f":{ultimo}"):
+            host = host.rsplit(".", 1)[0] if host.count(".") > 3 else host
+        vistos.add((host, ultimo))
+    if not vistos:
+        return []
+    salida = []
+    for host, puerto in sorted(vistos):
+        salida.append((host, puerto))
+    return salida
 
 
 @mcp.tool()
@@ -871,7 +1049,10 @@ def install_apk(target: str = "emulador", lanzar: bool = False,
 
     # El teléfono: la puerta va antes de tocar nada.
     try:
-        serial = pasar_puerta_deploy(lanzar=lanzar)
+        # La puerta devuelve el device verificado; el serial sale de ahí. Antes
+        # devolvía el serial y cada quien lo resolvía por su cuenta, que es
+        # exactamente la forma de instalar en un aparato distinto del comprobado.
+        serial = pasar_puerta_deploy(lanzar=lanzar).serial
     except PuertaCerrada as exc:
         return f"NO INSTALADO EN TU TELÉFONO. {exc}"
 
@@ -894,10 +1075,12 @@ def install_apk(target: str = "emulador", lanzar: bool = False,
             return (
                 "NO INSTALADO, y es lo correcto: falta tu autorización.\n"
                 f"  id de petición: {peticion['id']}\n"
-                f"  {peticion.get('aviso', '')}\n"
-                "Te he avisado al móvil. Ábrelo, aprueba y vuelve a llamar a "
+                f"  aviso: {peticion.get('aviso', '')}\n"
+                "Ábrelo en el móvil, aprueba y vuelve a llamar a "
                 "install_apk(target='telefono'): con la aprobación a la vista, "
-                "esta vez instala. Si no lo apruebas, aquí no se instala nada.")
+                "esta vez instala. Si no lo apruebas, aquí no se instala nada.\n"
+                "No vuelvas a llamar a install_apk para que se entere: preguntar "
+                "no es instalar. Con la petición viva, una llamada basta.")
 
     try:
         return instalar_en_telefono(dev, token, lanzar=lanzar)

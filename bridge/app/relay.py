@@ -118,6 +118,13 @@ class Relay:
         try:
             async for raw in hermes.run_events(run_id):
                 ev = normalize_event(run_id, agent, raw["event"], raw["data"])
+                # ¿Está hablando? Un delata de texto basta, y es el mismo sitio
+                # por el que pasa **todo** el texto de Hermes. Ver
+                # `app/actividad.py` para por qué esto es un reloj y no un
+                # registro de runs.
+                if ev.type == "text.delta":
+                    from . import actividad
+                    actividad.marcar("hermes", run_id)
                 self._tasks[run_id]["status"] = _derive_status(ev, raw)
                 # Historial con tope, para reintento de suscripción y runs finalizados.
                 hist = self._history.setdefault(run_id, [])

@@ -1,9 +1,15 @@
-/// Línea de log de un evento: `[hh:mm:ss] marcador breve descripción`.
+/// Una línea del feed de eventos: hora, marcador y qué pasó.
+///
+/// ## Por qué los marcadores son glifos y no colores
+/// El color dice si va bien o mal; el glifo dice **qué clase de evento** es. En
+/// una traza larga, buscar "¿qué paso aquí?" por color obliga a leer cada línea;
+/// un glifo distinto por tipo se distingue a un vistazo. Los dos juntos dan el
+/// estado y el tipo, que son dos preguntas distintas.
 library;
 
 import 'package:flutter/material.dart';
 
-import '../../core/theme/dedsec_colors.dart';
+import '../../core/theme/aegis_palette.dart';
 import '../../data/models/agent_models.dart';
 
 class EventTile extends StatelessWidget {
@@ -25,9 +31,9 @@ class EventTile extends StatelessWidget {
             child: Text(
               _fmtTime(event.when),
               style: const TextStyle(
-                fontFamily: DedsecColors.mono,
+                fontFamily: AegisPalette.mono,
                 fontSize: 10,
-                color: DedsecColors.fgFaint,
+                color: AegisPalette.fgFaint,
                 height: 1.5,
               ),
             ),
@@ -38,7 +44,7 @@ class EventTile extends StatelessWidget {
             child: Text(
               mark,
               style: TextStyle(
-                fontFamily: DedsecColors.mono,
+                fontFamily: AegisPalette.mono,
                 fontSize: 12,
                 height: 1.35,
                 color: color,
@@ -52,10 +58,10 @@ class EventTile extends StatelessWidget {
               maxLines: 6,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontFamily: DedsecColors.mono,
+                fontFamily: AegisPalette.mono,
                 fontSize: 13,
                 height: 1.45,
-                color: isMuted ? DedsecColors.fgFaint : DedsecColors.fg,
+                color: isMuted ? AegisPalette.fgFaint : AegisPalette.fg,
               ),
             ),
           ),
@@ -65,17 +71,17 @@ class EventTile extends StatelessWidget {
   }
 
   (String, Color) get _marker => switch (event.type) {
-        'task.created' => ('●', DedsecColors.info),
-        'text.delta' => ('▸', DedsecColors.fg),
-        'reasoning' => ('◈', DedsecColors.info),
-        'tool.started' => ('>', DedsecColors.info),
-        'tool.completed' => ('✓', DedsecColors.ok),
-        'approval.request' => ('▲', DedsecColors.warn),
-        'approval.resolved' => ('◆', DedsecColors.warn),
-        'task.done' => ('■', DedsecColors.ok),
-        'task.failed' => ('■', DedsecColors.danger),
-        'task.stopped' => ('◼', DedsecColors.danger),
-        _ => ('·', DedsecColors.fgFaint),
+        'task.created' => ('●', AegisPalette.info),
+        'text.delta' => ('▸', AegisPalette.fg),
+        'reasoning' => ('◈', AegisPalette.info),
+        'tool.started' => ('>', AegisPalette.info),
+        'tool.completed' => ('✓', AegisPalette.ok),
+        'approval.request' => ('▲', AegisPalette.warn),
+        'approval.resolved' => ('◆', AegisPalette.warn),
+        'task.done' => ('■', AegisPalette.ok),
+        'task.failed' => ('■', AegisPalette.danger),
+        'task.stopped' => ('◼', AegisPalette.danger),
+        _ => ('·', AegisPalette.fgFaint),
       };
 
   static String _fmtTime(String iso) {

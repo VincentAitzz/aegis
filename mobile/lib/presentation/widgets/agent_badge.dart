@@ -3,7 +3,7 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../../core/theme/dedsec_colors.dart';
+import '../../core/theme/aegis_palette.dart';
 
 class AgentBadge extends StatelessWidget {
   const AgentBadge({super.key, required this.agent});
@@ -14,7 +14,7 @@ class AgentBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     // `autopilot` es un motor, no un agente: se distingue por claridad, no por rol.
     final esAutopilot = agent == 'autopilot';
-    final color = esAutopilot ? DedsecColors.info : DedsecColors.ok;
+    final color = esAutopilot ? AegisPalette.info : AegisPalette.ok;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -28,7 +28,7 @@ class AgentBadge extends StatelessWidget {
           Text(
             esAutopilot ? '▤' : '▣',
             style: TextStyle(
-              fontFamily: DedsecColors.mono,
+              fontFamily: AegisPalette.mono,
               fontSize: 10,
               color: color,
             ),
@@ -37,7 +37,7 @@ class AgentBadge extends StatelessWidget {
           Text(
             esAutopilot ? 'AUTOPILOT' : agent.toUpperCase(),
             style: TextStyle(
-              fontFamily: DedsecColors.mono,
+              fontFamily: AegisPalette.mono,
               color: color,
               fontWeight: FontWeight.w600,
               fontSize: 11,

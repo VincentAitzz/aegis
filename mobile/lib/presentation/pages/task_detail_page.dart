@@ -4,8 +4,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/theme/dedsec_colors.dart';
-import '../../core/widgets/aegis_logo.dart';
+import '../../core/theme/aegis_palette.dart';
+import '../../core/widgets/aegis_mark.dart';
 import '../../core/widgets/aegis_scaffold.dart';
 import '../../core/widgets/blink_cursor.dart';
 import '../../core/widgets/hud_panel.dart';
@@ -81,11 +81,23 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
 
     if (session == null) {
       return AegisScaffold(
-        appBar: AppBar(title: const Text('AEGIS')),
+        appBar: AppBar(title: const Text('MISIÓN')),
+        // Sin superposición: es la pantalla donde más texto técnico hay y donde
+        // la textura más estorba.
+        superposicion: false,
         body: const Center(
-          child: Text(
-            '// no hay misión activa — lanza una desde el control',
-            style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fgFaint),
+          child: Padding(
+            padding: EdgeInsets.all(28),
+            child: Text(
+              'No hay ninguna misión en marcha.\nLánzala desde Ahora.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 12,
+                height: 1.6,
+                color: AegisPalette.fgFaint,
+              ),
+            ),
           ),
         ),
       );
@@ -96,12 +108,12 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
 
     return AegisScaffold(
       appBar: AppBar(
-        title: const Row(
+        title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            AegisLogo(size: 18),
-            SizedBox(width: 8),
-            Text('MISIÓN EN VIVO'),
+            AegisMark(size: 18, vivo: isLive),
+            const SizedBox(width: 8),
+            Text(isLive ? 'EN MARCHA' : 'MISIÓN'),
           ],
         ),
         actions: [
@@ -109,10 +121,11 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
             IconButton(
               tooltip: 'Detener tarea',
               onPressed: () => ref.read(taskSessionProvider.notifier).stopTask(),
-              icon: const Icon(Icons.stop_circle_outlined, color: DedsecColors.danger),
+              icon: const Icon(Icons.stop_circle_outlined, color: AegisPalette.danger),
             ),
         ],
       ),
+      superposicion: false,
       body: Column(
         children: [
           _header(session),
@@ -150,18 +163,18 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: DedsecColors.bg2,
+                        color: AegisPalette.bg2,
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: DedsecColors.line),
+                        border: Border.all(color: AegisPalette.line),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const StatusLed(color: DedsecColors.warn, size: 8, pulse: true),
+                          const StatusLed(color: AegisPalette.warn, size: 8, pulse: true),
                           const SizedBox(width: 6),
                           Text(
                             'ws: ${session.wsStatus}',
-                            style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 10, color: DedsecColors.warn),
+                            style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 10, color: AegisPalette.warn),
                           ),
                         ],
                       ),
@@ -182,8 +195,8 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
       decoration: const BoxDecoration(
-        color: DedsecColors.bg1,
-        border: Border(bottom: BorderSide(color: DedsecColors.line)),
+        color: AegisPalette.bg1,
+        border: Border(bottom: BorderSide(color: AegisPalette.line)),
       ),
       child: Row(
         children: [
@@ -193,9 +206,9 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
             child: Text(
               session.task.runId,
               style: const TextStyle(
-                fontFamily: DedsecColors.mono,
+                fontFamily: AegisPalette.mono,
                 fontSize: 11.5,
-                color: DedsecColors.fgDim,
+                color: AegisPalette.fgDim,
               ),
               overflow: TextOverflow.ellipsis,
             ),
@@ -209,11 +222,11 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
 
   Widget _statusChip(String status, bool isLive) {
     final (label, color) = switch (status) {
-      'running' => ('RUNNING', DedsecColors.brand),
-      'completed' => ('COMPLETED', DedsecColors.ok),
-      'failed' => ('FAILED', DedsecColors.danger),
-      'stopped' => ('STOPPED', DedsecColors.warn),
-      _ => ('QUEUED', DedsecColors.fgDim),
+      'running' => ('RUNNING', AegisPalette.brand),
+      'completed' => ('COMPLETED', AegisPalette.ok),
+      'failed' => ('FAILED', AegisPalette.danger),
+      'stopped' => ('STOPPED', AegisPalette.warn),
+      _ => ('QUEUED', AegisPalette.fgDim),
     };
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -223,7 +236,7 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
         Text(
           label,
           style: TextStyle(
-            fontFamily: DedsecColors.mono,
+            fontFamily: AegisPalette.mono,
             fontSize: 10.5,
             letterSpacing: 1.5,
             color: color,
@@ -254,11 +267,11 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(_avisoEscritura!,
                   style: TextStyle(
-                      fontFamily: DedsecColors.mono,
+                      fontFamily: AegisPalette.mono,
                       fontSize: 10,
                       color: _avisoEscritura!.startsWith('No') 
-                          ? DedsecColors.danger
-                          : DedsecColors.ok)),
+                          ? AegisPalette.danger
+                          : AegisPalette.ok)),
             ),
           SizedBox(
             width: double.infinity,
@@ -277,9 +290,9 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
                       ? 'ESCRIBIR LA FICHA DE $proyecto'
                       : 'ESCRIBIR LA FICHA DE $proyecto CON AUTOPILOT'),
               style: OutlinedButton.styleFrom(
-                foregroundColor: yaEscribible ? DedsecColors.ok : DedsecColors.info,
+                foregroundColor: yaEscribible ? AegisPalette.ok : AegisPalette.info,
                 side: BorderSide(
-                    color: yaEscribible ? DedsecColors.ok : DedsecColors.info,
+                    color: yaEscribible ? AegisPalette.ok : AegisPalette.info,
                     width: 1.2),
               ),
             ),
@@ -289,7 +302,7 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
             'Se guarda exactamente este texto, sin que ningún modelo lo toque. '
             'Revísalo antes: esto es lo que queda escrito.',
             style: const TextStyle(
-                fontSize: 9, color: DedsecColors.fgFaint, height: 1.3),
+                fontSize: 9, color: AegisPalette.fgFaint, height: 1.3),
           ),
         ],
       ),
@@ -303,10 +316,10 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
       child: SelectableText(
         finalText,
         style: const TextStyle(
-          fontFamily: DedsecColors.mono,
+          fontFamily: AegisPalette.mono,
           fontSize: 13.5,
           height: 1.55,
-          color: DedsecColors.fg,
+          color: AegisPalette.fg,
         ),
       ),
     );
@@ -318,7 +331,7 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
       trailing: const BlinkCursor(size: 12),
       child: const Text(
         '// esperando datos del agente…',
-        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fgFaint),
+        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, color: AegisPalette.fgFaint),
       ),
     );
   }
@@ -346,8 +359,8 @@ class _TaskDetailPageState extends ConsumerState<TaskDetailPage> {
               onPressed: () => _sendSteer(_steer.text),
               icon: const Icon(Icons.send, size: 18),
               style: IconButton.styleFrom(
-                foregroundColor: DedsecColors.brand,
-                side: const BorderSide(color: DedsecColors.line),
+                foregroundColor: AegisPalette.brand,
+                side: const BorderSide(color: AegisPalette.line),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
               ),
             ),

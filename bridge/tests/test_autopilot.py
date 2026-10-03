@@ -6,7 +6,9 @@
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,7 +19,12 @@ from app.autopilot import (  # noqa: E402
     _mentions_tool,
     extract_tool_calls,
 )
-from app.mcp_ops import _safe_resolve, current_brand  # noqa: E402
+from app.mcp_ops import (  # noqa: E402
+    LEGACY_BRAND,
+    RUTAS_PALETA,
+    _safe_resolve,
+    current_brand,
+)
 
 SLOW = os.environ.get("AEGIS_SLOW_TESTS") == "1"
 
@@ -102,7 +109,7 @@ class TestWhitelist(unittest.TestCase):
             _execute("rm_rf", {"path": "/"})
 
     def test_reads_real_repo(self):
-        out = _execute("aegis_read_file", {"path": "mobile/lib/core/theme/dedsec_colors.dart"})
+        out = _execute("aegis_read_file", {"path": "mobile/lib/core/theme/aegis_palette.dart"})
         self.assertIn("brand", out)
         self.assertIn(current_brand(), out)
 
@@ -113,7 +120,7 @@ class TestWhitelist(unittest.TestCase):
     def test_secret_content_blocked(self):
         with self.assertRaises(ValueError):
             _execute("aegis_write_file", {
-                "path": "mobile/lib/core/theme/dedsec_colors.dart",
+                "path": "mobile/lib/core/theme/aegis_palette.dart",
                 "content": "token = sk-ABCDEFGHIJKLMNOPQRSTUVWX",
             })
 
@@ -130,7 +137,7 @@ class TestRealCycle(unittest.TestCase):
         probe = "0xFF00FF00" if original != "0xFF00FF00" else "0xFF00AA00"
         result = asyncio.run(run_autopilot(
             f"Usa aegis_patch_file para cambiar la constante brand a {probe} en "
-            "mobile/lib/core/theme/dedsec_colors.dart. No compiles.",
+            "mobile/lib/core/theme/aegis_palette.dart. No compiles.",
             ollama_url="http://127.0.0.1:11434",
             model="qwen2.5:7b",
             max_steps=5,
@@ -138,7 +145,7 @@ class TestRealCycle(unittest.TestCase):
         tools = [t for t in result["trace"] if t.get("tool")]
         self.assertTrue(tools, f"el modelo no pidió ninguna tool: {result['trace']}")
 
-        path = "mobile/lib/core/theme/dedsec_colors.dart"
+        path = "mobile/lib/core/theme/aegis_palette.dart"
         ok, _ = _syntax_ok(_safe_resolve(path))
         self.assertTrue(ok, "el guardarraíl dejó el archivo con sintaxis inválida")
         if current_brand() != original:
@@ -151,20 +158,129 @@ class TestRealCycle(unittest.TestCase):
         self.assertEqual(current_brand(), original)
 
 
+def _dart_parseable(texto: str) -> bool:
+    """¿Este texto Dart parsea? Pregunta a `dart format`, como el guardarraíl.
+
+    No se reimplementa el criterio: el punto es que el test y el guardarraíl
+    usen la misma respuesta. Un test con su propio criterio pasa mientras el
+    guardarraíl usa otro, que es un test que no mide lo que dice medir.
+    """
+    from app.mcp_ops import FLUTTER, _run
+
+    with tempfile.NamedTemporaryFile("w", suffix=".dart", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(texto)
+        ruta = Path(fh.name)
+    try:
+        proc = _run([str(FLUTTER + "/dart"), "format", "--output=none", str(ruta)],
+                    timeout=60)
+        return proc.returncode == 0
+    finally:
+        ruta.unlink(missing_ok=True)
+
+
 class TestSyntaxGuard(unittest.TestCase):
     def test_broken_dart_edit_is_rejected_and_reverted(self):
         from app.mcp_ops import _safe_resolve, _syntax_ok
 
-        path = _safe_resolve("mobile/lib/core/theme/dedsec_colors.dart")
-        before = current_brand()
+        path = _safe_resolve("mobile/lib/core/theme/aegis_palette.dart")
+        antes = path.read_text()
+        brand_antes = current_brand()
+        # El `old` sale del fichero, no de memoria: si la forma de declarar la
+        # constante cambia, un `old` escrito a mano da "no se encontró el
+        # fragmento" y el test pasa por el motivo equivocado —no por el rollback
+        # de sintaxis que dice estar probando— o falla sin explicar nada.
+        declaracion = next(l for l in antes.splitlines() if "brand =" in l)
+        # `Color()` **no** sirve: es Dart válido (invocación sin argumentos), así
+        # que el guardarraíl de sintaxis lo acepta y lo escribe. La primera
+        # versión de este test lo hizo, y dejó `Color()` en la paleta de verdad:
+        # un test que rompe el repo mientras corre ya no es un test del guardarraíl.
+        # Lo que se rompe de verdad es una llamada sin cerrar.
+        nuevo = declaracion.split("=")[0] + "= Color(0xFFFFB020"
+        self.assertFalse(
+            _dart_parseable(nuevo),
+            f"la rotura de prueba sigue siendo Dart valido: {nuevo!r}")
         result = _execute("aegis_patch_file", {
-            "path": "mobile/lib/core/theme/dedsec_colors.dart",
-            "old": f"static const Color brand = Color({before});",
-            "new": "static const Color 0xFF00FF00 = Color(0xFF2EFFA0);",
+            "path": "mobile/lib/core/theme/aegis_palette.dart",
+            "old": declaracion,
+            "new": nuevo,
         })
-        self.assertIn("RECHAZADO", result)
-        self.assertEqual(current_brand(), before)
+        self.assertIn("RECHAZADO", result, f"la edición no se rechazó: {result}")
+        self.assertEqual(current_brand(), brand_antes,
+                         "el rechazo no revirtió el cambio de color")
+        self.assertEqual(path.read_text(), antes,
+                         "el archivo cambió pese al rechazo")
         self.assertTrue(_syntax_ok(path)[0])
+
+
+class TestElGuardarrailDeLaMarca(unittest.TestCase):
+    """La puerta de `build_apk` tiene que seguir mirando, y hay que mirarla.
+
+    ## El fallo que esto previene
+    `current_brand()` leía **un solo path**. Ese path era el nombre del fichero
+    de la paleta, así que un rebranding lo renombraba — y entonces devolvía
+    `<no existe el tema>`, que no es igual que el centinela, con lo que la
+    comparación pasaba y `build_apk` compilaba sin que nadie hubiera comprobado
+    la marca. Un guardarraíl que deja de mirar cuando le cambian el nombre es
+    peor que uno que no existe: parece que sigue ahí.
+
+    ## Por qué el caso bueno importa
+    Estos tests usan el fichero de verdad. Un test con un tema inventado en un
+    `tmp` probaría el regex contra algo que nadie va a compilar nunca, que es
+    justo el error de A-016: pruebas de lo que yo sé, no de lo que hay.
+    """
+
+    def test_la_paleta_existe_y_declara_brand(self):
+        """Si esto falla, el resto de la puerta está comprobando el vacío."""
+        self.assertNotEqual(current_brand(), "<no existe el tema>",
+                            f"no encuentro la paleta en {[str(r) for r in RUTAS_PALETA]}")
+        self.assertRegex(current_brand(), r"^0x[0-9A-F]{8}$")
+
+    def test_la_app_no_declara_el_centinela(self):
+        """Aegis ya no es lo que era al nacer."""
+        self.assertNotEqual(current_brand(), LEGACY_BRAND,
+                            "la paleta sigue con el tono original: build_apk no "
+                            "compilaría y el rebranding no está hecho")
+
+    def test_ninguna_ruta_es_el_mismo_fichero(self):
+        """Dos entradas iguales en la lista no vigilan nada dos veces."""
+        unicos = {r.resolve() for r in RUTAS_PALETA}
+        self.assertEqual(len(unicos), len(RUTAS_PALETA), RUTAS_PALETA)
+
+    def test_el_path_principal_es_el_que_existe(self):
+        """El bueno va el primero: si existieran dos, manda el de ahora."""
+        self.assertTrue(RUTAS_PALETA[0].exists(), RUTAS_PALETA[0])
+        self.assertTrue(str(RUTAS_PALETA[0]).endswith("aegis_palette.dart"))
+
+    def test_el_antiguo_todavia_sirve_para_leer(self):
+        """Un repo a medio migrar sigue siendo verificable, no mudo.
+
+        No es hipótesis: durante el rebranding los dos nombres convivieron, y un
+        árbol en ese estado tenía que dar una lectura, no `<no existe>`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            viejo = Path(tmp) / "dedsec_colors.dart"
+            viejo.write_text("static const Color brand = Color(0xFF123456);",
+                             encoding="utf-8")
+            original = RUTAS_PALETA
+            try:
+                import app.mcp_ops as ops
+                ops.RUTAS_PALETA = (Path(tmp) / "no-existe.dart", viejo)
+                self.assertEqual(ops.current_brand(), "0xFF123456")
+            finally:
+                import app.mcp_ops as ops
+                ops.RUTAS_PALETA = original
+
+    def test_sin_paleta_no_devuelve_un_hex_inventado(self):
+        """Falla **diciéndolo**. Un hex plausible sería peor que un fallo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            import app.mcp_ops as ops
+            original = ops.RUTAS_PALETA
+            try:
+                ops.RUTAS_PALETA = (Path(tmp) / "no-existe.dart",)
+                self.assertEqual(ops.current_brand(), "<no existe el tema>")
+            finally:
+                ops.RUTAS_PALETA = original
 
 
 if __name__ == "__main__":

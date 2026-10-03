@@ -1,9 +1,19 @@
-/// Panel de autorización requerida estilo alerta DedSec.
+/// Aegis pide permiso antes de hacer algo.
+///
+/// ## Por qué esto dice qué va a pasar, en concreto
+/// Es la única pantalla donde Aegis **para** y espera. Aprobar sin saber si la
+/// app se abre encima es justo lo que hay que evitar, así que el motivo y la
+/// herramienta se muestran enteros, y no un "aprobar/nada" genérico.
+///
+/// ## Por qué en ámbar y no en el color de la marca
+/// `brand` es la identidad y `warn` es "necesita tu atención". Si la alerta fuera
+/// del color de la marca, approve y ok serían el mismo color y se perdería el
+/// único momento en el que hace falta una decisión.
 library;
 
 import 'package:flutter/material.dart';
 
-import '../../core/theme/dedsec_colors.dart';
+import '../../core/theme/aegis_palette.dart';
 import '../../data/models/agent_models.dart';
 
 class ApprovalPrompt extends StatefulWidget {
@@ -37,29 +47,26 @@ class _ApprovalPromptState extends State<ApprovalPrompt> {
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: DedsecColors.warn.withValues(alpha: .06),
+        color: AegisPalette.warn.withValues(alpha: .06),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: DedsecColors.warn.withValues(alpha: .55)),
+        border: Border.all(color: AegisPalette.warn.withValues(alpha: .55)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Text(
-                '▲',
-                style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 14, color: DedsecColors.warn),
-              ),
+              const Icon(Icons.help_outline, size: 16, color: AegisPalette.warn),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'AUTORIZACIÓN REQUERIDA',
+                  'ME NECESITO TU OK',
                   style: TextStyle(
-                    fontFamily: DedsecColors.mono,
+                    fontFamily: AegisPalette.mono,
                     fontSize: 12,
                     letterSpacing: 2,
                     fontWeight: FontWeight.w700,
-                    color: DedsecColors.warn,
+                    color: AegisPalette.warn,
                   ),
                 ),
               ),
@@ -67,14 +74,14 @@ class _ApprovalPromptState extends State<ApprovalPrompt> {
           ),
           const SizedBox(height: 10),
           Text(
-            '> accion: $tool',
-            style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fg),
+            'quiere usar: $tool',
+            style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, color: AegisPalette.fg),
           ),
           if (reason is String && reason.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
               reason,
-              style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 11.5, color: DedsecColors.fgDim),
+              style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 11.5, color: AegisPalette.fgDim),
             ),
           ],
           const SizedBox(height: 10),
@@ -85,7 +92,7 @@ class _ApprovalPromptState extends State<ApprovalPrompt> {
             onChanged: (v) => setState(() => _commentText = v),
             decoration: const InputDecoration(
               isDense: true,
-              hintText: '\$ comentario ▸ (opcional)',
+              hintText: 'comentario (opcional)',
               contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             ),
           ),
@@ -96,10 +103,10 @@ class _ApprovalPromptState extends State<ApprovalPrompt> {
                 child: OutlinedButton.icon(
                   onPressed: () => widget.onDecide('deny', comment: _commentText),
                   icon: const Icon(Icons.close, size: 15),
-                  label: const Text('RECHAZAR'),
+                  label: const Text('No'),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: DedsecColors.danger,
-                    side: BorderSide(color: DedsecColors.danger.withValues(alpha: .6)),
+                    foregroundColor: AegisPalette.danger,
+                    side: BorderSide(color: AegisPalette.danger.withValues(alpha: .6)),
                   ),
                 ),
               ),
@@ -108,9 +115,9 @@ class _ApprovalPromptState extends State<ApprovalPrompt> {
                 child: FilledButton.icon(
                   onPressed: () => widget.onDecide('approve', comment: _commentText),
                   icon: const Icon(Icons.check, size: 15),
-                  label: const Text('AUTORIZAR'),
+                  label: const Text('Sí, adelante'),
                   style: FilledButton.styleFrom(
-                    backgroundColor: DedsecColors.ok,
+                    backgroundColor: AegisPalette.ok,
                     foregroundColor: const Color(0xFF031207),
                   ),
                 ),

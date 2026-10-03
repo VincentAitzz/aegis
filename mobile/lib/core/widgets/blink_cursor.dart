@@ -3,10 +3,10 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../theme/dedsec_colors.dart';
+import '../theme/aegis_palette.dart';
 
 class BlinkCursor extends StatefulWidget {
-  const BlinkCursor({super.key, this.color = DedsecColors.brand, this.size = 13});
+  const BlinkCursor({super.key, this.color = AegisPalette.brand, this.size = 13});
 
   final Color color;
   final double size;
@@ -43,7 +43,7 @@ class _BlinkCursorState extends State<BlinkCursor>
         child: Text(
           '▌',
           style: TextStyle(
-            fontFamily: DedsecColors.mono,
+            fontFamily: AegisPalette.mono,
             fontSize: widget.size,
             color: widget.color,
             height: 1,

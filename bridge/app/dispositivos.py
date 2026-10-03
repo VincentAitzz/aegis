@@ -121,7 +121,62 @@ def dispositivos() -> list[Device]:
             # Se prefiere el serial sin contador: el duplicado `(2)` de adb es
             # volátil, y quedarse con él rompe cuando adb deja de anunciarlo.
             vistos[base] = serial
-    return [Device(serial=s, state="device") for s in vistos.values()]
+    return _unificar_por_identidad(
+        [Device(serial=s, state="device") for s in vistos.values()])
+
+
+def _identidad_hardware(dev: Device) -> str:
+    """El número de serie **del aparato**, no el de la conexión.
+
+    ## Por qué hace falta
+    Un mismo teléfono se puede registrar en adb por dos vías a la vez: el nombre
+    mDNS y el `host:puerto` de un `adb connect`. Son dos seriales, un solo
+    aparato. Contarlos como dos teléfonos hacía que `telefono()` se quejara de
+    «hay 2 teléfonos» y **todo** lo del teléfono se detuviera, con el móvil
+    delante.
+
+    `ro.serialno` es del hardware, no de la conexión, así que es lo que dice si
+    son el mismo.
+
+    ## Por qué se valida lo que viene
+    Porque la consecuencia de equivocarse aquí es instalar en el aparato
+    equivocado. Si la salida no parece un número de serie —viene vacía, trae
+    varias líneas, o es un mensaje de error— se devuelve el **serial de la
+    conexión**, que no unifica nada. Ante la duda, dos: peor contar dos teléfonos
+    que uno que se puede pedir, que unificar dos aparatos distintos.
+    """
+    code, out = _adb(["-s", dev.serial, "shell", "getprop", "ro.serialno"],
+                     timeout=20, serial=dev.serial)
+    limpio = out.strip()
+    if code == 0 and limpio and "\n" not in limpio and "\t" not in limpio \
+            and len(limpio) <= 64:
+        return f"hw:{limpio}"
+    return f"con:{dev.serial}"
+
+
+def _unificar_por_identidad(devs: list[Device]) -> list[Device]:
+    """Un aparato, una entrada, aunque adb lo vea por dos vías.
+
+    ## Por qué el emulador se queda aparte
+    Un emulador y un teléfono físico pueden devolver el mismo `ro.serialno` —en
+    una AVD clonada es fácil— y unificarlos dejaría al emulador sin su entrada:
+    se acabaría instalando una prueba de `localhost` en un aparato real, que es el
+    fallo que los nombres de fichero existen para evitar. El emulador se
+    identifica por su propio serial (`emulator-NNNN`), que ya es único.
+    """
+    por_identidad: dict[str, Device] = {}
+    for d in devs:
+        ident = d.serial if d.emulador else _identidad_hardware(d)
+        previa = por_identidad.get(ident)
+        if previa is None:
+            por_identidad[ident] = d
+            continue
+        # Se queda el mDNS: es estable, no cambia de puerto en cada reinicio, y
+        # es el que usa `adb connect` por defecto. Quedarse con el otro
+        # significaría que el serial cambia solo.
+        if "_adb-tls-connect" in d.serial and "_adb-tls-connect" not in previa.serial:
+            por_identidad[ident] = d
+    return list(por_identidad.values())
 
 
 def emulador() -> Device | None:
@@ -135,13 +190,23 @@ def emulador() -> Device | None:
 def telefono() -> Device | None:
     """El teléfono del usuario, si está conectado.
 
-    Se reconoce por el mDNS (`_adb-tls-connect`) o por el serial configurado.
-    Nunca se devuelve "el que quede": si hay varios, es un error.
+    Se reconoce por el mDNS (`_adb-tls-connect`), por el serial configurado, o
+    por ser un `adb connect host:puerto` a una IP. Nunca se devuelve "el que
+    quede": si hay varios, es un error.
+
+    ## Por qué la IP cuenta como teléfono
+    Porque es lo que produce la ruta manual que documenta el runbook:
+    `adb mdns services` → `adb connect <ip>:<puerto>`. En esa forma el serial es
+    `100.101.102.103:46119`, **sin** `_adb-tls-connect`, así que la puerta decía
+    «tu teléfono no aparece en adb» con el teléfono ahí, conectado y respondiendo
+    — la tool, suplicando que lo conectaras mientras estaba delante (A-046).
+
+    Lo que se descarta sigue siendo el emulador y el propio host, así que «un
+    dispositivo que no es el emulador y se conectó por una IP» no se está
+    suponiendo: se está leyendo. Y si hay dos, sigue pidiendo que digas cuál.
     """
     cands = [d for d in dispositivos()
-             if not d.emulador and d.disponible
-             and ("_adb-tls-connect" in d.serial
-                  or (PHONE_SERIAL_ENV and d.serial == PHONE_SERIAL_ENV))]
+             if not d.emulador and d.disponible and _parece_telefono(d.serial)]
     if len(cands) == 1:
         return cands[0]
     if not cands:
@@ -150,6 +215,32 @@ def telefono() -> Device | None:
         f"hay {len(cands)} teléfonos conectados ({', '.join(d.serial for d in cands)}). "
         f"Dilo cuál con target='telefono:<serial>'."
     )
+
+
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def _parece_telefono(serial: str) -> bool:
+    """¿Este serial puede ser el teléfono del usuario?
+
+    Tres formas, y solo tres:
+
+    1. el nombre que publica el teléfono por mDNS (`_adb-tls-connect`);
+    2. el serial que alguien configuró a mano (`AEGIS_PHONE_SERIAL`);
+    3. `host:puerto` de un `adb connect` a una IP que no sea el loopback.
+
+    La tercera es la que faltaba. La condición es «IP, no loopback» y no «hay un
+    `:` en el serial», porque `emulator-5554` no tiene puerto pero cualquier
+    `adb connect` a `localhost` tampoco, y `localhost` no es el teléfono de nadie.
+    """
+    if "_adb-tls-connect" in serial:
+        return True
+    if PHONE_SERIAL_ENV and serial == PHONE_SERIAL_ENV:
+        return True
+    host, sep, puerto = serial.rpartition(":")
+    if not sep or not puerto.isdigit():
+        return False
+    return bool(host) and host not in _LOOPBACK
 
 
 def resolver(target: str = "emulador") -> Device:

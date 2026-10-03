@@ -3,14 +3,14 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../theme/dedsec_colors.dart';
+import '../theme/aegis_palette.dart';
 
 class HudPanel extends StatelessWidget {
   const HudPanel({
     super.key,
     required this.title,
     this.child,
-    this.accent = DedsecColors.brand,
+    this.accent = AegisPalette.brand,
     this.trailing,
     this.padding = const EdgeInsets.all(14),
   });
@@ -25,9 +25,9 @@ class HudPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: DedsecColors.bg1,
+        color: AegisPalette.bg1,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: DedsecColors.line),
+        border: Border.all(color: AegisPalette.line),
       ),
       child: Stack(
         children: [
@@ -48,7 +48,7 @@ class HudPanel extends StatelessWidget {
                     Text(
                       '[$title]',
                       style: TextStyle(
-                        fontFamily: DedsecColors.mono,
+                        fontFamily: AegisPalette.mono,
                         fontSize: 11,
                         letterSpacing: 2,
                         color: accent,
@@ -60,7 +60,7 @@ class HudPanel extends StatelessWidget {
                 ),
               ),
               Divider(
-                color: DedsecColors.brand.withValues(alpha: .25),
+                color: AegisPalette.brand.withValues(alpha: .25),
                 height: 1,
               ),
               if (child != null) Padding(padding: padding, child: child),

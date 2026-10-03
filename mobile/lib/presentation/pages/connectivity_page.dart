@@ -1,10 +1,16 @@
-/// Diagnóstico de la malla: estado del bridge, agentes, modelos y raw log.
+/// Diagnóstico: qué está vivo y qué no.
+///
+/// ## Por qué vive en su propia pantalla y no en Ajustes
+/// En Ajustes está el resumen que se mira de reojo. Esto es para cuando algo
+/// **no funciona** y hay que saber por qué: los tres nodos por separado, los
+/// modelos que hay de verdad. El resumen de Ajustes puede mentir por
+/// simplificación; esto es lo que se comprueba.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/theme/dedsec_colors.dart';
+import '../../core/theme/aegis_palette.dart';
 import '../../core/widgets/aegis_scaffold.dart';
 import '../../core/widgets/hud_panel.dart';
 import '../../core/widgets/status_led.dart';
@@ -20,20 +26,23 @@ class ConnectivityPage extends ConsumerWidget {
     final models = ref.watch(modelsProvider);
 
     return AegisScaffold(
-      appBar: AppBar(title: const Text('DIAGNÓSTICO DE MALLA')),
+      appBar: AppBar(title: const Text('DIAGNÓSTICO')),
+      // Sin superposición: es la pantalla con más texto técnico pequeño de la
+      // app, y la textura solo le resta legibilidad.
+      superposicion: false,
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           HudPanel(
             title: 'PUENTE',
-            accent: DedsecColors.ok,
-            trailing: const StatusLed(color: DedsecColors.ok, size: 9),
+            accent: AegisPalette.ok,
+            trailing: const StatusLed(color: AegisPalette.ok, size: 9),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   host.apiHost,
-                  style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 13.5, color: DedsecColors.fg),
+                  style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 13.5, color: AegisPalette.fg),
                 ),
                 const SizedBox(height: 2),
                 Row(
@@ -41,22 +50,22 @@ class ConnectivityPage extends ConsumerWidget {
                     if (host.usesMeshHostname) ...[
                       const Text(
                         '▲',
-                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.info),
+                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.info),
                       ),
                       const SizedBox(width: 5),
                       const Text(
                         'privada · MagicDNS',
-                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.info),
+                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.info),
                       ),
                     ] else ...[
                       const Text(
                         '●',
-                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgFaint),
+                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.fgFaint),
                       ),
                       const SizedBox(width: 5),
                       const Text(
                         'loopback local',
-                        style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgFaint),
+                        style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.fgFaint),
                       ),
                     ],
                   ],
@@ -68,19 +77,19 @@ class ConnectivityPage extends ConsumerWidget {
           health.when(
             loading: () => const HudPanel(
               title: 'ESTADO',
-              trailing: StatusLed(color: DedsecColors.warn, size: 9, pulse: true),
+              trailing: StatusLed(color: AegisPalette.warn, size: 9, pulse: true),
               child: Text(
                 '// sondeando nodos…',
-                style: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.fgDim),
+                style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, color: AegisPalette.fgDim),
               ),
             ),
             error: (e, _) => HudPanel(
               title: 'SIN VÍA',
-              accent: DedsecColors.danger,
-              trailing: const StatusLed(color: DedsecColors.danger, size: 9),
+              accent: AegisPalette.danger,
+              trailing: const StatusLed(color: AegisPalette.danger, size: 9),
               child: Text(
                 '// no se alcanzó el bridge\n$e',
-                style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, color: DedsecColors.danger),
+                style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, color: AegisPalette.danger),
               ),
             ),
             data: (h) => Column(
@@ -124,12 +133,12 @@ class ConnectivityPage extends ConsumerWidget {
                       children: [
                         Text(
                           '[health] host=${h.host} hermes=${h.hermesOk ? 'ok' : 'down'} ollama=${h.ollamaOk ? 'ok' : 'down'}',
-                          style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 10.5, color: DedsecColors.fgDim),
+                          style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 10.5, color: AegisPalette.fgDim),
                         ),
                         const SizedBox(height: 4),
                         Text(
                           '[agents] ${h.agents.join(' ')}',
-                          style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 10.5, color: DedsecColors.fgDim),
+                          style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 10.5, color: AegisPalette.fgDim),
                         ),
                       ],
                     ),
@@ -142,7 +151,7 @@ class ConnectivityPage extends ConsumerWidget {
           OutlinedButton.icon(
             onPressed: () => ref.invalidate(healthProvider),
             icon: const Icon(Icons.refresh, size: 16),
-            label: const Text('RESCAN ▸'),
+            label: const Text('Releer'),
           ),
           const SizedBox(height: 24),
         ],
@@ -156,7 +165,7 @@ class ConnectivityPage extends ConsumerWidget {
     required String sub,
     required bool ok,
   }) {
-    final color = ok ? DedsecColors.ok : DedsecColors.danger;
+    final color = ok ? AegisPalette.ok : AegisPalette.danger;
     return HudPanel(
       title: title,
       accent: color,
@@ -166,13 +175,13 @@ class ConnectivityPage extends ConsumerWidget {
         children: [
           Text(
             value,
-            style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 13, color: DedsecColors.fg),
+            style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 13, color: AegisPalette.fg),
           ),
           if (sub.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
               sub,
-              style: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgFaint),
+              style: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.fgFaint),
             ),
           ],
         ],

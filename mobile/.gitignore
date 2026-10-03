@@ -46,3 +46,14 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Material de marca sin decidir. `assets/brand/inbox/` es un almacén de lo que
+# te gusta, no algo que la app cargue: no está en `pubspec.yaml` y no entra en el
+# APK. Ver `assets/brand/README.md`.
+assets/brand/inbox/
+
+# La marca anterior: el cráneo ASCII del arranque y el JPG del que se derivó.
+# El arranque ya usa el glifo vectorial de `lib/core/widgets/aegis_mark.dart`.
+# Se ignoran en vez de borrarse: son la referencia de lo que se descartó.
+assets/brand/aegis_mark.png
+assets/brand/aegis_mark_source.jpg

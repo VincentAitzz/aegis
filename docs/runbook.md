@@ -135,8 +135,19 @@ install_apk(target='telefono')   # analyze + tests + humo en emulador
 - Instalación y **lanzar** son pasos separados. Por defecto solo se instala.
 - La aprobación es de **un solo uso** y la gasta la propia tool: el agente nunca
   ve el token.
-- El aviso al móvil es `adb shell cmd notification post`, no FCM: requiere adb
-  conectado (A-020, A-021).
+- **Un aviso en el móvil, y solo uno**: lo publica la propia app con su icono y
+  su canal, y lleva la cuenta de pendientes —tocas y se abre el cuadro de
+  decisión, sin sacar la app de la que estés usando. El puente lo verifica contra
+  `dumpsys` y, si no llega, **lo dice** con el motivo en vez de suponer.
+  `AEGIS_AVISO_INTERMEDIO=emulador` lo manda al emulador, `=ninguno` lo apaga.
+  No es FCM: requiere adb conectado (A-020, A-021, A-029, A-042).
+- **Aprobar instala solo**: el token de un solo uso lo gasta el bridge dentro de
+  `POST /deploys/{id}/instalar`. Si no hay teléfono por adb, la puerta se cierra y
+  sale un aviso de fallo —no se finge que se instaló (A-045).
+- **Si no llegan los avisos**, mira el permiso del sistema: las notificaciones de
+  Aegis pueden estar apagadas, y sin `POST_NOTIFICATIONS` no hay nada que hacer.
+  La app enseña un aviso en pantalla solo cuando hay algo pendiente, y lo
+  desaparecer en cuanto lo concedes es la señal de que ya está.
 - **La primera instalación no pide aprobación**, porque el botón para aprobar está
   dentro de la app que aún no está. Aun así exige la puerta completa y nunca abre
   la app (A-023).

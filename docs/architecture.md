@@ -55,11 +55,47 @@ un contrato simple REST+WS, y hace de **cola/proxy** de eventos.
 Clean architecture por capas:
 
 ```
-core/        config (API_HOST via --dart-define), network (dio + socket con reconexión)
+core/        theme (aegis_palette + aegis_theme), config (API_HOST), network,
+             widgets (glifo, arranque, panel, LED, superposición)
 data/        models (DTOs) + repositorio (AgentRepositoryImpl)
 domain/      contrato AgentRepository (interfaz)
-presentation providers (repos, health, TaskSessionController), pages, widgets
+presentation shell (AegisSection + AegisShell), providers, pages, widgets
 ```
+
+#### El shell: una sección es una entrada, no una pantalla
+
+`presentation/shell/aegis_section.dart` tiene el registro `kSecciones`. **Añadir
+un apartado es añadir una línea ahí**: `alias`, etiqueta, iconos, la fábrica de
+su pantalla y si necesita el puente. El shell (`AegisShell`) pinta la barra y
+un `IndexedStack` —que conserva el estado de todas las secciones—, y pone la
+puerta puesta a las que lo necesitan: sin bridge, la sección explica en vez de
+quedarse en blanco.
+
+Esto existe porque antes `app.dart` iba directo a `HomePage`, que eran 626 líneas
+con tres widgets privados dentro. Cuando por fin haya cuatro apartados, nadie
+recuerda qué había en la línea 300.
+
+#### La marca es código, no imágenes
+
+El glifo se pinta en vivo con `CustomPaint` (`core/widgets/aegis_mark.dart`), con
+el núcleo latiendo. **No hay ninguna imagen de marca en el APK**: lo único que se
+empaqueta de `assets/` son las tipografías. Los PNG de `assets/brand/derivados/`
+son solo para el lanzador, que no admite un widget, y salen de
+`assets/brand/derivados/aegis_mark.svg`. `assets/brand/inbox/` es el almacén de
+referencias del usuario: no se declara en `pubspec.yaml`, así que no entra en el
+build. Ver `mobile/assets/brand/README.md`.
+
+El color de marca (`aegis_palette.dart`) es lo que `mcp_ops.current_brand()` lee
+para no compilar un APK sin identidad. Busca en `RUTAS_PALETA` —varios nombres,
+el bueno el primero— y si no encuentra ninguna **niega en vez de adivinar**
+(A-028).
+
+#### El arranque solo dice lo comprobado
+
+`core/widgets/boot_screen.dart` recibe de `app.dart` lo que el provider de salud
+**sabe de verdad**, y lo imprime línea a línea. No anuncia nada que no haya
+preguntado: si el puente no contesta, lo dice. Antes anunciaba `handshake ok` y
+`auth ok` a ciegas (A-031).
 
 - **`API_HOST`**: inyectado en build-time; `localhost` (emulador/adb reverse) o
   `aegis.<tailnet>.ts.net` (malla MagicDNS). Sin IPs estáticas.
@@ -70,6 +106,64 @@ presentation providers (repos, health, TaskSessionController), pages, widgets
   acumula `finalText` desde `text.delta`, gestiona aprobaciones, steer y stop.
 - Reconexión del WS con backoff (2 s→30 s, máx. 8); al reconectar se re-suscribe
   y el replay + dedupe hacen el resto.
+
+### 2.3 Qué puede hacer sin preguntar (`app/autonomy.py`)
+
+Aegis tiene 18 herramientas deterministas. Lo que faltaba era una respuesta a
+*¿qué puede hacer sin preguntarme?*. Sin ella hay dos opciones y las dos son
+malas: no dejarle hacer nada —y entonces es un buscapersonas— o dejarle todo —y
+entonces la confianza es un acto de fe que se gasta la primera vez que se
+equivoca.
+
+La autonomía es una **lista explícita en tres niveles**, y la decide el **nombre**
+de la tool, no el contexto:
+
+| Nivel | Tools | Qué hace |
+|---|---|---|
+| `libre` | `aegis_read_file`, `repo_verify`, `projects_list`, `registry_list`, `ficha_read`, `db_query`, `adb_devices`, `deploy_estado`, `verify_deploy` | Sin preguntar, sin avisar |
+| `con_permiso` | `aegis_write_file`, `aegis_patch_file` | Solo en proyectos marcados. Los tres guardarraíles intactos |
+| `requiere_ok` | `db_migrate`, `neon_branch`, `build_apk`, `install_apk`, `project_create`, `adb_connect`, `deploy_smoke` | Siempre pregunta, en los tres modos |
+
+Un tool nueva cae en `requiere_ok`: un nivel por defecto permisivo concede
+permisos a medida que se añaden herramientas, sin que nadie lo decida.
+
+**El ciclo**: Aegis se para con `fin: "esperando_ok"` y una petición con el motivo
+en sus palabras. Apruebas → token de un solo uso → relanzas con `token` y sigue.
+Deniegas con un motivo → ese motivo se inyecta en el prompt del siguiente run
+bajo *Lo que ya me dijiste que no*. No hay modo que dispense de la cola (A-036).
+
+El token valida **la llamada, no el run**: un permiso para
+`aegis_write_file(path=X)` no autoriza `aegis_write_file(path=Y)` (A-033).
+
+**El proyecto marcado es la puerta principal**, y por algo concreto: sin
+verificador declarado no hay contra qué comprobar que el trabajo quedó bien. Tres
+de los ocho proyectos del registro no lo tienen, así que sus interruptores están
+deshabilitados y **dicen cuál falta** (A-035).
+
+**La base se mide antes de escribir**, una vez por run, y se compara por **número
+de problemas**, no por rojo/verde: `trazeurs` llega con 452 issues de la
+plantilla, así que "está en rojo" es su estado normal. Y un verificador que no se
+puede ejecutar da `rojo: None`, no `True`: un freno permanente es un freno que
+nadie mira (A-035).
+
+### 2.4 Tus cosas y lo que Aegis recuerda
+
+`app/notas.py` guarda notas, tareas y recordatorios en `data/aegis/notas.sqlite3`.
+**No van a la memoria del agente** a propósito: `app/memory` guarda episodios de
+runs y solo se inyectan al prompt; una nota tuya no es un episodio, y mezclarlas
+haría que borrar una nota tocara la memoria del modelo.
+
+Lo que sí se expone de la memoria (`GET /memoria`) es **solo metadato** —qué
+hizo, cuándo, con cuántas herramientas— y **solo `outcome == success`**. El
+prompt y la respuesta se quedan en su almacén: todo lo que le cuentas a Aegis
+queda a un `GET` de distancia, y el texto no aporta para la lista que se pinta
+(A-016).
+
+`GET /runs` lee los JSONL de disco. Antes el historial vivía solo en
+`_AUTOPILOT_RUNS`, un dict en memoria con tope de 50: eso no era una caché, era
+una pérdida de datos disfrazada de feature. Y **los runs de autopilot no
+escribían JSONL** —los escribía `relay`, que solo ve Hermes—, así que la
+persistencia fue A-034 hasta que `_run_autopilot_once` los escribió.
 
 ## 3. Contrato
 
@@ -203,9 +297,34 @@ máquina es x86_64.
 - `install_apk` apunta al emulador por defecto. `resolver()` **no tiene** un valor
   por defecto que alcance el teléfono: el destino se nombra, siempre.
 - Instalar en el teléfono pasa por `app/deploy.py`: verificación (analyze, tests
-  y humo en emulador), **autorización de un solo uso** aprovada en el móvil, y un
-  aviso al teléfono. Instalar y abrir son pasos separados, y por defecto solo se
-  instala.
+  y humo en emulador), **autorización de un solo uso** aprovada en el móvil.
+  Instalar y abrir son pasos separados, y por defecto solo se instala.
+- **El aviso lo publica Aegis, no el shell.** El puente solo despierta al
+  receptor (`am broadcast`); la notificación la pone `NotificacionReceiver`, que
+  lee `/deploys` y la publica con el icono, el canal y el toque de Aegis. Con
+  `cmd notification post` la firmaba `com.android.shell`: sin su icono, sin su
+  permiso (`POST_NOTIFICATIONS` es de la app) y sin nada que abrir. Es A-042.
+- **La entrega se comprueba.** `_verificar_aviso` lee `dumpsys notification` y, si
+  el registro no está, devuelve `"AVISO NO LLEGÓ"` con el `appop` incluido. Un
+  `exit=0` no es prueba de nada: durante un tiempo el puente escribió «aviso
+  enviado» de algo que no existía.
+- **Un aviso, y uno solo.** La app publica un aviso con **ID fijo** y el número de
+  pendientes, así que se actualiza en sitio en vez de acumularse; el puente
+  deduplica por motivo dentro de `VENTANA_AVISO` (300 s). El aviso va **al
+  teléfono** (`AVISO_INTERMEDIO`, configurable con `AEGIS_AVISO_INTERMEDIO`),
+  porque se aprueba desde ahí: un aviso que hay que decidir en el móvil tiene que
+  llegar al móvil. Sin teléfono a mano cae al emulador. Antes iba al emulador
+  siempre, y la razón era buena (el aviso viejo no era accionable) pero ya no
+  aplica (A-042, A-043).
+- **Aprobar instala, sin intermediarios.** `POST /deploys/{id}/instalar` canjea el
+  token **dentro del bridge** y llama a `adb install` en un hilo. Antes aprobar
+  devolvía un token y el agente tenía que volver a pedir la instalación para
+  gastarlo: eso no era segundo plano, era que el agente se enterara. El token no
+  sale de ahí, que es lo único que lo mantiene de un solo uso.
+- **Lo aprobado y lo ejecutado son el mismo binario.** La petición guarda
+  `tamaño-mtime` del APK; al instalar se vuelve a mirar y, si cambió, se niega.
+  Entre pedir el OK y pulsar «sí» pueden pasar minutos, y en ese rato una
+  compilación deja otro APK en la misma ruta.
 - El humo no basta con que la app arranque: exige que el bridge reciba una
   llamada marcada como del emulador. Sin la cabecera `X-Aegis-Origen`, el
   emulador y el teléfono serían la misma línea en el log —los dos llegan por

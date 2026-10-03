@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -110,9 +110,26 @@ def build_system_prompt(instructions: str = "", project: str = "",
         )
     if memory:
         parts.append("EXPERIENCIA PASADA RELEVANTE:\n" + memory)
+    # Lo que el usuario ya ha rechazado, con su motivo. Sin esto la columna
+    # `razon_denegacion` se escribe y no la lee nadie: sería un registro del
+    # bridge, no una memoria del agente.
+    denegado = _denegaciones_recientes()
+    if denegado:
+        parts.append(denegado)
     if instructions:
         parts.append("INSTRUCCIONES DE ESTA TAREA:\n" + instructions)
     return "\n\n".join(parts)
+
+
+def _denegaciones_recientes(limite: int = 4) -> str:
+    """Lo que le han dicho que no. Envuelto en try porque la autonomía es un
+    módulo aparte y este bucle no debe caer si su almacén no está."""
+    try:
+        from .autonomy import resume_denegaciones
+        return resume_denegaciones(limite=limite)
+    except Exception as exc:  # noqa: BLE001 — el prompt nunca es motivo de caída
+        log.debug("no pude leer las denegaciones: %s", exc)
+        return ""
 
 
 class ToolNotAllowed(ValueError):
@@ -259,7 +276,11 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         max_steps: int = MAX_STEPS, instructions: str = "",
                         project: str = "", memory: str = "",
                         gate: Any = None,
-                        on_step: Any = None) -> dict[str, Any]:
+                        on_step: Any = None,
+                        run_id: str = "run_sin_id",
+                        autonomy: Any = None,
+                        token: str = "",
+                        estado_base: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza.
 
     `gate` es el corrector de una sola llamada por paso: `await gate(step, tool,
@@ -271,6 +292,15 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     `on_step` es `await on_step(step, entry)` y se llama con cada entrada de la
     traza en cuanto existe. Sin él el run es una caja negra: en un 7B un paso
     puede tardar medio minuto, y el móvil necesita ver que avanza.
+
+    `autonomy` decide **antes** de ejecutar si una llamada está permitida. No es
+    un filtro de la traza: si una tool no está autorizada, `_execute` no llega a
+    llamarse. Un permiso comprobado después de la escritura es un informe, y un
+    informe llega tarde.
+
+    Cuando la decisión es "pregunta", el run **termina** con `fin:
+    "esperando_ok"` y devuelve el id de la petición. No es un fallo ni un paso
+    más: es el run esperando a una persona, y el móvil lo pinta como tal.
     """
     tools = _tools_schema()
     messages: list[dict[str, Any]] = [
@@ -333,8 +363,73 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 break
 
             messages.append({"role": "assistant", "content": text or "(tool call)"})
+            # El autopilot también «habla»: cuando el modelo narra lo que va a
+            # hacer, hay texto saliendo. Sin esto, el glifo se quedaría en celeste
+            # durante un trabajo de veinte pasos, que es justo cuando más está
+            # trabajando y menos parece que habla. Ver `app/actividad.py`.
+            if (narracion := (text or "").strip()) and not narracion.startswith("{"):
+                from . import actividad
+                actividad.marcar("autopilot", run_id)
             for name, args in calls:
+                # El texto del modelo **sí** va en la traza. Antes no, y era una
+                # pérdida doble: se perdía para el móvil (que solo pintaba
+                # "projects_list OK") y para el log de disco. Es la diferencia
+                # entre ver qué herramienta se ejecutó y ver por qué la pidió.
+                #
+                # Se corta a 400 caracteres porque es una frase de intención, no
+                # un informe: más de eso es el modelo divagando.
                 entry: dict[str, Any] = {"step": step, "tool": name, "arguments": args}
+                if (narracion := (text or "").strip()) and not narracion.startswith("{"):
+                    entry["text"] = narracion[:400]
+
+                # La autonomía se consulta **antes** de ejecutar, nunca después.
+                # Consultarla después sería un informe, y un informe llega tarde:
+                # la escritura ya está en el disco.
+                if autonomy is not None:
+                    veredicto = autonomy.decide(
+                        name, args, run_id=run_id, paso=step,
+                        estado_base=estado_base, token=token)
+                    entry["autonomia"] = {"ok": veredicto.ok, "motivo": veredicto.motivo,
+                                          "peticion": veredicto.peticion}
+                    if not veredicto.ok and veredicto.peticion:
+                        # El run se para con un motivo que el móvil sabe leer: no
+                        # es un fallo, es que alguien tiene que responder. Se
+                        # registra igual en la traza porque el dato es ese.
+                        entry["ok"] = False
+                        entry["result"] = (
+                            f"ESPERO TU OK. {veredicto.motivo}\n"
+                            f"id de peticion: {veredicto.peticion}. "
+                            f"Esta llamada NO se ha ejecutado. Apruébala en el "
+                            f"móvil y vuelve a pedirme lo mismo.")
+                        trace.append(entry)
+                        if on_step is not None:
+                            await on_step(step, entry)
+                        return {
+                            "model": model,
+                            "answer": f"Me he parado antes de usar `{name}`.\n\n"
+                                      f"{veredicto.motivo}\n\n"
+                                      f"No he hecho nada todavía. Te lo pregunto "
+                                      f"porque no me autorizaste a hacerlo solo.",
+                            "steps": len(trace),
+                            "trace": trace,
+                            "fin": "esperando_ok",
+                            "peticion": veredicto.peticion,
+                        }
+                    if not veredicto.ok:
+                        # Un "no" con motivo: Aegis lo sabe y puede seguir con
+                        # otra cosa. No es una puerta cerrada, es una respuesta.
+                        entry["ok"] = False
+                        entry["result"] = f"NO AUTORIZADO: {veredicto.motivo}"
+                        trace.append(entry)
+                        if on_step is not None:
+                            await on_step(step, entry)
+                        messages.append({
+                            "role": "user",
+                            "content": f"NO PUEDES HACER ESTO: {veredicto.motivo}\n"
+                                       f"Sigue con otra cosa o da esto por terminado.",
+                        })
+                        continue
+
                 try:
                     result = _execute(name, args)
                 except (ToolNotAllowed, ValueError, TypeError) as exc:

@@ -35,6 +35,23 @@ class Settings(BaseSettings):
     # (app/neon.py). Aquí solo vive la key, en el entorno y no en el repo.
     neon_api_key: str = ""
 
+    #: Clave de la API de operación. Vacía = **sin auth**, que es lo que había
+    #: antes y lo que hay hoy para todo lo existente.
+    #:
+    #: ## Por qué existe y por qué está vacía por defecto
+    #: El bridge no tenía autenticación y el CORS era `*`. Mientras la única
+    #: superficie era "lanzar una tarea y ver su traza", eso era asumible: la
+    #: cola es privada por construcción. Pero los endpoints que añaden poder —
+    #: dar permisos de escritura, denegar aprobaciones, leer notas— cambian de
+    #: categoría: sin clave, cualquiera que llegue a la tailnet puede concederle
+    #: permiso de escritura a Aegis sobre tus proyectos.
+    #:
+    #: **No es un salto al vacío.** Lo viejo se queda como está y lo nuevo nace
+    #: cerrado: así la app no se rompe el día que la gires. Y se gira por nombre
+    #: versionado (`AEGIS_API_KEY_V2` → `V3`), nunca sobreescribiendo la que
+    #: está en uso.
+    aegis_api_key: str = ""
+
     # -- Observabilidad -----------------------------------------------------
     log_dir: str = "data/logs"
 

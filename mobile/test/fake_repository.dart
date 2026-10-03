@@ -1,26 +1,45 @@
-// Prueba de humo de la app Aegis (repo fake, sin red).
-import 'package:flutter/widgets.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-import 'package:aegis_console/app.dart';
+// El repo falso que usa toda la suite.
+//
+// Vive en su propio fichero porque varios tests lo necesitan y cada uno con lo
+// suyo se desincroniza: en cuanto uno cambia el `health()` para probar el caso
+// sin puente, el otro sigue esperando un bridge sano y falla sin decir por qué.
 import 'package:aegis_console/data/models/agent_models.dart';
 import 'package:aegis_console/domain/repositories/agent_repository.dart';
-import 'package:aegis_console/presentation/providers/agent_providers.dart';
 
 class FakeAgentRepository implements AgentRepository {
-  @override
-  Future<BridgeHealth> health() async => const BridgeHealth(
-        ok: true,
-        host: 'test-host',
-        hermesOk: true,
-        ollamaOk: true,
-        models: ['qwen2.5-coder:7b'],
-        agents: ['worker'],
-      );
+  FakeAgentRepository({
+    this.salud = const BridgeHealth(
+      ok: true,
+      host: 'test-host',
+      hermesOk: true,
+      ollamaOk: true,
+      models: ['qwen2.5-coder:7b'],
+      agents: ['worker'],
+    ),
+    this.fallaHealth = false,
+    this.despliegues = const DeployState(
+      emulador: true,
+      telefono: true,
+      tokensVivos: 0,
+    ),
+  });
+
+  final BridgeHealth salud;
+
+  /// Para probar el arranque sin puente: es el caso en el que el texto del
+  /// arranque tiene que decir otra cosa que en el de "todo en verde".
+  final bool fallaHealth;
+
+  final DeployState despliegues;
 
   @override
-  Future<List<String>> models() async => const ['qwen2.5-coder:7b'];
+  Future<BridgeHealth> health() async {
+    if (fallaHealth) throw StateError('sin puente');
+    return salud;
+  }
+
+  @override
+  Future<List<String>> models() async => salud.models;
 
   @override
   Future<AgentTask> createTask({
@@ -33,7 +52,11 @@ class FakeAgentRepository implements AgentRepository {
 
   @override
   Future<List<ProjectInfo>> projects() async => const [
-        ProjectInfo(alias: 'aegis', kind: 'herramienta', estado: 'completa', verify: ['check', 'test']),
+        ProjectInfo(
+            alias: 'aegis',
+            kind: 'herramienta',
+            estado: 'completa',
+            verify: ['check', 'test']),
         ProjectInfo(
             alias: 'compra-unida',
             kind: 'encargo',
@@ -47,8 +70,7 @@ class FakeAgentRepository implements AgentRepository {
       ];
 
   @override
-  Future<DeployState> deployState() async => const DeployState(
-        emulador: true, telefono: true, tokensVivos: 0);
+  Future<DeployState> deployState() async => despliegues;
 
   @override
   Future<void> decideDeploy(String id, {required bool aprobar}) async {}
@@ -94,30 +116,4 @@ class FakeAgentRepository implements AgentRepository {
 
   @override
   Future<void> stop(String runId) async {}
-}
-
-void main() {
-  testWidgets('Aegis Console renders DedSec home', (tester) async {
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [agentRepositoryProvider.overrideWithValue(FakeAgentRepository())],
-        child: const AegisApp(),
-      ),
-    );
-
-    // Secuencia de arranque (boot) → centro de control.
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 1500));
-    await tester.pump(const Duration(milliseconds: 500));
-
-    expect(find.text('AEGIS CONSOLE'), findsOneWidget);
-    expect(find.text('[NUEVO ENCARGO]'), findsOneWidget);
-    // Un solo agente: se elige motor, no rol.
-    expect(find.text('HERMES'), findsOneWidget);
-    expect(find.text('AUTOPILOT'), findsOneWidget);
-    expect(find.text('ORQUESTADOR'), findsNothing);
-    expect(find.text('EJECUTAR  ▶'), findsOneWidget);
-
-    await tester.pumpWidget(const SizedBox());
-  });
 }

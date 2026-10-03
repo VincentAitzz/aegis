@@ -1,29 +1,34 @@
-/// Tema oscuro DedSec: negro de base, magenta de marca, tipografía mono +
+/// Tema oscuro de Aegis: negro de base, ámbar de marca, tipografía mono +
 /// Oswald para títulos. Esquinas duras y bordes en vez de sombras.
+///
+/// El borde en lugar de la sombra es una decisión, no una manía: sobre negro
+/// una sombra no se ve, así que el separador tiene que ser un trazo. Y es lo que
+/// sostiene la lectura de una traza larga, que es donde vive casi toda la
+/// información de esta app.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'dedsec_colors.dart';
+import 'aegis_palette.dart';
 
 abstract final class AegisTheme {
   static TextStyle disp(double size, FontWeight weight, double lsp) =>
       TextStyle(
-        fontFamily: DedsecColors.display,
+        fontFamily: AegisPalette.display,
         fontSize: size,
         fontWeight: weight,
         letterSpacing: lsp,
         height: 1.1,
-        color: DedsecColors.fg,
+        color: AegisPalette.fg,
       );
 
   static TextStyle mono(double size, [double lsp = 0.5]) => TextStyle(
-        fontFamily: DedsecColors.mono,
+        fontFamily: AegisPalette.mono,
         fontSize: size,
         letterSpacing: lsp,
         height: 1.5,
-        color: DedsecColors.fg,
+        color: AegisPalette.fg,
       );
 
   static OutlineInputBorder _border(Color c, [double w = 1]) =>
@@ -37,47 +42,47 @@ abstract final class AegisTheme {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
-        primary: DedsecColors.brand,
-        onPrimary: Color(0xFF07030A),
-        secondary: DedsecColors.info,
+        primary: AegisPalette.brand,
+        onPrimary: Color(0xFF1A1206),
+        secondary: AegisPalette.info,
         onSecondary: Color(0xFF03121A),
-        surface: DedsecColors.bg2,
-        onSurface: DedsecColors.fg,
-        error: DedsecColors.danger,
+        surface: AegisPalette.bg2,
+        onSurface: AegisPalette.fg,
+        error: AegisPalette.danger,
         onError: Color(0xFF1A0603),
-        secondaryContainer: DedsecColors.bg2,
-        tertiaryContainer: DedsecColors.bg2,
-        outline: DedsecColors.line,
+        secondaryContainer: AegisPalette.bg2,
+        tertiaryContainer: AegisPalette.bg2,
+        outline: AegisPalette.line,
       ),
-      scaffoldBackgroundColor: DedsecColors.bg0,
-      canvasColor: DedsecColors.bg0,
+      scaffoldBackgroundColor: AegisPalette.bg0,
+      canvasColor: AegisPalette.bg0,
       splashFactory: NoSplash.splashFactory,
       highlightColor: Colors.transparent,
       visualDensity: VisualDensity.compact,
-      fontFamily: DedsecColors.mono,
+      fontFamily: AegisPalette.mono,
       textTheme: const TextTheme(
-        displayLarge: TextStyle(fontFamily: DedsecColors.display, fontSize: 36, fontWeight: FontWeight.w700, letterSpacing: 6, height: 1.1, color: DedsecColors.fg),
-        displayMedium: TextStyle(fontFamily: DedsecColors.display, fontSize: 30, fontWeight: FontWeight.w700, letterSpacing: 5, height: 1.1, color: DedsecColors.fg),
-        displaySmall: TextStyle(fontFamily: DedsecColors.display, fontSize: 24, fontWeight: FontWeight.w700, letterSpacing: 4, height: 1.15, color: DedsecColors.fg),
-        headlineMedium: TextStyle(fontFamily: DedsecColors.display, fontSize: 20, fontWeight: FontWeight.w600, letterSpacing: 4, height: 1.2, color: DedsecColors.fg),
-        titleLarge: TextStyle(fontFamily: DedsecColors.display, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: 3, height: 1.25, color: DedsecColors.fg),
-        titleMedium: TextStyle(fontFamily: DedsecColors.mono, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 1, height: 1.4, color: DedsecColors.fg),
-        titleSmall: TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1, height: 1.4, color: DedsecColors.fgDim),
-        bodyLarge: TextStyle(fontFamily: DedsecColors.mono, fontSize: 14, letterSpacing: 0.5, height: 1.5, color: DedsecColors.fg),
-        bodyMedium: TextStyle(fontFamily: DedsecColors.mono, fontSize: 13, letterSpacing: 0.5, height: 1.45, color: DedsecColors.fg),
-        bodySmall: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, letterSpacing: 0.5, height: 1.3, color: DedsecColors.fgDim),
-        labelLarge: TextStyle(fontFamily: DedsecColors.mono, fontSize: 13, letterSpacing: 1.5, height: 1.4, color: DedsecColors.fg),
-        labelMedium: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, letterSpacing: 1.5, height: 1.4, color: DedsecColors.fg),
-        labelSmall: TextStyle(fontFamily: DedsecColors.mono, fontSize: 10, letterSpacing: 1.5, height: 1.4, color: DedsecColors.fgFaint),
+        displayLarge: TextStyle(fontFamily: AegisPalette.display, fontSize: 36, fontWeight: FontWeight.w700, letterSpacing: 6, height: 1.1, color: AegisPalette.fg),
+        displayMedium: TextStyle(fontFamily: AegisPalette.display, fontSize: 30, fontWeight: FontWeight.w700, letterSpacing: 5, height: 1.1, color: AegisPalette.fg),
+        displaySmall: TextStyle(fontFamily: AegisPalette.display, fontSize: 24, fontWeight: FontWeight.w700, letterSpacing: 4, height: 1.15, color: AegisPalette.fg),
+        headlineMedium: TextStyle(fontFamily: AegisPalette.display, fontSize: 20, fontWeight: FontWeight.w600, letterSpacing: 4, height: 1.2, color: AegisPalette.fg),
+        titleLarge: TextStyle(fontFamily: AegisPalette.display, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: 3, height: 1.25, color: AegisPalette.fg),
+        titleMedium: TextStyle(fontFamily: AegisPalette.mono, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 1, height: 1.4, color: AegisPalette.fg),
+        titleSmall: TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1, height: 1.4, color: AegisPalette.fgDim),
+        bodyLarge: TextStyle(fontFamily: AegisPalette.mono, fontSize: 14, letterSpacing: 0.5, height: 1.5, color: AegisPalette.fg),
+        bodyMedium: TextStyle(fontFamily: AegisPalette.mono, fontSize: 13, letterSpacing: 0.5, height: 1.45, color: AegisPalette.fg),
+        bodySmall: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, letterSpacing: 0.5, height: 1.3, color: AegisPalette.fgDim),
+        labelLarge: TextStyle(fontFamily: AegisPalette.mono, fontSize: 13, letterSpacing: 1.5, height: 1.4, color: AegisPalette.fg),
+        labelMedium: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, letterSpacing: 1.5, height: 1.4, color: AegisPalette.fg),
+        labelSmall: TextStyle(fontFamily: AegisPalette.mono, fontSize: 10, letterSpacing: 1.5, height: 1.4, color: AegisPalette.fgFaint),
       ),
       appBarTheme: const AppBarTheme(
-        backgroundColor: DedsecColors.bg0,
+        backgroundColor: AegisPalette.bg0,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        titleTextStyle: TextStyle(fontFamily: DedsecColors.display, fontSize: 19, fontWeight: FontWeight.w600, letterSpacing: 4, height: 1.2, color: DedsecColors.fg),
-        iconTheme: IconThemeData(color: DedsecColors.fg),
+        titleTextStyle: TextStyle(fontFamily: AegisPalette.display, fontSize: 19, fontWeight: FontWeight.w600, letterSpacing: 4, height: 1.2, color: AegisPalette.fg),
+        iconTheme: IconThemeData(color: AegisPalette.fg),
         systemOverlayStyle: SystemUiOverlayStyle(
           statusBarColor: Colors.transparent,
           statusBarIconBrightness: Brightness.light,
@@ -85,88 +90,88 @@ abstract final class AegisTheme {
         ),
       ),
       cardTheme: const CardThemeData(
-        color: DedsecColors.bg1,
+        color: AegisPalette.bg1,
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(8)),
-          side: BorderSide(color: DedsecColors.line),
+          side: BorderSide(color: AegisPalette.line),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: DedsecColors.bg2,
-        hintStyle: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 13, color: DedsecColors.fgFaint),
+        fillColor: AegisPalette.bg2,
+        hintStyle: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 13, color: AegisPalette.fgFaint),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        border: _border(DedsecColors.line),
-        enabledBorder: _border(DedsecColors.line),
-        focusedBorder: _border(DedsecColors.brand, 1.4),
-        errorBorder: _border(DedsecColors.danger),
-        focusedErrorBorder: _border(DedsecColors.danger, 1.4),
+        border: _border(AegisPalette.line),
+        enabledBorder: _border(AegisPalette.line),
+        focusedBorder: _border(AegisPalette.brand, 1.4),
+        errorBorder: _border(AegisPalette.danger),
+        focusedErrorBorder: _border(AegisPalette.danger, 1.4),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: DedsecColors.brand,
-          foregroundColor: const Color(0xFF07030A),
-          disabledBackgroundColor: DedsecColors.line,
-          disabledForegroundColor: DedsecColors.fgFaint,
+          backgroundColor: AegisPalette.brand,
+          foregroundColor: const Color(0xFF1A1206),
+          disabledBackgroundColor: AegisPalette.line,
+          disabledForegroundColor: AegisPalette.fgFaint,
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-          textStyle: const TextStyle(fontFamily: DedsecColors.display, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 2.5),
+          textStyle: const TextStyle(fontFamily: AegisPalette.display, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 2.5),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: DedsecColors.brand,
-          disabledForegroundColor: DedsecColors.fgFaint,
-          side: const BorderSide(color: DedsecColors.line),
+          foregroundColor: AegisPalette.brand,
+          disabledForegroundColor: AegisPalette.fgFaint,
+          side: const BorderSide(color: AegisPalette.line),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-          textStyle: const TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.w600),
         ),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: ButtonStyle(
           backgroundColor: WidgetStateProperty.resolveWith(
             (states) => states.contains(WidgetState.selected)
-                ? DedsecColors.brand.withValues(alpha: .14)
-                : DedsecColors.bg2,
+                ? AegisPalette.brand.withValues(alpha: .14)
+                : AegisPalette.bg2,
           ),
           foregroundColor: WidgetStateProperty.resolveWith(
             (states) => states.contains(WidgetState.selected)
-                ? DedsecColors.brand
-                : DedsecColors.fgDim,
+                ? AegisPalette.brand
+                : AegisPalette.fgDim,
           ),
-          side: const WidgetStatePropertyAll(BorderSide(color: DedsecColors.line)),
+          side: const WidgetStatePropertyAll(BorderSide(color: AegisPalette.line)),
           shape: WidgetStatePropertyAll(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
           ),
-          textStyle: const WidgetStatePropertyAll(TextStyle(fontFamily: DedsecColors.mono, fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
+          textStyle: const WidgetStatePropertyAll(TextStyle(fontFamily: AegisPalette.mono, fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
           padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
         ),
       ),
       chipTheme: const ChipThemeData(
-        backgroundColor: DedsecColors.bg2,
-        side: BorderSide(color: DedsecColors.line),
-        labelStyle: TextStyle(fontFamily: DedsecColors.mono, fontSize: 11, color: DedsecColors.fgDim),
+        backgroundColor: AegisPalette.bg2,
+        side: BorderSide(color: AegisPalette.line),
+        labelStyle: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11, color: AegisPalette.fgDim),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(4))),
         padding: EdgeInsets.zero,
       ),
       snackBarTheme: const SnackBarThemeData(
-        backgroundColor: DedsecColors.bg2,
-        contentTextStyle: TextStyle(fontFamily: DedsecColors.mono, fontSize: 13, color: DedsecColors.fgDim),
+        backgroundColor: AegisPalette.bg2,
+        contentTextStyle: TextStyle(fontFamily: AegisPalette.mono, fontSize: 13, color: AegisPalette.fgDim),
         behavior: SnackBarBehavior.floating,
         elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(6)), side: BorderSide(color: DedsecColors.line)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(6)), side: BorderSide(color: AegisPalette.line)),
       ),
-      dividerTheme: const DividerThemeData(color: DedsecColors.line, thickness: 1, space: 1),
-      progressIndicatorTheme: const ProgressIndicatorThemeData(color: DedsecColors.brand, linearTrackColor: DedsecColors.bg2, circularTrackColor: DedsecColors.bg2),
+      dividerTheme: const DividerThemeData(color: AegisPalette.line, thickness: 1, space: 1),
+      progressIndicatorTheme: const ProgressIndicatorThemeData(color: AegisPalette.brand, linearTrackColor: AegisPalette.bg2, circularTrackColor: AegisPalette.bg2),
       textSelectionTheme: const TextSelectionThemeData(
-        cursorColor: DedsecColors.brand,
-        selectionColor: Color(0x4D2EFFA0),
-        selectionHandleColor: DedsecColors.brand,
+        cursorColor: AegisPalette.brand,
+        selectionColor: Color(0x4DFFB020),
+        selectionHandleColor: AegisPalette.brand,
       ),
-      iconTheme: const IconThemeData(color: DedsecColors.fg),
+      iconTheme: const IconThemeData(color: AegisPalette.fg),
     );
   }
 }

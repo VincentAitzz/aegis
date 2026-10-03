@@ -1,5 +1,5 @@
 name: aegis_console
-description: "A new Flutter project."
+description: "Aegis: el asistente personal, en el bolsillo. Cliente del bridge."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -49,12 +49,12 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
-  # Iconos del lanzador, generados desde `assets/brand/aegis_mark.png`.
+  # Iconos del lanzador, generados desde `assets/brand/derivados/`.
   #
-  # Se genera en vez de escribir los PNG a mano por dos cosas: las densidades se
+  # Se generan en vez de escribir los PNG a mano por dos cosas: las densidades se
   # calculan en vez de adivinarse, y sobre todo aparece el **ícono adaptativo**
-  # (`mipmap-anydpi-v26`), que el proyecto no tenía. Sin él, Android le aplica su
-  # máscara a un cuadrado heredado y el resultado se ve recortado.
+  # (`mipmap-anydpi-v26`). Sin él, Android aplica su máscara a un cuadrado
+  # heredado y el resultado se ve recortado (A-024).
   flutter_launcher_icons: ^0.14.4
 
 # For information on the generic Dart part of this file, see the
@@ -68,10 +68,13 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  assets:
-    # La marca grande. El original (`aegis_mark_source.jpg`) se versiona para poder
-    # re-encuadrar sin depender de ~/Descargas; solo se declara el PNG ya derivado.
-    - assets/brand/aegis_mark.png
+  # No hay sección `assets:` a propósito. El glifo de la marca se pinta en vivo
+  # con `CustomPaint` (`lib/core/widgets/aegis_mark.dart`), así que en el APK no
+  # hay ni un byte de imagen de marca: pesa cero y se ve nítido a cualquier
+  # densidad. Los PNG de `assets/brand/derivados/` son solo para el lanzador, que
+  # no admite un widget, y el lanzador no lee de aquí.
+  #
+  # Lo único que se empaqueta de `assets/` son las tipografías, de abajo.
 
   fonts:
     - family: ShareTechMono
@@ -86,27 +89,34 @@ flutter:
         - asset: assets/fonts/Oswald-Bold.ttf
           weight: 700
 
-# `adaptive_icon_foreground_inset` no es un número decorativo: el lienzo del
-# ícono adaptativo es de 108 dp y el lanzador descarta 18 dp por lado, así que
-# solo sobrevive el 66% central. Con 12 el cráneo se salía: la máscara circular le
-# cortaba los temporales y la mandíbula. Se comprobó renderizando la máscara del
-# lanzador con 12, 18 y 24; 18 es el primero en que la silueta cabe entera.
+# `adaptive_icon_foreground_inset` no es un número decorativo, y el motivo es el
+# de siempre: el lienzo del ícono adaptativo es de 108 dp y el lanzador descarta
+# 18 dp por lado, así que solo sobrevive el 66% central. Con 12 la marca anterior
+# se salía y la máscara circular le cortaba el cráneo. **Un número que parece de
+# correctitud no se verifica solo**: 18 se comprobó renderizando la máscara del
+# lanzador, y el ícono se juzga después de que el sistema la aplique, nunca sobre
+# el PNG (A-024).
 #
-# El fondo va en negro puro (`#000000`) y **no** se transparentiza el negro del
-# foreground: el ASCII tiene negros en el interior del cráneo y cualquier
-# `fuzz` los perforaría con agujeros. El fondo adaptativo hace ese papel.
+# La geometría viene de `assets/brand/derivados/aegis_mark.svg`, que es la
+# misma figura que pinta la app. Si cambias el glifo, el SVG y el `CustomPaint`
+# tienen que cambiar los dos, o el ícono y la app cuentan cosas distintas.
+#
+# El `foreground` va **sin fondo** y el negro lo pone `adaptive_icon_background`.
+# Con un rect negro dentro del foreground el resultado sale igual —negro sobre
+# negro— y no se ve que hay dos capas; el día que el fondo cambie, el ícono
+# tendrá una caja negra que nadie pidió.
 flutter_launcher_icons:
   # El nombre del fichero. El manifest apunta a `@mipmap/ic_launcher`, así que
   # esto tiene que ser exactamente eso: con otro nombre se generan los PNG y la
   # app sigue con el ícono de la plantilla.
   android: "ic_launcher"
   ios: false
-  image_path: "assets/brand/aegis_mark.png"
+  image_path: "assets/brand/derivados/aegis_mark.png"
 
   # `adaptive_icon_foreground` es obligatorio y no se deduce de `image_path`: sin
   # él no se genera nada adaptativo, que es justo lo que hace que Android 12+ no
   # recorte el ícono.
   adaptive_icon_background: "#000000"
-  adaptive_icon_foreground: "assets/brand/aegis_mark.png"
+  adaptive_icon_foreground: "assets/brand/derivados/aegis_mark_foreground.png"
   adaptive_icon_foreground_inset: 18
   min_sdk_android: 21
