@@ -212,6 +212,18 @@ class ProyectoOut(BaseModel):
     existe: bool = True
 
 
+@app.get("/fases")
+async def fases_listar() -> dict:
+    """Qué fases de trabajo existen, para que la app ofrezca elegir una.
+
+    La lista sale del disco: añadir `bridge/fases/x.md` la enciende, sin tocar
+    Python. Se declara en un endpoint y no en un enum porque el conjunto útil
+    cambia con lo que se vaya pensando.
+    """
+    from .fases import known_fases
+    return {"fases": known_fases()}
+
+
 class FichaIn(BaseModel):
     """El texto de una ficha ya revisado por la persona."""
     contenido: str = Field(min_length=1, max_length=20_000)
@@ -556,6 +568,14 @@ class AutopilotIn(BaseModel):
     #: `/aprobaciones` lo devolvía, y no había por dónde meterlo. La fila se
     #: marcaba "aprobada" y el paso volvía a pedir permiso para siempre.
     token: str = ""
+    #: Fase de trabajo, para el prompt: `idea`, `arquitectura`, o vacía.
+    #:
+    #: No es decoración. `bridge/fases/{fase}.md` se inyecta en el system prompt
+    #: **solo** en los runs que la piden, y por un motivo medido: A-016, el 7B
+    #: deja de emitir `tool_calls` cuando el prompt crece. Meter las fases en
+    #: `metodo.md` las pagaría **todos** los runs, incluidos los de operación
+    #: normal, que son los que más necesitan llamar tools.
+    fase: str = ""
 
 
 class AutopilotOut(BaseModel):
@@ -649,11 +669,12 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
         run_id=run_id,
         autonomy=autonomy_modulo,
         token=token,
+        fase=body.fase or "",
         estado_base=estado_base,
     )
-    log.info("autopilot %s: %d pasos, %d tools ejecutadas (proyecto=%s)",
+    log.info("autopilot %s: %d pasos, %d tools ejecutadas (proyecto=%s, fase=%s)",
              run_id, result["steps"], sum(1 for t in result["trace"] if t.get("tool")),
-             project or "-")
+             project or "-", body.fase or "-")
     # La traza va al disco. Sin esto, el JSONL del run solo lo escribía el relay
     # de Hermes y un run de autopilot **no existía** fuera del buffer en memoria:
     # reiniciar el bridge lo borraba sin dejar rastro. Y `GET /runs` leía ficheros
@@ -1307,8 +1328,23 @@ async def autonomy_desmarcar(alias: str,
 @app.get("/aprobaciones", )
 async def aprobaciones_listar(run_id: str = "",
                            _auth: None = Depends(exigir_token)) -> dict:
-    """Lo que Aegis quiere hacer y no se atreve a hacer solo."""
-    return {"pendientes": autonomy().pendientes(run_id)}
+    """Lo que Aegis quiere hacer y no se atreve a hacer solo.
+
+    Vienen **dos** listas, y no es un detalle de forma:
+
+    - `pendientes`: te están preguntando. Aquí no hay token, porque aún no has
+      decidido nada.
+    - `aprobadas`: ya dijiste que sí, el token está emitido y **nadie lo ha
+      gastado**. Es lo que hace posible cerrar el ciclo desde el móvil: relanzar
+      el run con ese token y que la llamada se ejecute sin volver a preguntar.
+
+    Sin la segunda lista, aprobar era un callejón sin salida: el token venía en
+    la respuesta del POST, la app lo descartaba, y si se cerraba antes de
+    relanzar ya no había dónde recuperarlo. Eso es un permiso que se cobra y
+    luego se tira, no una puerta.
+    """
+    return {"pendientes": autonomy().pendientes(run_id),
+            "aprobadas": autonomy().aprobadas_sin_gastar(run_id)}
 
 
 @app.post("/aprobaciones/{pet_id}", )

@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 import httpx
 
+from .fases import phase_context
 from .fichas import context_for
 from .method import method_context
 from .mcp_ops import coerce_args
@@ -91,8 +92,14 @@ def load_lessons(project: str) -> str:
 
 
 def build_system_prompt(instructions: str = "", project: str = "",
-                        memory: str = "") -> str:
-    """Sistema = identidad + método + base + lecciones + memoria + el spec."""
+                        memory: str = "", fase: str = "") -> str:
+    """Sistema = identidad + método + base + ficha + fases + lecciones + memoria + el spec.
+
+    `fase` inyecta `bridge/fases/{fase}.md`, que es donde vive lo que solo tiene
+    sentido mientras se piensa: qué es una idea, cuándo se puede nombrar una
+    tecnología. Va **después** de la ficha y **antes** de las lecciones, porque
+    las fasesomena lo que hay que hacer y las lecciones lo que no hay que repetir.
+    """
     parts = [SYSTEM_PROMPT]
     metodo = method_context()
     if metodo:
@@ -102,6 +109,9 @@ def build_system_prompt(instructions: str = "", project: str = "",
     ficha = context_for(project)
     if ficha:
         parts.append(ficha)
+    bloque_fase = phase_context(fase)
+    if bloque_fase:
+        parts.append(bloque_fase)
     lessons = load_lessons(project)
     if lessons:
         parts.append(
@@ -280,6 +290,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         run_id: str = "run_sin_id",
                         autonomy: Any = None,
                         token: str = "",
+                        fase: str = "",
                         estado_base: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza.
 
@@ -304,7 +315,8 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     """
     tools = _tools_schema()
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(instructions, project, memory)},
+        {"role": "system",
+         "content": build_system_prompt(instructions, project, memory, fase)},
         {"role": "user", "content": prompt},
     ]
     trace: list[dict[str, Any]] = []
@@ -391,6 +403,12 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         estado_base=estado_base, token=token)
                     entry["autonomia"] = {"ok": veredicto.ok, "motivo": veredicto.motivo,
                                           "peticion": veredicto.peticion}
+                    # El token era para **esa** llamada. En cuanto se gasta, el run
+                    # sigue por el camino normal: si se reenvía, todos los pasos
+                    # siguientes morirían con "ese permiso ya se usó", y hay medido
+                    # que eso es lo que pasaba tras un alta correcta.
+                    if veredicto.uso_token:
+                        token = ""
                     if not veredicto.ok and veredicto.peticion:
                         # El run se para con un motivo que el móvil sabe leer: no
                         # es un fallo, es que alguien tiene que responder. Se

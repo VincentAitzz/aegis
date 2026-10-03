@@ -26,6 +26,13 @@ abstract interface class AgentRepository {
   /// Proyectos que puede operar Aegis, con el estado de su ficha.
   Future<List<ProjectInfo>> projects();
 
+  /// Fases de trabajo que el puente ofrece: `idea`, `arquitectura`, …
+  ///
+  /// Vienen del disco del bridge, no de una lista en la app: cada fase es un
+  /// fichero que se puede escribir sin compilar nada. Vacía = ninguna, y la app
+  /// simplemente no muestra el selector.
+  Future<List<String>> fases();
+
   /// Despliegues esperando aprobación en el teléfono. Mientras haya algo aquí,
   /// Aegis **no ha instalado nada**: está esperando a que lo apruebes.
   Future<DeployState> deployState();
@@ -45,6 +52,8 @@ abstract interface class AgentRepository {
     int maxSteps,
     bool remember,
     bool verify,
+    String? token,
+    String? fase,
   });
 
   /// Progreso del run de autopilot. `AutopilotRun.finished` dice si paró.
@@ -104,10 +113,17 @@ abstract interface class AgentRepository {
   Future<List<String>> marcarProyecto(String alias, {required bool escribir});
 
   /// Lo que Aegis quiere hacer y no se atreve a hacer solo.
+  ///
+  /// Vienen las dos listas del puente: las que te preguntan (sin token) y las
+  /// que ya aprobaste y nadie ha gastado (con token, listas para relanzar).
   Future<List<Aprobacion>> aprobaciones();
 
-  /// Aprueba. Devuelve el token, que lo gasta el propio bridge.
-  Future<void> resolverAprobacion(String id, {required bool aprobar});
+  /// Aprueba o deniega. Al aprobar devuelve el **token de un solo uso**, que
+  /// solo vale para esa tool con esos argumentos; vacío al denegar.
+  ///
+  /// Antes esto devolvía `void` y el token se quedaba en la respuesta sin que
+  /// nadie lo leyera: aprobar era un callejón sin salida.
+  Future<String?> resolverAprobacion(String id, {required bool aprobar});
 
   /// **Por qué** denegas. Es lo que hace que la confianza crezca: no es que
   /// Aegis aprenda a tener cuidado, es que tú se lo dijiste una vez.

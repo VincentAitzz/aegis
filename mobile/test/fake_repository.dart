@@ -43,6 +43,13 @@ class FakeAgentRepository implements AgentRepository {
   List<Nota> notasFake = [];
   List<Tarea> tareasFake = [];
 
+  /// Lo que el app le mandó al puente de verdad, para poder afirmar que se
+  /// gastó. Un token de un solo uso que se puede gastar dos veces es una puerta
+  /// corriente, y eso se comprueba, no se supone.
+  List<String> tokensGastados = [];
+  List<String> fasesLanzadas = [];
+  List<String> promptsLanzados = [];
+
   /// Lo que el repo falso dice que Aegis hace. Por defecto, quieto: los tests
   /// que no hablan de esto no tienen que saber de él.
   ///
@@ -114,8 +121,17 @@ class FakeAgentRepository implements AgentRepository {
     int maxSteps = 6,
     bool remember = true,
     bool verify = false,
-  }) async =>
-      'autopilot_test';
+    String? token,
+    String? fase,
+  }) async {
+    promptsLanzados.add(prompt);
+    if (token != null && token.isNotEmpty) tokensGastados.add(token);
+    if (fase != null && fase.isNotEmpty) fasesLanzadas.add(fase);
+    return 'autopilot_test';
+  }
+
+  @override
+  Future<List<String>> fases() async => const ['idea', 'arquitectura'];
 
   @override
   Future<AutopilotRun> autopilotStatus(String runId) async => const AutopilotRun(
@@ -168,13 +184,34 @@ class FakeAgentRepository implements AgentRepository {
   Future<List<Aprobacion>> aprobaciones() async => aprobacionesFake;
 
   @override
-  Future<void> resolverAprobacion(String id, {required bool aprobar}) async {
+  Future<String?> resolverAprobacion(String id, {required bool aprobar}) async {
+    final peticion = aprobacionesFake.firstWhere((a) => a.id == id);
     aprobacionesFake = [...aprobacionesFake.where((a) => a.id != id)];
+    if (!aprobar) return null;
+    // Aprobar deja el permiso en la cola **con su token**, como hace el puente:
+    // es lo que permite relanzar sin volver a preguntar.
+    aprobacionesFake = [
+      ...aprobacionesFake,
+      Aprobacion(
+        id: peticion.id,
+        tool: peticion.tool,
+        motivo: peticion.motivo,
+        paso: peticion.paso,
+        runId: peticion.runId,
+        proyecto: peticion.proyecto,
+        creado: peticion.creado,
+        token: 'token_${peticion.id}',
+      ),
+    ];
+    return 'token_${peticion.id}';
   }
 
   @override
   Future<void> denegarConMotivo(String id, String motivo) async {
     denegacionesFake = [...denegacionesFake, motivo];
+    // El puente saca la petición de la cola al resolverla, approve o deny. Si el
+    // falso no lo hiciera, la tarjeta seguiría ahí después de responder.
+    aprobacionesFake = [...aprobacionesFake.where((a) => a.id != id)];
   }
 
   // -- tus cosas (fake) ----------------------------------------------------

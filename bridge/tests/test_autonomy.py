@@ -407,6 +407,154 @@ class TestAprobacionDeUnSoloUso(_Piso):
             self.assertIn("costura", autonomy.resume_denegaciones())
 
 
+class TestElTokenNoSeQuemaPorUnDesajuste(_Piso):
+    """Un permiso que no se puede usar es un permiso que hay que volver a pedir.
+
+    ## El fallo que esto previene
+    `decide()` gastaba el token **antes** de comprobar que la llamada era la
+    aprobada. Medido con `project_create`: el modelo pedía el alta con el
+    verificador como objeto en una llamada y como dos cadenas en la siguiente;
+    el token se gastaba en el intento que no encajaba, y el permiso quedaba
+    inservible. Tres intentos, tres aprobaciones, ninguna escritura.
+
+    Ahora se **mira** antes de cobrar: un desajuste devuelve el motivo y deja el
+    permiso vivo.
+    """
+
+    def _aprobar(self, tool="project_create", args=None):
+        pid = autonomy.decide(tool, args or {"alias": "acme"},
+                              run_id="r1", paso=1, almacen_=self.a).peticion
+        return pid, self.a.resolver(pid, "aprobar")["token"]
+
+    def test_el_desajuste_no_gasta_el_permiso(self):
+        _, token = self._aprobar()
+        d = autonomy.decide("project_create", {"alias": "otro"},
+                            run_id="r1", paso=1, almacen_=self.a, token=token)
+        self.assertFalse(d.ok)
+        # El motivo lo dice, porque si no parece un fallo del puente.
+        self.assertIn("otra llamada", d.motivo)
+        self.assertIn("No lo he gastado", d.motivo)
+        # Y el permiso sigue ahí para cuando el modelo repita la llamada buena.
+        self.assertEqual(len(self.a.aprobadas_sin_gastar()), 1)
+        self.assertIsNotNone(self.a.gastar(token))
+
+    def test_otra_tool_no_gasta_el_permiso(self):
+        _, token = self._aprobar()
+        d = autonomy.decide("build_apk", {"alias": "acme"},
+                            run_id="r1", paso=1, almacen_=self.a, token=token)
+        self.assertFalse(d.ok)
+        self.assertEqual(len(self.a.aprobadas_sin_gastar()), 1)
+
+    def test_si_coincide_se_gasta_y_pasa(self):
+        _, token = self._aprobar()
+        d = autonomy.decide("project_create", {"alias": "acme"},
+                            run_id="r1", paso=1, almacen_=self.a, token=token)
+        self.assertTrue(d.ok, d.motivo)
+        self.assertEqual(self.a.aprobadas_sin_gastar(), [])
+
+    def test_mirar_no_es_gastar(self):
+        _, token = self._aprobar()
+        self.assertIsNotNone(self.a.por_token(token))
+        self.assertIsNotNone(self.a.por_token(token))
+        self.assertEqual(len(self.a.aprobadas_sin_gastar()), 1,
+                         "mirar dos veces no puede gastar el token")
+        self.assertIsNone(self.a.por_token("inventado"))
+
+    def test_gastado_avisa_para_que_el_run_no_lo_repita(self):
+        """El veredicto dice que gastó el token, y el bucle deja de mandarlo.
+
+        Sin esto, tras un alta correcta el run seguía pasando el mismo token en
+        cada paso y todo lo demás moría con "ese permiso ya se usó" — medido: el
+        paso 2 del alta fue un `ficha_read` que es de las tools libres, y se
+        negó por un permiso que ya no tenía nada que ver con ella.
+        """
+        _, token = self._aprobar()
+        d = autonomy.decide("project_create", {"alias": "acme"},
+                            run_id="r1", paso=1, almacen_=self.a, token=token)
+        self.assertTrue(d.uso_token, "el bucle no puede saber que hay que soltarlo")
+        # Y sin token, una tool libre se evalúa por su nivel de verdad.
+        d2 = autonomy.decide("ficha_read", {"alias": "acme"},
+                             run_id="r2", paso=1, almacen_=self.a)
+        self.assertTrue(d2.ok, d2.motivo)
+        self.assertFalse(d2.uso_token)
+
+    def test_un_token_que_no_casa_no_se_gasta(self):
+        """Y por tanto sigue vivo para el paso en el que sí case."""
+        _, token = self._aprobar()
+        d = autonomy.decide("project_create", {"alias": "otro"},
+                            run_id="r1", paso=1, almacen_=self.a, token=token)
+        self.assertFalse(d.uso_token)
+        d2 = autonomy.decide("project_create", {"alias": "acme"},
+                             run_id="r1", paso=2, almacen_=self.a, token=token)
+        self.assertTrue(d2.ok, d2.motivo)
+
+
+class TestElPermisoNoSePierde(_Piso):
+    """Aprobar tiene que poder cerrarse, incluso desde otra app o más tarde.
+
+    El token solo vivía en la respuesta del POST: la app lo descartaba, y si se
+    cerraba entre "aprobar" y "relanzar" ya no había dónde recuperarlo. Eso es un
+    permiso que se cobra y luego se tira. Aquí se comprueba que la cola lo
+    devuelve mientras no se haya gastado, y que desaparece en cuanto se gasta.
+    """
+
+    def _aprobar(self, tool="db_migrate", args=None):
+        pid = autonomy.decide(tool, args or {"project": "compra-unida"},
+                              run_id="r1", paso=1, almacen_=self.a).peticion
+        return pid, self.a.resolver(pid, "aprobar")["token"]
+
+    def test_una_aprobada_sin_gastar_sigue_en_la_cola(self):
+        pid, token = self._aprobar()
+        self.assertEqual([p["id"] for p in self.a.pendientes()], [])
+        lista = self.a.aprobadas_sin_gastar()
+        self.assertEqual([p["id"] for p in lista], [pid])
+        self.assertEqual(lista[0]["token"], token)
+        self.assertEqual(lista[0]["tool"], "db_migrate")
+
+    def test_al_gastarse_deja_de_salir(self):
+        _, token = self._aprobar()
+        self.a.gastar(token)
+        self.assertEqual(self.a.aprobadas_sin_gastar(), [])
+
+    def test_las_pendientes_siguen_sin_token(self):
+        pid = autonomy.decide("db_migrate", {"project": "compra-unida"},
+                              run_id="r1", paso=1, almacen_=self.a).peticion
+        self.assertNotIn("token", self.a.pendientes()[0])
+        self.assertEqual(self.a.aprobadas_sin_gastar(), [])
+        del pid
+
+    def test_un_permiso_viejo_no_se_ofrece(self):
+        """Caduca. Un botón de relanzar sobre algo que nadie recuerda aprobar
+        es ruido, y la lista crecería sola si no caducara."""
+        _, token = self._aprobar()
+        # Envejecido: se resolvió hace tres días.
+        self.a._c.execute(
+            "UPDATE aprobaciones SET resuelto=datetime('now','-3 days')")
+        self.a._c.commit()
+        self.assertEqual(self.a.aprobadas_sin_gastar(), [])
+        # El canje sigue siendo válido si alguien lo guardó: caducar es no
+        # ofrecerlo, no romper un permiso ya concedido.
+        self.assertIsNotNone(self.a.gastar(token))
+
+    def test_el_endpoint_expone_las_dos_listas(self):
+        from fastapi.testclient import TestClient
+        from app import main as main_mod
+        _, token = self._aprobar()
+        _, token2 = self._aprobar(args={"project": "portafolio"})
+        self.assertTrue(token and token2)
+        with mock.patch.object(autonomy, "ALMACEN", self.a), \
+                mock.patch.object(main_mod, "autonomy", lambda: self.a):
+            cliente = TestClient(main_mod.app)
+            r = cliente.get("/aprobaciones",
+                            headers={"X-Aegis-Token": main_mod.settings.aegis_api_key})
+        self.assertEqual(r.status_code, 200)
+        cuerpo = r.json()
+        self.assertEqual(len(cuerpo["aprobadas"]), 2)
+        self.assertEqual(cuerpo["pendientes"], [])
+        # Lo que hace posible relanzar: el token viene en la lista.
+        self.assertTrue(all(p["token"] for p in cuerpo["aprobadas"]))
+
+
 class TestColaVisibleDesdeElMovil(_Piso):
     """Lo que el móvil ve tiene que ser suficiente para decidir."""
 

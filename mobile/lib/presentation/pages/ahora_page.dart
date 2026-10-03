@@ -75,7 +75,7 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
     }
   }
 
-  Future<void> _lanzar() async {
+  Future<void> _lanzar({String? token, String? proyectoForzado}) async {
     final prompt = _prompt.text.trim();
     if (prompt.isEmpty) return;
     setState(() {
@@ -83,13 +83,17 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
       _error = null;
     });
     try {
-      final proyecto = ref.read(selectedProjectProvider);
+      final proyecto = proyectoForzado ?? ref.read(selectedProjectProvider) ?? '';
+      final sinProyecto = proyecto.isEmpty ? null : proyecto;
+      final fase = ref.read(faseElegidaProvider);
       if (_autopilot) {
         final runId = await ref.read(agentRepositoryProvider).startAutopilot(
               prompt: prompt,
-              project: proyecto.isEmpty ? null : proyecto,
+              project: sinProyecto,
               maxSteps: 6,
               verify: false,
+              token: token,
+              fase: fase.isEmpty ? null : fase,
             );
         if (!mounted) return;
         setState(() => _run = null);
@@ -101,7 +105,7 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
       await session.createTask(
         agent: kAegisAgent,
         prompt: prompt,
-        project: proyecto.isEmpty ? null : proyecto,
+        project: sinProyecto,
       );
       final task = ref.read(taskSessionProvider)?.task;
       if (task != null) {
@@ -114,6 +118,26 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
     }
   }
 
+  /// Relanza el run con el token de un permiso que ya concediste.
+  ///
+  /// ## Por qué puede fallar y por qué no es un fallo
+  /// El token valida **la llamada**, no el run (A-033): si el modelo vuelve a
+  /// pedir la misma tool con otros argumentos, el puente lo dice y vuelve a
+  /// preguntar. Eso está bien —un permiso no es un permiso para otra cosa— y por
+  /// eso el motivo sale en la traza en vez de tragárselo.
+  Future<void> _relanzarConPermiso(Aprobacion a) async {
+    final token = a.token;
+    if (token.isEmpty) return;
+    if (_prompt.text.trim().isEmpty) {
+      setState(() => _error =
+          'Para relanzar hace falta el encargo: escríbelo arriba y vuelve a '
+          'pulsar Relanzar. El permiso ya está concedido y su token te está '
+          'esperando.');
+      return;
+    }
+    await _lanzar(token: token, proyectoForzado: a.proyecto);
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -121,7 +145,7 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
       children: [
         const _Saludo(),
         const SizedBox(height: 16),
-        const _Aprobaciones(),
+        _Aprobaciones(onRelanzar: _relanzarConPermiso),
         const SizedBox(height: 16),
         _SelectorProyecto(
           seleccionado: ref.watch(selectedProjectProvider),
@@ -133,6 +157,8 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
           autopilot: _autopilot,
           onChanged: (v) => setState(() => _autopilot = v),
         ),
+        const SizedBox(height: 12),
+        const _SelectorFase(),
         const SizedBox(height: 12),
         TextField(
           controller: _prompt,
@@ -240,6 +266,77 @@ class _Motor extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+/// Qué fase de trabajo lleva el encargo.
+///
+/// Solo aparece si el puente ofrece alguna, y el texto explica para qué sirve:
+/// una fase cambia lo que Aegis se permite hacer, así que no es un adorno que
+/// se pueda dejar sin leer.
+class _SelectorFase extends ConsumerWidget {
+  const _SelectorFase();
+
+  static String _ayuda(String fase) => switch (fase) {
+        'idea' => 'Aterriza el problema y sus alternativas. No escribe código.',
+        'arquitectura' =>
+          'Decide cómo se construye, con alternativas y coste de cambio.',
+        _ => '',
+      };
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fases = ref.watch(fasesProvider);
+    final elegida = ref.watch(faseElegidaProvider);
+    return fases.maybeWhen(
+      orElse: () => const SizedBox.shrink(),
+      data: (lista) {
+        if (lista.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                for (final f in lista)
+                  ChoiceChip(
+                    label: Text(f.toUpperCase()),
+                    selected: f == elegida,
+                    onSelected: (_) => ref.read(faseElegidaProvider.notifier).alternar(f),
+                    labelStyle: TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 10,
+                      letterSpacing: 1,
+                      color: f == elegida ? AegisPalette.bg0 : AegisPalette.fgDim,
+                    ),
+                    selectedColor: AegisPalette.brand,
+                    backgroundColor: AegisPalette.bg1,
+                    side: BorderSide(
+                      color: f == elegida
+                          ? AegisPalette.brand
+                          : AegisPalette.bg1.withValues(alpha: 1),
+                    ),
+                    showCheckmark: false,
+                  ),
+              ],
+            ),
+            if (_ayuda(elegida).isNotEmpty) ...[
+              const SizedBox(height: 7),
+              Text(
+                _ayuda(elegida),
+                style: const TextStyle(
+                  fontFamily: AegisPalette.mono,
+                  fontSize: 10.5,
+                  height: 1.45,
+                  color: AegisPalette.fgDim,
+                ),
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 }
@@ -551,74 +648,21 @@ class _Saludo extends ConsumerWidget {
 /// evitar». Por eso el texto de Aegis se muestra completo y el botón de denegar
 /// **pide un motivo**: ese motivo es lo que Aegis leerá la próxima vez.
 class _Aprobaciones extends ConsumerWidget {
-  const _Aprobaciones();
+  const _Aprobaciones({required this.onRelanzar});
+
+  /// Relanza un permiso ya concedido. Lo pone la pantalla que tiene el
+  /// encargo escrito, porque el relanzado es repetir ese encargo con un token.
+  final Future<void> Function(Aprobacion) onRelanzar;
 
   Future<void> _denegar(BuildContext context, WidgetRef ref, Aprobacion a) async {
-    final motivo = TextEditingController();
-    final ok = await showDialog<bool>(
+    final motivo = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AegisPalette.bg1,
-        title: const Text('¿Por qué no?',
-            style: TextStyle(
-                fontFamily: AegisPalette.display,
-                fontSize: 17,
-                letterSpacing: 2,
-                color: AegisPalette.fg)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              a.motivo,
-              style: const TextStyle(
-                fontFamily: AegisPalette.mono,
-                fontSize: 11,
-                height: 1.5,
-                color: AegisPalette.fgDim,
-              ),
-            ),
-            const SizedBox(height: 14),
-            const Text(
-              'Lo leo la próxima vez. Sin motivo, denegar es solo un "no" que no '
-              'se puede aplicar a la siguiente situación parecida.',
-              style: TextStyle(
-                fontFamily: AegisPalette.mono,
-                fontSize: 10,
-                height: 1.5,
-                color: AegisPalette.fgFaint,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: motivo,
-              autofocus: true,
-              maxLines: 3,
-              decoration: const InputDecoration(hintText: 'Porque…'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-                backgroundColor: AegisPalette.danger,
-                foregroundColor: AegisPalette.bg0),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Decir que no'),
-          ),
-        ],
-      ),
+      builder: (context) => _DialogoMotivo(motivo: a.motivo),
     );
-    final texto = motivo.text.trim();
-    motivo.dispose();
-    if (ok != true) return;
+    if (motivo == null) return;
     await ref.read(agentRepositoryProvider).denegarConMotivo(
           a.id,
-          texto.isEmpty ? 'No me has dado un motivo.' : texto,
+          motivo.isEmpty ? 'No me has dado un motivo.' : motivo,
         );
     refrescarAsistente(ref);
   }
@@ -648,17 +692,23 @@ class _Aprobaciones extends ConsumerWidget {
                     children: [
                       Row(
                         children: [
-                          const Icon(Icons.pan_tool_outlined,
-                              size: 15, color: AegisPalette.warn),
+                          Icon(
+                            a.relanzable
+                                ? Icons.check_circle_outline
+                                : Icons.pan_tool_outlined,
+                            size: 15,
+                            color: a.relanzable ? AegisPalette.ok : AegisPalette.warn,
+                          ),
                           const SizedBox(width: 8),
-                          const Text(
-                            'ME HE PARADO',
+                          Text(
+                            a.relanzable ? 'TE DIJE QUE SÍ' : 'ME HE PARADO',
                             style: TextStyle(
                               fontFamily: AegisPalette.mono,
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
                               letterSpacing: 1.4,
-                              color: AegisPalette.warn,
+                              color:
+                                  a.relanzable ? AegisPalette.ok : AegisPalette.warn,
                             ),
                           ),
                           const Spacer(),
@@ -687,15 +737,34 @@ class _Aprobaciones extends ConsumerWidget {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        'No he hecho nada todavía.',
+                        a.relanzable
+                            ? 'Concedido. Falta relanzar el run para que ocurra.'
+                            : 'No he hecho nada todavía.',
                         style: TextStyle(
                           fontFamily: AegisPalette.mono,
                           fontSize: 10,
-                          color: AegisPalette.warn.withValues(alpha: .9),
+                          color: (a.relanzable ? AegisPalette.ok : AegisPalette.warn)
+                              .withValues(alpha: .9),
                         ),
                       ),
                       const SizedBox(height: 14),
-                      Row(
+                      if (a.relanzable)
+                        // Un permiso aprobado y no relanzado es un permiso
+                        // cobrado que no pasó nada. El botón está aquí para que
+                        // cerrar el círculo no dependa de la terminal.
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: () => onRelanzar(a),
+                            icon: const Icon(Icons.refresh_rounded, size: 16),
+                            label: const Text('Relanzar'),
+                            style: FilledButton.styleFrom(
+                                backgroundColor: AegisPalette.ok,
+                                foregroundColor: AegisPalette.bg0),
+                          ),
+                        )
+                      else
+                        Row(
                         children: [
                           Expanded(
                             child: OutlinedButton(
@@ -732,6 +801,100 @@ class _Aprobaciones extends ConsumerWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// El diálogo de "¿por qué no?".
+///
+/// ## Por qué tiene su propio `State`
+/// Antes lo construía el método que lo abre, con un `TextEditingController`
+/// creado ahí y destruido en cuanto `showDialog` devolvía. El diálogo tarda en
+/// desmontarse, y mientras tanto su `TextField` sigue tocando el controller:
+/// "A TextEditingController was used after being disposed". El fallo salía en
+/// el test y habría salido en el móvil al cerrar el diálogo.
+///
+/// El dueño del controller es el widget que lo usa, y `dispose` lo hace quien
+/// sabe cuándo: en el `State`, cuando el diálogo ya se va.
+class _DialogoMotivo extends StatefulWidget {
+  const _DialogoMotivo({required this.motivo});
+
+  final String motivo;
+
+  @override
+  State<_DialogoMotivo> createState() => _DialogoMotivoState();
+}
+
+class _DialogoMotivoState extends State<_DialogoMotivo> {
+  final _motivo = TextEditingController();
+
+  @override
+  void dispose() {
+    _motivo.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AegisPalette.bg1,
+      title: const Text('¿Por qué no?',
+          style: TextStyle(
+              fontFamily: AegisPalette.display,
+              fontSize: 17,
+              letterSpacing: 2,
+              color: AegisPalette.fg)),
+      // Deslizable a propósito: el motivo de Aegis puede ser largo, y una
+      // Column suelta en un `AlertDialog` se desborda en cuanto el texto no cabe,
+      // que es justo cuando más falta hace leerlo entero.
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.motivo,
+              style: const TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 11,
+                height: 1.5,
+                color: AegisPalette.fgDim,
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              'Lo leo la próxima vez. Sin motivo, denegar es solo un "no" que no '
+              'se puede aplicar a la siguiente situación parecida.',
+              style: TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 10,
+                height: 1.5,
+                color: AegisPalette.fgFaint,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _motivo,
+              autofocus: true,
+              maxLines: 3,
+              decoration: const InputDecoration(hintText: 'Porque…'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+              backgroundColor: AegisPalette.danger,
+              foregroundColor: AegisPalette.bg0),
+          onPressed: () => Navigator.pop(context, _motivo.text.trim()),
+          child: const Text('Decir que no'),
+        ),
+      ],
     );
   }
 }

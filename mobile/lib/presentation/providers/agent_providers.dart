@@ -255,6 +255,27 @@ final aprobacionesProvider = FutureProvider<List<Aprobacion>>((ref) async {
   return ref.watch(agentRepositoryProvider).aprobaciones();
 });
 
+/// Las fases de trabajo que ofrece el puente. La lista sale de su disco, así
+/// que aquí no hay nada que mantener cuando se añada una.
+final fasesProvider = FutureProvider<List<String>>((ref) async {
+  return ref.watch(agentRepositoryProvider).fases();
+});
+
+/// Fase elegida para el próximo encargo. Vive aquí, y no en el `State` de la
+/// pantalla, para que el botón de relanzar un permiso —que está en otra
+/// tarjeta— pueda recuperarla.
+final faseElegidaProvider =
+    NotifierProvider<FaseController, String>(FaseController.new);
+
+class FaseController extends Notifier<String> {
+  @override
+  String build() => '';
+
+  /// Volver a pulsar la misma la quita: elegirla es una declaración, no un
+  /// ajuste que se queda puesto para siempre.
+  void alternar(String fase) => state = state == fase ? '' : fase;
+}
+
 /// El estado de la autonomía: el modo y los proyectos marcados.
 ///
 /// El repo fake y el real devuelven lo mismo, así que las pantallas no saben si

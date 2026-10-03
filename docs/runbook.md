@@ -266,6 +266,31 @@ Garantías de `aegis-ops` (sin importar quién la llame):
   devuelve el contenido actual al modelo para que reintente.
 - **Trazabilidad**: cada paso queda en `trace[]` con argumentos y resultado.
 
+### 4.3 Fases de trabajo
+
+Una fase son las instrucciones que solo valen mientras se piensa. Cada una es un
+fichero en `bridge/fases/`, y solo se inyecta en el prompt de los runs que la
+piden:
+
+```bash
+curl -s localhost:8000/fases          # ["arquitectura", "idea"]
+
+curl -s -X POST localhost:8000/autopilot/start -H 'Content-Type: application/json' -d '{
+  "project": "acme", "fase": "arquitectura", "max_steps": 10,
+  "prompt": "requisitos no funcionales y tres opciones de almacenamiento, con coste de cambio"
+}'
+```
+
+En el móvil es el selector de fases que aparece bajo el motor: al elegir una, el
+texto explica para qué sirve, porque una fase cambia lo que Aegis se permite
+hacer.
+
+Por qué van aparte de `metodo.md`: A-016 midió que el 7B deja de emitir
+`tool_calls` cuando el prompt crece. Una fase inyectada a todos los runs se
+paga en los de operación, que son los que más necesitan llamar tools. Si
+`probe-toolcall.sh` dice que ya no hay tool_calls, lo primero que se mira es el
+tamaño del prompt.
+
 ## 5. Pruebas
 
 Unitarias (capa observabilidad + memoria + autopilot; corren SIN chromadb — degradan):

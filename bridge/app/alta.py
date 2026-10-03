@@ -97,15 +97,56 @@ def _llenar(texto: str, seccion: str, cuerpo: str) -> str:
     return texto[:inicio] + "\n\n" + cuerpo.strip() + "\n\n" + texto[fin:]
 
 
+def _verificar_de(verificar: str) -> tuple[dict, str]:
+    """Parte `verificar` en (verificador, nota).
+
+    ## Por qué dos cosas en un campo
+    `verificar` nació como texto libre: una nota que decía cómo se comprueba el
+    proyecto. Pero un verificador **declarado** es otra cosa —es una lista de
+    comandos— y sin él `POST /autonomy/{alias}` responde 409 y el proyecto
+    recién creado no puede marcado para escritura. O sea: el alta podía
+    terminar en un proyecto que Aegis no podía tocar.
+
+    ## El contrato
+    Un texto que empieza por `{` se interpreta como el verificador, en JSON:
+    `{"check": ["tsc --noEmit"], "test": ["vitest run"]}`. Cualquier otra cosa
+    sigue siendo nota, que es como se usaba hasta aquí. Los dos valores vacíos
+    se ignoran en vez de dejar `{"check": []}` en el registro.
+    """
+    import json as _json
+    if not verificar:
+        return {}, ""
+    if verificar.lstrip().startswith("{"):
+        try:
+            datos = _json.loads(verificar)
+        except ValueError:
+            raise AltaInvalida(
+                "verificador ilegible: empieza por '{' pero no es JSON válido. "
+                'Ejemplo: {"check": ["npm test"], "test": ["npm run check"]}'
+            ) from None
+        if not isinstance(datos, dict):
+            raise AltaInvalida("el verificador debe ser un objeto JSON con check/test")
+        limpio = {str(k): [str(c) for c in v if str(c).strip()]
+                  for k, v in datos.items()
+                  if isinstance(v, list) and any(str(c).strip() for c in v)}
+        if not limpio:
+            return {}, ""
+        return limpio, ""
+    return {}, verificar
+
+
 def alta(alias: str, area: str, kind: str, nombre: str = "",
-         verificar: str = "", alcance: str = "", carpeta: str = "",
-         ya_existe: bool = False) -> str:
+         verificar: str = "", alcance: str = "", db: str = "",
+         carpeta: str = "", ya_existe: bool = False) -> str:
     """Da de alta el proyecto: crea carpeta, ficha y entrada de registro.
 
     `carpeta` es el nombre en disco cuando no coincide con el alias, que es el
     caso de los proyectos que ya existen (`Sistema-Gestor-Financiero`). Con
     `ya_existe` no intenta crear el directorio: sirve para dar de alta algo que
     ya está en el workspace, que es lo normal al registrar un encargo viejo.
+
+    `verificar` admite las dos formas que explica `_verificar_de`: un JSON de
+    comandos, o una nota.
     """
     from .projects import PROJECTS
     if alias in PROJECTS:
@@ -113,6 +154,7 @@ def alta(alias: str, area: str, kind: str, nombre: str = "",
     if fichas.ficha_path(alias).exists():
         raise AltaInvalida(f"ya existe una ficha para '{alias}'")
     root, _ = _validar(alias, area, kind, carpeta)
+    verificador, nota = _verificar_de(verificar)
 
     if not ya_existe:
         root.mkdir(parents=True, exist_ok=True)
@@ -123,8 +165,16 @@ def alta(alias: str, area: str, kind: str, nombre: str = "",
     entrada = {"alias": alias, "area": area, "kind": kind}
     if carpeta and carpeta != alias:
         entrada["carpeta"] = carpeta
-    if verificar:
-        entrada["note"] = verificar
+    if verificador:
+        entrada["verify"] = verificador
+    if nota:
+        entrada["note"] = nota
+    # `db` va **siempre**, aunque sea vacío. El contrato del registro lo exige
+    # (tests/test_neon.py): un proyecto declara explícitamente qué base tiene o
+    # que no se sabe. Sin esta línea, un alta nueva producía una entrada que
+    # rompía ese contrato — que es como se rompen las fronteras: no haciendo
+    # falta el campo que las sostiene.
+    entrada["db"] = db
     (REGISTRO_DIR / f"{alias}.json").write_text(
         json.dumps(entrada, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -157,6 +207,18 @@ def alta(alias: str, area: str, kind: str, nombre: str = "",
             "Sigue PENDIENTE en la ficha, y la puerta va a negar cualquier "
             f"escritura en este proyecto hasta que se complete: "
             + "; ".join(pendientes))
+    if verificador:
+        lineas.append(
+            "Verificador declarado: " + "; ".join(
+                f"{k}: {' '.join(v)}" for k, v in sorted(verificador.items()))
+            + ". Ya se puede marcar para escritura con POST /autonomy/"
+            + alias + ".")
+    else:
+        lineas.append(
+            "SIN verificador declarado: no se puede marcar para escritura "
+            f"(POST /autonomy/{alias} responde 409). Decláralo en "
+            f"{REGISTRO_DIR / (alias + '.json')} con 'verify', o vuelve a "
+            "darlo de alta con verificar=... en formato JSON.")
     lineas.append(
         "Mientras tanto Aegis puede LEERLO, que es lo que hace falta para "
         "entenderlo antes de escribir.")

@@ -1180,3 +1180,61 @@ blanco, deformados y con resolución mala.
   **`estado` incluye si Aegis puede escribir** — que es lo que hay que mirar
   antes de delegarle algo. Ante una tarea de operación, primero: `bash
   infra/stack.sh estado`, y el script. No tres `pkill` improvisados.
+
+## A-055 — Un token que se gasta antes de comprobar es un permiso quemado
+
+- **Qué pasó** (2026-10-03): al cerrar el círculo de las aprobaciones desde el
+  móvil (guardar el token, relanzar el run), `decide()` **gastaba** el token antes
+  de comprobar que la llamada era la aprobada. Medido con `project_create`: el
+  modelo emitía el verificador como objeto en una llamada y como dos cadenas en
+  la siguiente; el token se consumía en el intento que no encajaba y el permiso
+  quedaba inservible. **Tres intentos, tres aprobaciones, ninguna escritura.**
+- **La segunda mitad del mismo fallo**: un token es de un solo uso, así que el
+  bucle lo reenviaba en cada paso. Tras un alta correcta, el paso 2 —un
+  `ficha_read`, que es de las tools **libres**— moría con «ese permiso ya se
+  usó». El permiso se aplicaba a tools que no tenían nada que ver con él.
+- **Por qué cuesta verlo**: el mensaje de error era *correcto* en cada pieza, y
+  el síntoma («no me deja continuar») se parece al de mil cosas. Solo se ve
+  leyendo los argumentos de cada intento uno a uno.
+- **Regla**: **un permiso se mira antes de cobrarse, y se cobra una sola vez.**
+  `por_token()` mira sin gastar; `gastar()` cobra. Y quien lo gasta lo dice
+  (`Decision.uso_token`), para que el bucle deje de mandarlo.
+- **Y el patrón de fondo, que es el que se repite en este repo**: cuando el
+  veredicto depende de comparar algo con lo aprobado, **el orden de las
+  operaciones es el requisito**. Comparar y luego cobrar es un permiso;
+  cobrar y luego comparar es una moneda de cobre que se pierde al primer desajuste.
+
+## A-056 — Un argumento compuesto es un argumento que el 7B no repite igual
+
+- **Qué pasó** (2026-10-03): el alta de proyecto necesitaba declarar el
+  verificador, y se pidió como un **JSON dentro de una cadena**
+  (`verificar='{"check": [...], "test": [...]}'`). El modelo lo emitía como
+  objeto en una llamada y como texto en la siguiente, y como el token valida la
+  llamada exacta, **ningún relanzado casaba nunca**.
+- **Por qué**: el 7B es literal con la forma que se le da. Un argumento que
+  tiene que tener una sintaxis exacta es un argumento que algún día llega con
+  otra. Es A-016 dos capas más abajo: el mismo defecto, del mismo modelo, y la
+  misma respuesta —**darle una forma simple y dejar que la complication la
+  ponga otro**.
+- **Regla**: a las tools que usa el modelo, **argumentos planos y pequeños**:
+  `verificar_check="tsc --noEmit, dart format ."`, `verificar_test="vitest run"`,
+  `db="neon"`. Las formas ricas (JSON) se dejan para quien escribe la llamada a
+  mano. Y el motivo va en el `docstring` de la tool, que es lo que el modelo lee.
+- **De paso, un contrato que el alta estaba rompiendo**: `registro/*.json` exige
+  declarar `db` aunque esté vacío (tests/test_neon.py). El alta no lo escribía,
+  así que una entrada nueva pasaba los tests de su módulo y rompía el de la
+  frontera. **Las fronteras no se comprueban en el módulo que las cruza.**
+
+## A-057 — Un test que depende de lo que hay vivo en el disco
+
+- **Qué pasó** (2026-10-03): los tests de `test_registro.py` dandolan de alta
+  `acme` fallaron con «'acme' ya está registrado» **porque el ensayo en vivo
+  había creado ese proyecto de verdad**. Los tests no estaban mal: el workspace
+  tenía basura que nadie pidió conservar.
+- **Por qué importa más de lo que parece**: un test que depende del disco real
+  no es un test, es una ruleta — y su fallo se lee como «el alta está rota»,
+  que es la conclusión **equivocada** y la más cara.
+- **Regla**: el fixture de un test que toca el registro **vacía lo que vino del
+  disco** (`_DATOS`) y deja lo declarado en código, que es frontera de seguridad.
+  Si un test falla solo porque existe un proyecto real con ese nombre, el test
+  está mal: se arregla el test, no el proyecto.

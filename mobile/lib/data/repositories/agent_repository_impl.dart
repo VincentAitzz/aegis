@@ -97,6 +97,12 @@ class AgentRepositoryImpl implements AgentRepository {
   }
 
   @override
+  Future<List<String>> fases() async {
+    final r = await _dio.get<Map<String, dynamic>>('${config.httpBase}/fases');
+    return ((r.data?['fases'] as List?) ?? const []).cast<String>();
+  }
+
+  @override
   Future<ProjectInfo> writeFicha({
     required String alias,
     required String contenido,
@@ -143,6 +149,8 @@ class AgentRepositoryImpl implements AgentRepository {
     int maxSteps = 6,
     bool remember = true,
     bool verify = false,
+    String? token,
+    String? fase,
   }) async {
     final r = await _dio.post<Map<String, dynamic>>(
       '${config.httpBase}/autopilot/start',
@@ -153,6 +161,8 @@ class AgentRepositoryImpl implements AgentRepository {
         'verificar': verify,
         if (project != null && project.isNotEmpty) 'project': project,
         if (instructions != null && instructions.isNotEmpty) 'instructions': instructions,
+        if (token != null && token.isNotEmpty) 'token': token,
+        if (fase != null && fase.isNotEmpty) 'fase': fase,
       }),
     );
     return r.data!['run_id'] as String;
@@ -284,18 +294,22 @@ class AgentRepositoryImpl implements AgentRepository {
   @override
   Future<List<Aprobacion>> aprobaciones() async {
     final r = await _dio.get<Map<String, dynamic>>('${config.httpBase}/aprobaciones');
-    return ((r.data?['pendientes'] as List?) ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map(Aprobacion.fromJson)
-        .toList();
+    final lista = <Aprobacion>[];
+    for (final clave in const ['aprobadas', 'pendientes']) {
+      lista.addAll(((r.data?[clave] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(Aprobacion.fromJson));
+    }
+    return lista;
   }
 
   @override
-  Future<void> resolverAprobacion(String id, {required bool aprobar}) async {
-    await _dio.post<Map<String, dynamic>>(
+  Future<String?> resolverAprobacion(String id, {required bool aprobar}) async {
+    final r = await _dio.post<Map<String, dynamic>>(
       '${config.httpBase}/aprobaciones/$id',
       data: jsonEncode({'decision': aprobar ? 'aprobar' : 'denegar'}),
     );
+    return r.data?['token'] as String?;
   }
 
   @override

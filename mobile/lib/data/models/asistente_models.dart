@@ -71,7 +71,12 @@ class Memoria {
   }
 }
 
-/// Una petición de permiso esperando tu OK.
+/// Una petición de permiso esperando tu OK — o ya concedida y sin gastar.
+///
+/// La misma clase cubre los dos estados, y se distinguen por [token]: vacío es
+/// "te están preguntando", con token es "ya dijiste que sí y queda por
+/// ejecutarla". Un solo widget para las dos, porque el segundo estado es
+/// justamente el único en el que Aegis puede seguir solo.
 class Aprobacion {
   const Aprobacion({
     required this.id,
@@ -81,6 +86,7 @@ class Aprobacion {
     this.runId = '',
     this.proyecto = '',
     this.creado = '',
+    this.token = '',
   });
 
   final String id;
@@ -94,6 +100,14 @@ class Aprobacion {
   final String proyecto;
   final String creado;
 
+  /// Token de un solo uso de una aprobación ya concedida. Vacío si la petición
+  /// sigue pendiente. No es una credencial: solo vale para **esta** tool con
+  /// **estos** argumentos, y el puente lo gasta al primer uso.
+  final String token;
+
+  /// Ya la concediste y todavía nadie la ha gastado: se puede relanzar el run.
+  bool get relanzable => token.isNotEmpty;
+
   factory Aprobacion.fromJson(Map<String, dynamic> j) => Aprobacion(
         id: (j['id'] ?? '') as String,
         tool: (j['tool'] ?? '') as String,
@@ -102,6 +116,7 @@ class Aprobacion {
         runId: (j['run_id'] ?? '') as String,
         proyecto: (j['proyecto'] ?? '') as String,
         creado: (j['creado'] ?? '') as String,
+        token: (j['token'] ?? '') as String,
       );
 }
 

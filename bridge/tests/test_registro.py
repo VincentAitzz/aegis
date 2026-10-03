@@ -48,17 +48,25 @@ class _WorkspaceTemporal(unittest.TestCase):
                                    workspace_areas="apps,web,mobile"))
         self._settings.start()
         self.addCleanup(self._settings.stop)
-        # `PROJECTS` es un dict global: cada test deja el suyo si no se restaura.
-        # Se restaura por snapshot, no con `reload()`, porque al limpiar los
-        # parches el registro real ya no es el temporal y recargaría lo de más.
-        antes = dict(projects.PROJECTS)
-        self.addCleanup(self._restaurar, antes)
+        # `PROJECTS` mezcla dos cosas: los proyectos **declarados en código**
+        # (aegis, portafolio…) y los que vivienda en `registro/`. Los segundos se
+        # quitan para el test, y los primeros se dejan: son frontera de seguridad
+        # y un test que los borrara estaría comprobando un sistema que no existe.
+        #
+        # Se quitan por una razón medida: el alta de prueba de un alias que
+        # existe de verdad en el workspace fallaba con "'acme' ya está
+        # registrado" y parecía un fallo del alta. Un test que depende de lo que
+        # hay vivo en el disco no es un test.
+        self._codigo = {a: p for a, p in projects.PROJECTS.items()
+                        if a not in projects._DATOS}
+        for alias in list(projects._DATOS):
+            projects.PROJECTS.pop(alias, None)
+        projects._DATOS.clear()
+        self.addCleanup(self._restaurar)
 
-    def _restaurar(self, antes: dict) -> None:
-        for alias in list(projects.PROJECTS):
-            if alias not in antes:
-                projects.PROJECTS.pop(alias, None)
-        projects.PROJECTS.update(antes)
+    def _restaurar(self) -> None:
+        projects.PROJECTS.clear()
+        projects.PROJECTS.update(self._codigo)
         projects._DATOS.clear()
 
     def escribir(self, alias: str, datos: dict) -> None:
@@ -102,6 +110,95 @@ class TestAlta(_WorkspaceTemporal):
         fichas.ficha_path("acme").write_text("kind: producto\n", encoding="utf-8")
         with self.assertRaises(AltaInvalida):
             alta_mod.alta("acme", "apps", "encargo")
+
+
+class TestVerificadorEnElAlta(_WorkspaceTemporal):
+    """Un proyecto recién dado de alta tiene que poder marcado para escritura.
+
+    Sin verificador en el registro, `POST /autonomy/{alias}` responde 409: el
+    proyecto existe, Aegis lo lee, y no hay forma de darle permiso de escribir.
+    El alta podía terminar, con éxito, en un proyecto inútil para trabajar.
+    """
+
+    def test_el_json_declara_el_verificador(self) -> None:
+        alta_mod.alta("acme", "apps", "encargo", verificar=(
+            '{"check": ["python3 -m compileall -q ."], "test": ["pytest -q"]}'))
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertEqual(entrada["verify"],
+                         {"check": ["python3 -m compileall -q ."], "test": ["pytest -q"]})
+        # Y el puente lo ve sin reiniciar: sin esto la primera escritura falla.
+        self.assertIn("acme", projects.PROJECTS)
+        self.assertIn("test", projects.PROJECTS["acme"].verify)
+
+    def test_el_saludo_dice_que_ya_se_puede_escribir(self) -> None:
+        salida = alta_mod.alta("acme", "apps", "encargo", verificar='{"test": ["pytest -q"]}')
+        self.assertIn("Verificador declarado", salida)
+        self.assertIn("/autonomy/acme", salida)
+
+    def test_sin_verificador_lo_dice_en_vez_de_callarse(self) -> None:
+        salida = alta_mod.alta("acme", "apps", "encargo")
+        self.assertIn("SIN verificador declarado", salida)
+
+    def test_una_nota_sigue_siendo_una_nota(self) -> None:
+        """Retrocompatible: lo que no empieza por `{` era texto libre."""
+        alta_mod.alta("acme", "apps", "encargo", verificar="se mira a mano")
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertEqual(entrada["note"], "se mira a mano")
+        self.assertNotIn("verify", entrada)
+
+    def test_un_verificador_ilegible_se_rechaza(self) -> None:
+        with self.assertRaises(AltaInvalida) as cm:
+            alta_mod.alta("acme", "apps", "encargo", verificar='{"check": ')
+        self.assertIn("ilegible", str(cm.exception))
+        self.assertFalse((self.registro / "acme.json").exists())
+
+    def test_listas_vacias_no_dejan_ruido(self) -> None:
+        alta_mod.alta("acme", "apps", "encargo", verificar='{"check": [], "test": []}')
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertNotIn("verify", entrada)
+
+    def test_los_dos_argumentos_planos_declaran_el_verificador(self) -> None:
+        """La forma que usa el modelo.
+
+        Con un JSON embebido en una cadena el modelo lo emitía como objeto en una
+        llamada y como texto en la siguiente: los argumentos dejaban de coincidir
+        con los aprobados y el token nunca casaba. Dos cadenas planas se repiten
+        iguales.
+        """
+        from app.mcp_ops import project_create
+        salida = project_create("acme", "apps", "producto",
+                                verificar_check="tsc --noEmit, dart format --set-exit-if-changed .",
+                                verificar_test="vitest run")
+        self.assertIn("Verificador declarado", salida)
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertEqual(entrada["verify"], {
+            "check": ["tsc --noEmit", "dart format --set-exit-if-changed ."],
+            "test": ["vitest run"]})
+
+    def test_un_verificador_plano_vacio_no_inventa(self) -> None:
+        from app.mcp_ops import project_create
+        project_create("acme", "apps", "producto")
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertNotIn("verify", entrada)
+
+    def test_la_entrada_declara_si_misma_si_tiene_base(self) -> None:
+        """El contrato del registro (test_neon) lo exige en todas las entradas.
+
+        Un alta nueva sin `db` pasaba los tests del módulo y rompía el de la
+        frontera: los tests de una cosa y los de su frontera tienen que leer el
+        mismo contrato, no dosemplos distintos del mismo fichero.
+        """
+        from app.mcp_ops import project_create
+        project_create("acme", "apps", "producto", db="neon")
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertEqual(entrada["db"], "neon")
+
+    def test_db_vacio_significa_que_no_se_sabe(self) -> None:
+        from app.mcp_ops import project_create
+        project_create("acme", "apps", "producto")
+        entrada = json.loads((self.registro / "acme.json").read_text(encoding="utf-8"))
+        self.assertIn("db", entrada)
+        self.assertEqual(entrada["db"], "")
 
 
 class TestLimitesDelAlta(_WorkspaceTemporal):

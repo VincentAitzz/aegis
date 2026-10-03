@@ -101,6 +101,11 @@ MODO_POR_DEFECTO = "permiso"
 #: considera que se está reescribiendo y eso es una decisión tuya, no suya.
 LINEAS_DESTRUCTIVAS = 120
 
+#: Horas que un permiso aprobado sigue siendo relanzable. Pasado esto, es un
+#: permiso olvidado y no se ofrece: el run que lo pedía ya terminó, y un botón
+#: de "relanzar" sobre algo que nadie recuerda aprobar es ruido.
+VIGENCIA_APROBACION_H = 24
+
 
 class AutonomiaError(ValueError):
     """Algo que Aegis quiere hacer y no puede. El mensaje dice qué hacer."""
@@ -112,6 +117,11 @@ class Decision:
 
     ok: bool
     motivo: str = ""
+    #: Cuando este veredicto **gastó** el token que traía el run. El bucle lo
+    #: necesita para no volver a pasarlo en el paso siguiente: un token es de un
+    #: solo uso, y reenviarlo convertía el resto del run en "ese permiso ya se
+    #: usó" en tools que no tienen nada que ver con la llamada aprobada.
+    uso_token: bool = False
     #: Cuando `ok` es False pero se puede reintentar con un token, esto es el id.
     peticion: Optional[str] = None
 
@@ -259,6 +269,48 @@ class _Almacen:
             ("id", "run_id", "paso", "tool", "argumentos", "motivo", "proyecto", "creado"),
             r)) for r in rows]
 
+    def aprobadas_sin_gastar(self, run_id: str = "",
+                                horas: int = VIGENCIA_APROBACION_H) -> list[dict[str, Any]]:
+        """Las que aprobaste y que aún nadie ha canjeado, **con su token**.
+
+        ## Por qué existe
+        El token de un solo uso solo se podía obtener en el instante de aprobar:
+        venía en la respuesta del POST y no se guardaba en ninguna parte. Si el
+        móvil se cerraba entre "aprobar" y "relanzar", el token se perdía para
+        siempre y el run quedaba muerto pidiendo un permiso que ya habías
+        concedido. Eso no era un fallo de la app: era un permiso que el sistema
+        cobra y luego tira.
+
+        ## Por qué caducan
+        Porque sin caducidad la lista crece sola. Tres aprobaciones de un run de
+        prueba de hace dos días aparecían como "puedes relanzar", y un botón
+        que ofrece repetir algo que nadie recuerda aprobar es ruido, no una
+        ayuda. El permiso que no se usa en un día es un permiso olvidado: el run
+        que lo pedía ya terminó.
+
+        ## Por qué se puede devolver sin miedo
+        El token no autoriza una llamada arbitraria: `decide()` lo gasta **antes**
+        de mirar nada y exige que la tool y los argumentos sean los mismos que
+        aprobaste. Devolverlo por la misma puerta que exige `X-Aegis-Token` no
+        amplía lo que el puente ya deja hacer: quien puede leer esta cola ya
+        puede aprobar. Caducarlo aquí es solo dejar de **ofrecerlo**; si alguien
+        lo guardó, el canje sigue siendo válido, que es lo que se aprobó.
+        """
+        sql = ("SELECT id, run_id, paso, tool, argumentos, motivo, proyecto, creado,"
+               " token FROM aprobaciones WHERE estado='aprobada' AND token IS NOT NULL")
+        params: list[Any] = []
+        if run_id:
+            sql += " AND run_id=?"
+            params.append(run_id)
+        if horas > 0:
+            sql += " AND datetime(resuelto) >= datetime('now', ?)"
+            params.append(f"-{int(horas)} hours")
+        sql += " ORDER BY creado"
+        rows = self._c.execute(sql, params).fetchall()
+        return [dict(zip(
+            ("id", "run_id", "paso", "tool", "argumentos", "motivo", "proyecto",
+             "creado", "token"), r)) for r in rows]
+
     def buscar(self, pet_id: str) -> Optional[dict[str, Any]]:
         row = self._c.execute(
             "SELECT id, run_id, paso, tool, argumentos, motivo, proyecto, estado, token,"
@@ -316,6 +368,30 @@ class _Almacen:
         self._c.commit()
         p = self.buscar(pet_id)
         return p or {}
+
+    def por_token(self, token: str) -> Optional[dict[str, Any]]:
+        """Mira un token **sin gastarlo**. Devuelve la fila si sigue sin usar.
+
+    Existe separado de `gastar()` por un fallo medido: `decide()` gastaba el
+    token antes de mirar si la llamada era la aprobada, así que un relanzado en
+    el que el modelo pedía lo mismo con otros argumentos **destruía el permiso**
+    sin llegar a usarlo. Un permiso que se pierde por un desajuste de comas es un
+    permiso que hay que volver a pedir cada vez, que es exactamente el bucle que
+    la cola existe para evitar.
+        """
+        if not token:
+            return None
+        row = self._c.execute(
+            "SELECT id, run_id, paso, tool, argumentos, proyecto FROM aprobaciones "
+            "WHERE token=?", (token,)).fetchone()
+        if not row:
+            return None
+        p = dict(zip(("id", "run_id", "paso", "tool", "argumentos", "proyecto"), row))
+        viva = self._c.execute(
+            "SELECT id FROM aprobaciones WHERE estado='aprobada' AND token=? "
+            "AND resuelto=(SELECT resuelto FROM aprobaciones WHERE id=?)",
+            (token, p["id"])).fetchone()
+        return p if viva else None
 
     def gastar(self, token: str) -> Optional[dict[str, Any]]:
         """Canjea un token. Uno, un uso: si ya se gastó, se niega.
@@ -540,21 +616,38 @@ def decide(tool: str, args: dict[str, Any], *, run_id: str, paso: int,
     """
     # El token va primero: es una decisión ya tomada por la persona, y no tiene
     # sentido volver a preguntarle lo que ya respondió.
+    #
+    # Y se **mira antes de gastarlo**, que es la mitad de A-033. Antes se gastaba
+    # aquí y se comparaba después: un relanzado en el que el modelo pedía la misma
+    # tool con otros argumentos quemaba el permiso sin haberlo usado, y había que
+    # volver a aprobar. Medido con `project_create` y su verificador: tres
+    # intentos, tres aprobaciones, ninguna ejecutada. Un permiso que se pierde por
+    # un desajuste de argumentos no es un permiso, es un adorno.
     if token:
         a0 = almacen_ or almacen()
-        pagada = a0.gastar(token)
-        if not pagada:
+        permiso = a0.por_token(token)
+        if not permiso:
             return Decision(False, "ese permiso ya se usó, o no existe")
-        if pagada["tool"] != tool:
+        if permiso["tool"] != tool:
             return Decision(
                 False,
-                f"ese permiso era para '{pagada['tool']}', no para '{tool}'")
+                f"ese permiso era para '{permiso['tool']}', no para '{tool}'. "
+                "No lo he gastado: sigue esperando su oportunidad.")
         import json as _json
-        if _json.loads(pagada["argumentos"] or "{}") != _json.loads(_json.dumps(args)):
+        if _json.loads(permiso["argumentos"] or "{}") != _json.loads(_json.dumps(args)):
             return Decision(
                 False,
                 f"ese permiso era para otra llamada distinta de {tool}: "
-                f"lo que aprobaste fueron unos argumentos que ya no son estos")
+                f"lo que aprobaste fueron unos argumentos que ya no son estos. "
+                f"No lo he gastado —aprueba la petición que acabo de dejar— "
+                f"pero fijate en la diferencia antes: si no es la que querías, "
+                f"deniega con motivo en vez de aprobar.")
+        pagada = a0.gastar(token)
+        if not pagada:
+            # Solo sería posible con dos decisiones a la vez sobre el mismo token,
+            # que es justo lo que el de un solo uso impide. Si pasa, se dice en vez
+            # de fingir que el permiso está concedido.
+            return Decision(False, "ese permiso se gastó en otro sitio a la vez")
         # El permiso era para esta llamada. Concedido significa concedido: si
         # aquí cayera al camino normal, la señal de "archivo virgen" volvería a
         # abrir una petición y la aprobación se habría perdido. Es lo que
@@ -565,7 +658,8 @@ def decide(tool: str, args: dict[str, Any], *, run_id: str, paso: int,
             marcar_tocado(_safe_resolve(str(args.get("path") or "")))
         except Exception:  # noqa: BLE001 — sin ruta no hay fichero que marcar
             pass
-        return Decision(True, f"aprobado por ti (paso {paso}, {pagada['tool']})")
+        return Decision(True, f"aprobado por ti (paso {paso}, {pagada['tool']})",
+                        uso_token=True)
 
     a = almacen_ or almacen()
     nivel = nivel_de(tool)

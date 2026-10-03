@@ -119,6 +119,30 @@ denegar es un "no" que no se puede aplicar a la siguiente situación parecida.
 
 El token valida **la llamada, no el run**, y es de un solo uso (A-033).
 
+Un permiso aprobado y no gastado **no se pierde**: `GET /aprobaciones` devuelve
+también `aprobadas`, con su token, y el móvil tiene un botón **Relanzar** para
+cerrar el círculo sin salir de la app. Si el token se gastara y el run volviera
+a pedir la misma tool con otros argumentos, vuelve a preguntar: es lo correcto.
+
+### Fases: pensar antes de construir
+
+Una **fase** son las instrucciones que solo valen mientras se piensa. Viven en
+`bridge/fases/{nombre}.md` y se inyectan en el system prompt **solo** en los runs
+que la piden (`"fase": "idea"` o `"arquitectura"`); `GET /fases` dice cuáles hay.
+
+No van en `metodo.md` a propósito: A-016 midió que el 7B deja de emitir
+`tool_calls` cuando el prompt crece, y el prompt es el presupuesto. Una fase
+inyectada a todo el mundo se paga en los runs de operación, que son los que más
+necesitan llamar tools.
+
+- `idea`: aterriza el problema, las alternativas y lo que se descarta. No escribe
+  código —la puerta se lo negaría, porque la ficha está vacía.
+- `arquitectura`: requisitos no funcionales antes de nombrar tecnología, dos o
+  tres opciones con su coste de cambio, y qué habría que falsar para estar
+  equivocado.
+
+Añadir una fase es escribir un fichero. Sin código, sin enum, sin compilar.
+
 ### Desde el móvil, o cuando el run puede tardar
 
 `POST /autopilot` es síncrono y un paso puede tardar medio minuto: para no
@@ -134,6 +158,7 @@ curl -s http://127.0.0.1:8000/autopilot/$RID | jq '{status,steps,fin}'
 
 - `project` es lo que carga `bridge/lessons/{project}.md` y el `recall`.
 - `instructions` van en el system prompt; el `prompt` es la tarea.
+- `fase` es opcional y es lo único que enciende `bridge/fases/{fase}.md`.
 - Las rutas del proyecto van con prefijo de alias: `portafolio/src/lib/db.ts`.
 - `repo_verify(what='check'|'test'|'build')` es la única tool de verificación, a
   propósito: un 7B rinde peor con muchas tools que con una.

@@ -217,16 +217,48 @@ def _no_secrets(content: str) -> None:
         raise ValueError(f"contenido con posible secreto → denegado (visto: {leak}…)")
 
 
+def _verificador_de(check: str, test: str) -> str:
+    """Los dos argumentos planos del verificador, como el JSON que entiende `alta`.
+
+    Aceptar comas o espacios: lo que viene de un modelo es `a, b` y lo que viene
+    de una persona es `a  b`. Normalizar aquí evita que un alto escribe el
+    registro con una lista de tres comandos donde había dos.
+    """
+    def limpia(texto: str) -> list[str]:
+        partes = [p.strip() for chunk in str(texto or "").split(",") for p in [chunk]]
+        return [p for p in partes if p]
+    out: dict[str, list[str]] = {}
+    if cs := limpia(check):
+        out["check"] = cs
+    if ts := limpia(test):
+        out["test"] = ts
+    import json as _json
+    return _json.dumps(out, ensure_ascii=False) if out else ""
+
+
 @mcp.tool()
 def project_create(alias: str, area: str, kind: str, nombre: str = "",
                    alcance: str = "", verificar: str = "",
-                   carpeta: str = "", ya_existe: bool = False) -> str:
+                   verificar_check: str = "", verificar_test: str = "",
+                   db: str = "", carpeta: str = "", ya_existe: bool = False) -> str:
     """Da de alta un proyecto nuevo: carpeta, ficha y registro. Sin tocar Python.
 
     Es el camino para un encargo nuevo. Deja el proyecto operable por Aegis y
     devuelve su ficha a medio hacer: **la puerta va a negar la escritura** hasta
     que las secciones de fondo estén escritas, y eso es lo correcto, porque
     significa que todavía no se sabe para qué es.
+
+    ## Por qué el verificador va en dos argumentos planos
+    `verificar_check` y `verificar_test` son **cadenas**, separadas por comas, no
+    un JSON dentro de una cadena. Medido: con un JSON embebido, el modelo lo emite
+    como objeto en una llamada y como texto en la siguiente, y basta para que
+    los argumentos **no coincidan** con los que se aprobaron. Como el token
+    valida la llamada exacta, eso convierte el relanzado en una ruleta y cada
+    intento vuelve a pedirte permiso.
+
+    Es la misma clase de error que A-016, dos capas más abajo: el 7B es literal
+    con las formas que se le dan. Un argumento simple es un argumento que el
+    modelo repite igual.
 
     Argumentos:
         alias      identificador en minúsculas, sin espacios (ej. `acme-inventario`)
@@ -236,7 +268,15 @@ def project_create(alias: str, area: str, kind: str, nombre: str = "",
                    lo que te resulte más fácil de responder.
         nombre     nombre legible del proyecto
         alcance    lo que sí entra, si ya lo sabes
-        verificar  cómo se verifica (nota para el registro)
+        verificar  cómo se verifica. Admite un JSON
+                   (`{"check": [...], "test": [...]}`) o una nota. Es la vía para
+                   quien escribe la llamada a mano; **para el modelo, usa
+                   verificar_check y verificar_test**.
+        verificar_check  comandos de chequeo, separados por comas
+        verificar_test   comandos de test, separados por comas
+        db        motor de la base, si lo tiene: `neon` o vacío si no se sabe.
+                   Vacío **no** significa "no tiene": significa "no lo sabemos
+                   todavía". La autoridad de los datos nunca es esta máquina.
         carpeta    nombre en disco cuando no coincide con el alias, para dar de
                    alta algo que ya existe (`Sistema-Gestor-Financiero`)
         ya_existe  no crear la carpeta: solo registrar lo que ya está
@@ -244,7 +284,9 @@ def project_create(alias: str, area: str, kind: str, nombre: str = "",
     from .alta import alta as _alta, AltaInvalida
     try:
         return _alta(alias, area, kind, nombre=nombre, alcance=alcance,
-                     verificar=verificar, carpeta=carpeta, ya_existe=ya_existe)
+                     verificar=verificar or _verificador_de(
+                         verificar_check, verificar_test),
+                     db=db, carpeta=carpeta, ya_existe=ya_existe)
     except AltaInvalida as exc:
         return f"ALTA RECHAZADA: {exc}"
 
