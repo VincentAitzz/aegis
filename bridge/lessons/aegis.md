@@ -1275,3 +1275,25 @@ blanco, deformados y con resolución mala.
   una función que **deniega sin lanzar**, mira el motivo antes de decir que se
   hizo. La lista de motivos es corta y explícita a propósito: mejor un `ok`
   demasiado optimista en un caso raro que un `ok` que adivina.
+
+## A-060 — Una variable documentada que no hace nada es peor que no documentarla
+
+- **Qué pasó** (2026-10-03): el teléfono estaba **enchufado por USB** y adb lo
+  veía (`SERIAL1234567`), y Aegis respondía «tu teléfono no aparece en adb. Conéctalo».
+  El runbook ya tenía la respuesta —`AEGIS_PHONE_SERIAL`— pero declarar esa
+  variable en `bridge/.env` **no hacía nada**, por dos motivos encadenados:
+  1. `dispositivos.py` la leía de `os.environ`, y **nadie exporta el `.env` al
+     entorno**;
+  2. al pasarla a `Settings`, pydantic mapea `phone_serial` a `PHONE_SERIAL`, no
+     a `AEGIS_PHONE_SERIAL`. Sin `validation_alias`, seguía sin hacer nada.
+- **Lo que lo delató**: un informe que se contradecía a sí mismo. `adb_devices`
+  decía «tu teléfono: SERIAL1234567» (para eso cogía «el primero que no sea el
+  emulador») y un segundo después la puerta decía que no había teléfono. **Dos
+  mensajes sobre lo mismo, y los dos creíbles.** Eso es un informe que miente,
+  que es peor que no tener informe.
+- **Regla**: **toda variable que se documenta se prueba de extremo a extremo** en
+  la máquina donde vive. Si se documenta y no hace nada, la culpa no es de quien
+  la puso: es de quien la escribió. Y cuando un informe y una tool discrepen,
+  primero se sospecha del informe: es el que no tiene por qué tener razón.
+- **De paso**: la IP del bridge para el APK del teléfono tenía el mismo problema
+  (`AEGIS_BRIDGE_TAILNET_IP`), y cuando se declara tiene que llegar a la puerta.

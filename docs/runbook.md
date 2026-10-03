@@ -196,7 +196,40 @@ deploy_smoke()                   # arranca y comprueba que la app HABLA con el b
 ```bash
 install_apk(target='telefono')   # analyze + tests + humo en emulador
 #   -> sin tu aprobación: NO instala, te avisa y devuelve el id de petición
-#   -> apruebas en el móvil, y vuelves a llamar: ahora sí instala
+#   -> apruebas en el móvil (o por POST /aprobaciones/{id}), y se ejecuta con
+#      POST /aprobaciones/{id}/ejecutar, que corre la llamada aprobada tal cual
+```
+
+### 4.1.1 Por USB, o sin Tailscale en el teléfono
+
+Aegis reconoce un teléfono de tres formas: el nombre que publica por mDNS, un
+`adb connect ip:puerto`, o el serial que declaras tú. **No lo adivina**, porque
+«el único aparato que no es el emulador» no es una identificación: es una
+suposición, y su consecuencia es instalar una app de prueba en un aparato real.
+
+Por USB el serial es de hardware (`SERIAL1234567`) y no parece nada de lo anterior:
+
+```bash
+adb devices -l | grep -o '^[A-Z0-9]*' | head -1        # el serial
+echo 'AEGIS_PHONE_SERIAL=SERIAL1234567' >> bridge/.env
+bash infra/stack.sh reiniciar bridge                     # sin esto no se lee
+adb_devices()                                            # debe decir TELEFONO
+```
+
+Y sin Tailscale en el teléfono, el APK del teléfono se compila contra la IP de
+la LAN (`adb_devices` lo dice si el teléfono no llega por la tailnet):
+
+```bash
+ip -4 addr | grep wlan0                                  # la IP del portátil
+echo 'AEGIS_BRIDGE_TAILNET_IP=192.168.0.50' >> bridge/.env
+```
+
+La puerta comprueba que el teléfono llegue **antes** de instalar. Con `ufw` activo
+el puerto no está abierto por defecto, y sin esto la puerta dice «el teléfono NO
+llega» con el teléfono enchufado al lado:
+
+```bash
+sudo ufw allow from SUBNET_LOCAL/24 to any port 8000 proto tcp
 ```
 
 - Instalación y **lanzar** son pasos separados. Por defecto solo se instala.

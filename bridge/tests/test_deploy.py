@@ -124,14 +124,21 @@ class TestResolverNoEligeElTelefono(unittest.TestCase):
         def ip(*a, **k):
             return mock.Mock(returncode=0, stdout="100.101.102.100\n")
 
+        # Sin entorno **y** sin `.env`: un `.env` local con la IP de la LAN
+        # declarada haría fallar esto en la máquina de quien lo tiene, y sin
+        # querer. Un test que depende de tu `.env` no es un test (A-057).
         with mock.patch.dict(os.environ, {}, clear=False), \
              mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": ""}), \
+             mock.patch("app.config.get_settings",
+                        return_value=mock.Mock(bridge_tailnet_ip="")), \
              mock.patch.object(disp.subprocess, "run", side_effect=ip):
             self.assertEqual(disp.api_host_para("telefono"), "100.101.102.100")
 
     def test_sin_tailscale_no_hay_ip(self) -> None:
         """`tailscale` ausente no es una razón para devolver una IP cualquiera."""
         with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": ""}), \
+             mock.patch("app.config.get_settings",
+                        return_value=mock.Mock(bridge_tailnet_ip="")), \
              mock.patch.object(disp.subprocess, "run",
                                side_effect=FileNotFoundError("tailscale")):
             self.assertEqual(disp.tailnet_ip(), "")
@@ -1188,6 +1195,51 @@ class TestReconocerElTelefono(_Piso):
     def test_un_serial_sin_puerto_no_cuenta(self) -> None:
         self.assertFalse(disp._parece_telefono("R58Mxxxxxxx"))
 
+    def test_el_serial_declarado_cuenta(self) -> None:
+        """Un serial USB declarado por la persona sí es su teléfono.
+
+        Es la cuarta forma, y viene de `AEGIS_PHONE_SERIAL`. Antes no existía
+        porque `adb` por USB (`SERIAL1234567`) no se parece a mDNS ni a
+        `ip:puerto`, y el resultado era que Aegis no veía un teléfono enchufado y
+        conectado, que es el caso más fácil de resolver que había.
+        """
+        with mock.patch.dict(os.environ, {"AEGIS_PHONE_SERIAL": "SERIAL1234567"}):
+            with mock.patch.object(disp, "PHONE_SERIAL_ENV", "SERIAL1234567"):
+                self.assertTrue(disp._parece_telefono("SERIAL1234567"))
+                self.assertFalse(disp._parece_telefono("OTROSERIAL"))
+
+    def test_el_serial_declarado_llega_desde_el_env_de_la_config(self) -> None:
+        """Ponerlo en `bridge/.env` tiene que funcionar.
+
+        Se comprobó que no: `dispositivos` lo leía de `os.environ`, y nadie
+        exporta el `.env`, así que la variable documentada no hacía nada. Y
+        pydantic mapea `phone_serial` a `PHONE_SERIAL`, no a `AEGIS_PHONE_SERIAL`,
+        así que tampoco bastaba con declararlo en `Settings` sin alias.
+        """
+        with mock.patch.object(disp, "PHONE_SERIAL_ENV", ""), \
+                mock.patch("app.config.get_settings",
+                           return_value=mock.Mock(phone_serial="SERIAL1234567")):
+            self.assertEqual(disp.phone_serial_configurado(), "SERIAL1234567")
+            self.assertTrue(disp._parece_telefono("SERIAL1234567"))
+
+    def test_el_informe_no_dice_que_es_tu_telefono_lo_que_no_lo_es(self) -> None:
+        """Un informe que contradice a la tool que lo acompaña es peor que nada.
+
+        `estado_humano` ponía «tu teléfono: <el primero que no sea emulador>» y
+        un segundo después `resolver('telefono')` decía que tu teléfono no
+        aparecía. Los dos mensajes no pueden ser verdad a la vez, y se leía el
+        primero.
+        """
+        usb = disp.Device(serial="SERIAL1234567", state="device")
+        with mock.patch.object(disp, "dispositivos", return_value=[usb, EMULADOR]), \
+                mock.patch.object(disp, "PHONE_SERIAL_ENV", ""), \
+                mock.patch("app.config.get_settings",
+                           return_value=mock.Mock(phone_serial="")):
+            texto = disp.estado_humano()
+        self.assertIn("OTRO", texto)
+        self.assertIn("no identificado", texto)
+        self.assertNotIn("tu teléfono: SERIAL1234567", texto)
+
     def test_por_ip_se_reconoce_el_telefono_entero(self) -> None:
         por_ip = disp.Device(serial="100.101.102.103:46119", state="device")
         with mock.patch.object(disp, "dispositivos", return_value=[por_ip, EMULADOR]):
@@ -1335,3 +1387,25 @@ class TestLaPuertaDevuelveElDevice(_Piso):
             # Sin mocks en medio: la cadena real, de la petición a la instalación.
             salida = deploy.instalar_pendiente(p["id"])
         self.assertIn("instalado", salida)
+
+
+class TestLaIpDelPuenteEnElTelefono(_Piso):
+    """El APK del teléfono necesita una IP, y a veces la de la tailnet no vale.
+
+    Se comprobó en la máquina real: el teléfono **ping** a la IP de la tailnet
+    sin respuesta porque Tailscale no corre ahí, mientras que por la LAN sí llega.
+    Sin declarar la IP de la LAN, la puerta decía «el teléfono NO llega» con el
+    teléfono perfectamente conectado: la misma clase de fallo que A-046.
+    """
+
+    def test_la_ip_declarada_gana_a_tailscale(self) -> None:
+        with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "192.168.0.50"}), \
+                mock.patch("app.config.get_settings",
+                           return_value=mock.Mock(bridge_tailnet_ip="")):
+            self.assertEqual(disp.tailnet_ip(), "192.168.0.50")
+
+    def test_tambien_llega_desde_el_env_de_la_config(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch("app.config.get_settings",
+                           return_value=mock.Mock(bridge_tailnet_ip="192.168.0.50")):
+            self.assertEqual(disp.tailnet_ip(), "192.168.0.50")

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +52,25 @@ class Settings(BaseSettings):
     #: versionado (`AEGIS_API_KEY_V2` → `V3`), nunca sobreescribiendo la que
     #: está en uso.
     aegis_api_key: str = ""
+
+    #: Serial adb del teléfono, cuando lo declara la persona a mano.
+    #:
+    #: El alias no es opcional: pydantic mapea `phone_serial` a la variable
+    #: `PHONE_SERIAL`, no a `AEGIS_PHONE_SERIAL`. Sin alias, ponerlo en el `.env`
+    #: no hacía nada —y una variable documentada que no hace nada es peor que no
+    #: documentarla, porque parece que la intentaste.
+    #:
+    #: Y vive aquí y no solo en `os.environ` porque nadie exporta el `.env` al
+    #: entorno: es la forma de que lo declarado en `bridge/.env` llegue de verdad.
+    phone_serial: str = Field(default="", validation_alias="AEGIS_PHONE_SERIAL")
+
+    #: IP del bridge para el APK del teléfono, cuando no es la de la tailnet.
+    #:
+    #: Se necesita cuando el teléfono no tiene Tailscale: se comprueba, y si no
+    #: hay salida Aegis se niega a instalar — una app en el teléfono que no ve el
+    #: bridge no es una app installed, es un icono.
+    bridge_tailnet_ip: str = Field(default="",
+                                   validation_alias="AEGIS_BRIDGE_TAILNET_IP")
 
     # -- Observabilidad -----------------------------------------------------
     log_dir: str = "data/logs"

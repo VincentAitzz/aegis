@@ -237,6 +237,12 @@ cada reinicio. Las tools lo resuelven solas por mDNS; a mano:
 `adb mdns services` → `adb connect <host>:<puerto>`. Tailscale del teléfono a
 veces está caído: el adb por mDNS funciona igual.
 
+**Por USB** el serial es de hardware (`SERIAL1234567`) y no parece ni a mDNS ni a
+`ip:puerto`, así que Aegis **no lo adivina**: se declara en `bridge/.env` con
+`AEGIS_PHONE_SERIAL`. Sin Tailscale en el teléfono, el APK se compila contra la
+IP de la LAN con `AEGIS_BRIDGE_TAILNET_IP`. La puerta comprueba que el teléfono
+llegue antes de instalar, y con `ufw` hay que abrir el puerto (ver runbook §4.1).
+
 ## 6. Seguridad
 
 Ver las reglas globales en `~/.config/opencode/security.md`. Lo específico:

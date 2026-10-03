@@ -41,6 +41,22 @@ EMULATOR_SERIAL = os.environ.get("AEGIS_EMULATOR_SERIAL", "emulator-5554")
 #: El teléfono: lo que el usuario lleva encima. No se elige por descarte.
 PHONE_SERIAL_ENV = os.environ.get("AEGIS_PHONE_SERIAL", "")
 
+
+#: Y también de la configuración. Se lee de `os.environ` **y** de `Settings`
+#: porque nadie exporta el `.env` al entorno: se comprobó que declarar
+#: `AEGIS_PHONE_SERIAL` en `bridge/.env` no tenía efecto, porque lo leía solo
+#: `os.environ`. Una variable documentada que no hace nada es peor que no
+#: documentarla: parece que lo intentaste.
+def phone_serial_configurado() -> str:
+    """El serial declarado, de donde venga. Función, no constante, por eso."""
+    if PHONE_SERIAL_ENV:
+        return PHONE_SERIAL_ENV
+    try:
+        from .config import get_settings
+        return str(get_settings().phone_serial or "").strip()
+    except Exception:  # noqa: BLE001 — sin config no hay teléfono, no hay crisis
+        return ""
+
 TARGETS = ("emulador", "telefono")
 PAQUETE = "com.aegis.aegis_console"
 
@@ -235,7 +251,8 @@ def _parece_telefono(serial: str) -> bool:
     """
     if "_adb-tls-connect" in serial:
         return True
-    if PHONE_SERIAL_ENV and serial == PHONE_SERIAL_ENV:
+    declarado = phone_serial_configurado()
+    if declarado and serial == declarado:
         return True
     host, sep, puerto = serial.rpartition(":")
     if not sep or not puerto.isdigit():
@@ -288,6 +305,15 @@ def tailnet_ip() -> str:
     ip = os.environ.get("AEGIS_BRIDGE_TAILNET_IP", "").strip()
     if ip:
         return ip
+    # También del `.env`, por el mismo motivo que `AEGIS_PHONE_SERIAL`: nadie lo
+    # exporta, así que declararlo ahí no hacía nada y parecía una avería del bridge.
+    try:
+        from .config import get_settings
+        declarado = str(get_settings().bridge_tailnet_ip or "").strip()
+    except Exception:  # noqa: BLE001 — sin config, se sigue por tailscale
+        declarado = ""
+    if declarado:
+        return declarado
     try:
         proc = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
                               text=True, timeout=10)
@@ -415,22 +441,47 @@ def estado_humano() -> str:
 
     Con los dos conectados, la salida cruda de adb no los distingue y es donde
     más fácil es instalar en el que no es.
+
+    ## Por qué "lo que no es el emulador" no es tu teléfono
+    Antes esta línea ponía «tu teléfono: <el primero que no sea emulador>», y
+    luego `resolver('telefono')` exigía tres formas concretas para aceptarlo. El
+    resultado era un mensaje que se contradecía a sí mismo: la tool te decía que
+    tu teléfono era `SERIAL1234567` y, un segundo después, que tu teléfono no
+    aparecía en adb. **Un informe que contradice a la tool que lo acompaña es peor
+    que no tener informe**: no está mal, está mintiendo sobre lo mismo.
+
+    Ahora los que no son el emulador salen como «sin identificar», que es lo que
+    son, y el teléfono sale solo si `_parece_telefono` lo reconoce.
     """
     devs = dispositivos()
     if not devs:
         return "adb no ve ningún dispositivo."
+    tel = None
     filas = ["dispositivos adb:"]
     for d in devs:
         estado = "conectado" if d.disponible else d.state
-        filas.append(f"  {d.etiqueta:9} {d.serial:52} {estado}")
+        if d.emulador:
+            etiqueta = "EMULADOR"
+        elif _parece_telefono(d.serial):
+            etiqueta = "TELEFONO"
+            tel = d
+        else:
+            etiqueta = "OTRO"
+        filas.append(f"  {etiqueta:9} {d.serial:52} {estado}")
     emu = next((d for d in devs if d.emulador), None)
-    tel = next((d for d in devs if not d.emulador), None)
     filas.append("")
     filas.append(f"  destino por defecto de las pruebas: "
                  f"{'emulador ' + emu.serial if emu else 'emulador (apagado)'}")
-    filas.append(f"  tu teléfono: "
-                 f"{tel.serial if tel else 'no conectado'} "
-                 f"— requiere target='telefono' y la puerta de despliegue")
+    if tel is not None:
+        filas.append(f"  tu teléfono: {tel.serial} "
+                     f"— requiere target='telefono' y la puerta de despliegue")
+    else:
+        otros = [d.serial for d in devs if not d.emulador]
+        filas.append(
+            "  tu teléfono: no identificado. adb ve "
+            + (", ".join(otros) if otros else "nada más")
+            + ", y ninguno es un teléfono que Aegis reconozca (mDNS, "
+              "AEGIS_PHONE_SERIAL o adb connect ip:puerto).")
     return "\n".join(filas)
 
 
