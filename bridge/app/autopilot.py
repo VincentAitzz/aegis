@@ -696,7 +696,34 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 fin = "respuesta_vacia" if not answer else "sin_tools"
                 break
 
-            messages.append({"role": "assistant", "content": text or "(tool call)"})
+            # El mensaje del asistente lleva **la llamada que hizo**. Antes solo
+            # iba el texto, con un "(tool call)" de relleno, así que el historial
+            # no decía qué se había pedido: el modelo recibía un mensaje de usuario
+            # con un resultado y sin la llamada a la que correspondía.
+            #
+            # ## Lo que medía esto
+            # Es la causa de que Aegis se quedara sin pasos. Contando cuántas veces
+            # repite la misma tool en el paso 2, con el bucle tal cual estaba:
+            #
+            #     qwen2.5:7b    3 de 4 veces repetía la llamada
+            #     llama3.2:3b   1 de 4
+            #
+            # Con el resultado devuelto **con su rol y su `tool_call_id`**: 0 de 4
+            # en los dos modelos. El problema no era la cabeza del modelo, era que
+            # el historial no le enseñaba que ya tenía la respuesta.
+            #
+            # Y el `"(tool call)"` de relleno era peor que inútil: un mensaje de
+            # asistente que dice "(tool call)" y no tiene ninguna llamada es un
+            # historial que se contradice a sí mismo.
+            messages.append({
+                "role": "assistant",
+                "content": text or None,
+                "tool_calls": [
+                    {"id": f"call_{step}_{i}", "type": "function",
+                     "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}
+                    for i, (name, args) in enumerate(calls)
+                ] or None,
+            })
             # El autopilot también «habla»: cuando el modelo narra lo que va a
             # hacer, hay texto saliendo. Sin esto, el glifo se quedaría en celeste
             # durante un trabajo de veinte pasos, que es justo cuando más está
@@ -704,7 +731,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
             if (narracion := (text or "").strip()) and not narracion.startswith("{"):
                 from . import actividad
                 actividad.marcar("autopilot", run_id)
-            for name, args in calls:
+            for indice, (name, args) in enumerate(calls):
                 # El enfoque se ajusta **antes** de la autonomia de este paso, no
                 # despues. Es lo unico que hace que el cierre de puertas valga:
                 # si `usar_enfoque` se contara al final del paso, el primer write
@@ -877,8 +904,12 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                                         else "verificador_rojo",
                             }, estado_base, trace)
                 trace.append(entry)
+                # El resultado vuelve **con su rol**, no como un mensaje de
+                # usuario. Con `role: user` el modelo lo lee como una peticion
+                # nueva, y lo natural ante una peticion es volver a actuar.
                 messages.append({
-                    "role": "user",
+                    "role": "tool",
+                    "tool_call_id": f"call_{step}_{indice}",
                     "content": f"RESULTADO de {name}:\n{result[:MAX_CHARS_PER_STEP]}",
                 })
     return _con_empeora({
