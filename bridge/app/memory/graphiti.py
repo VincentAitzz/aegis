@@ -1,5 +1,16 @@
 """Backend de grafo avanzado (opt-in): Graphiti + FalkorDB.
 
+> **Sin verificar.** `graphiti-core` y `falkordb` están comentados en
+> `requirements.txt`, este modulo no tiene **ningún test** y no se ha ejecutado
+> nunca en esta máquina. El backend por defecto es SQLite desde 2026-09-27.
+>
+> Se conserva, y no por creencia: está a un `pip install` de activarlo y es la
+> dirección obvia si el grafo temporal hace falta. Pero una opción que nadie ha
+> ejecutado es una **promesa, no una capacidad**, y debe decirse como tal. Si vas
+> a activarla, hazlo en un branch con un test que la exercite: leer este
+> docstring creyendo que funciona es el modo de fallo más caro que hay, porque
+> el que no falla es el código que nadie llega a ejecutar.
+
 El 'cerebro completo': knowledge-graph **temporal** con entidades y aristas
 extraídas por LLM en cada episodio, consultable semánticamente. Diseñado para
 memoria de agentes a largo plazo (getzep/graphiti).

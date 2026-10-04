@@ -1844,3 +1844,28 @@ blanco, deformados y con resolución mala.
   caro no era solo el tamaño, sino que **el prompt entero se re-evalúa en cada
   paso**. 120 KB × 16 pasos es media hora de reloj por run. Un coste que se paga
   por paso es un coste que multiplica, y es el que hay que mirar primero.
+
+## A-081 — Una tool que no está en el schema no se puede llamar
+
+- **Qué pasó** (2026-10-04): al medir si quitar 11 tools de las 21 mejoraba el
+  autopilot, la variante corta sacaba **0/5 tool calls** y la larga **5/5**, con
+  la mitad de latencia. Leído en frío, «quitar tools hace que el modelo no llame
+  a ninguna» parece un argumento definitivo para la poda. Era **al revés**: mi
+  conjunto de 9 tools no incluía `aegis_read_file`, que es exactamente la que el
+  encargo pedía. Le pedí una
+  herramienta que no tenía, y el 7B respondió con texto, que es lo correcto.
+- **Por qué no se vio**: el 0/5 era **demasiado bueno**. Un recorte de schema que
+  rompe las tool calls empeora la tasa de acierto; una mejora de 5/5 a 0/5 suena
+  a que el recorte funciona. Cuando un experimento sale mejor de lo posible, la
+  lectura por defecto es que el experimento está mal, no que el efecto sea real.
+- **La medición buena**: con las 10 tools (las 9 usadas alguna vez en 350 runs más
+  la del encargo), intercalado, **5/5 en ambas** y 24,3 s → 15,2 s. O sea: quitar
+  8,7 KB de schema ahorra el 37 % de la latencia del primer token **sin medirse
+  pérdida de tool-calling** en una tarea de lectura.
+- **Lo que NO midió**: n=5 y un solo tipo de tarea. A-016 degradó al 7B con
+  encargos compuestos, no leyendo un fichero. **5/5 en la tarea fácil no es 5/5
+  en las difíciles**, así que la conclusión honesta es «el schema se puede
+  encoger sin coste medido», no «las tools sobran y se pueden borrar».
+- **Regla**: antes de comparar dos schemas, comprobar que **la tool que el encargo
+  nombra existe en los dos**. Un experimento mal armado produce un número
+  impecable y una conclusión invertida, y el número es lo que se cita después.
