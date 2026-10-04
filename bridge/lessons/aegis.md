@@ -1922,3 +1922,128 @@ blanco, deformados y con resolución mala.
   directorio entra**. La segunda es la que encuentra los zombies. Un índice vacío
   es un dato válido para el código, así que no hay excepción que lo delate: solo
   un test que mire los ficheros.
+
+## A-084 — Un verificador rojo no es «no verificado», es peor
+
+- **Qué pasó** (2026-10-04): al hacer `repo_verify(test)` sobre el **propio repo de
+  Aegis** para comprobar que el bridge no se congela, salió en rojo con
+  `ImportError: Failed to import test_actividad`. El verificador que dice «este
+  trabajo está verificado» estaba mintiendo, y no por culpa del trabajo: el
+  paquete vive en `bridge/app/`, un nivel por debajo de la raíz, y el comando
+  declarado no ponía `PYTHONPATH`. Solo rompía un test, `test_actividad.py`,
+  porque todos los demás se insertan el path a mano.
+- **Por qué nadie lo notó**: el verificador devuelve las últimas 20 líneas del
+  output, y un rojo con `ImportError` entre 532 tests parece un fallo más. Y el
+  agente nunca se quejó, porque «verificado y rojo» y «no verificado» se le
+  presentan igual desde la traza.
+- **El arreglo**: `verifier.entorno_verificador()` añade `bridge/` al
+  `PYTHONPATH` del proceso. Va en el entorno y no como prefijo del comando porque
+  los comandos son listas pasadas a `subprocess` sin shell.
+- **Regla**: **el verificador de un proyecto se ejecuta también como puerta de
+  salida**, igual que los tests del bridge. Si `repo_verify(check|test)` del repo
+  que estás tocando está rojo, el criterio de éxito no significa nada — y en este
+  caso el rojo era el criterio de éxito de todos los demás.
+- **Y por qué no hay un test que lo corra**: un test que llama a
+  `repo_verify('aegis', 'test')` ejecutaría los 534 tests, uno de los cuales sería
+  él mismo. Lo que sí se comprueba es la propiedad de la que depende (que la
+      carpeta del paquete esté en el `PYTHONPATH`), y el comando entero se
+  como puerta.
+
+## A-085 — Cerrar no puede ser irreversible
+
+- **Qué pasó** (2026-10-04): `hermes` es un singleton a nivel de módulo y el
+  `lifespan` hacía `await hermes.aclose()` al apagar. Eso lo dejaba muerto para el
+  resto del proceso. En producción parece que no importa, porque uvicorn apaga y el
+  proceso se va. En los tests sí, y de una forma con consecuencias: **ningún test
+  podía usar `with TestClient(app)`**, porque el `with` dispara el lifespan, que
+  cerraba el cliente compartido, y la prueba siguiente moría con «the client has
+  been closed».
+- **La consecuencia era el verdadero problema**: al no poder usar el gestor de
+  contexto, **el lifespan no se ejecutaba en ningún test HTTP**. Así que
+  `init_memory`, `init_autonomia`, `init_agenda` y `relay.on_terminal` no corrían
+  bajo test nunca. Por eso `hooks.py` —que decide el outcome de cada episodio, la
+  cosa que A-016 midió— estaba esencialmente sin test de integración, y por eso
+  algunos tests podían pasar sin comprobar nada.
+- **El arreglo, en dos partes**: `HermesClient` rehace su cliente de HTTP si se le
+  pide uno después de cerrar, y el apagado usa `relay.lifespan_guard()` —que
+  **existía desde hacía meses y nadie llamaba**— en vez de repetirla a mano. La
+  función muerta era la que ya cancelaba los lectores SSE, que tampoco se
+  cancelaban.
+- **Y lo que destapó**: al ejecutarse el lifespan en los tests, la memoria pasó a
+  crearse en un hilo y usarse en otro, y saltó
+  `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used
+  in that same thread`. Ese bug llevaba meses **latente** en `sqlite_graph.py`,
+  esperando exactamente a que alguien moviera `_execute` a un hilo. Arreglar una
+  cosa destapó otra que estaba esperando.
+- **Regla**: **cerrar un recurso no puede dejarlo muerto para siempre**, ni
+  siquiera en un singleton. Si cerrarlo es irreversible, el estado global del
+  proceso tiene una dependencia oculta que nadie va a ver venir. Y: una función
+  escrita y no llamada es una pista. `lifespan_guard` llevaba meses diciendo qué
+  hacer al apagar.
+- **Y un detalle que costó tres intentos**: un `httpx.AsyncClient` queda atado al
+  event loop que lo creó. Cada `asyncio.run()` en un test abre y cierra el suyo, así
+  que llamar a hermes desde dos `asyncio.run()` seguidos falla con «Event loop is
+  closed» **en el `finally`**, que es el peor sitio para descubrirlo. En un test,
+  todo lo que toque un cliente async va dentro de un único `asyncio.run`.
+
+## A-086 — La puerta se define por lo que sale, no por lo que hace
+
+- **Qué pasó** (2026-10-04): al cerrar con `X-Aegis-Token` todas las rutas que
+  **cambian** algo, quedó abierta `GET /autopilot/{run_id}`, que devuelve tu prompt
+  literal y los argumentos de cada tool. El test que autorizaba aquella decisión
+  («las lecturas se quedan abiertas a propósito») era correcto: lo que estaba mal
+  era **la regla**.
+- **El cambio**: la regla no es «muta o no muta», es **¿sale algo tuyo por
+  detrás?** `GET /fichas/{alias}` tampoco mutaba nada y también cerró, porque la
+  ficha de un cliente dice en qué consiste su encargo. Ahora hay una lista
+  explícita de seis lecturas abiertas —todas de estado del sistema— y el test
+  recorre **todas** las rutas del app: una lectura nueva nace cerrada.
+- **Por qué importa la forma y no el nombre**: un test que enumera los casos
+  conocidos aborta cuando aparece una ruta nueva, y un test que dice «toda ruta ha
+  de tener la dependencia o estar en la lista» aborta aunque la ruta se llame
+  siempre igual. Lo segundo es una puerta; lo primero, una fotografía.
+- **Regla**: una lista de excepciones es una puerta si está pegada a la regla y hay
+  un test que recorra el conjunto entero. Es un comentario si el que escribe la
+  prueba solo comprueba lo que ya sabía.
+
+## A-087 — Una tool en el hilo no basta: la memoria va detrás
+
+- **Qué pasó** (2026-10-04): `_execute` corría en el event loop, y como varias
+  tools lanzan procesos (`repo_verify` es `subprocess.run(timeout=900)`), el bridge
+  entero se congelaba durante una verificación: `/health`, `/actividad`, el poll del
+  móvil, el WebSocket y el propio `POST /autopilot/{id}/stop`.
+- **La lectura fácil y la correcta**: «mover la tool a un hilo» es una línea. Pero
+  la tool deja de estar en el event loop, y con ella **todo lo que llama**: el
+  rollback de sintaxis, los guardarraíles y el guardado de episodios en memoria.
+  `SQLiteGraph` abría su conexión con `sqlite3.connect(dsn)` a secas, sin
+  `check_same_thread=False`, y la usa un singleton de módulo. El bug llevaba meses
+  **latente**, esperando justo a que alguien moviera `_execute` a un hilo.
+- **Las dos cosas en el mismo commit, o ninguna**: el `ProgrammingError` aparece en
+  cuanto la primera tool corre fuera del loop. Con el arreglo a medias, el síntoma
+  es «a veces la memoria falla», que es la peor forma de fallo: intermitente y
+  sin relación aparente con lo que se cambió.
+- **Regla**: cuando sacas algo del event loop, el **calado** entero se va con él. Y
+  antes de dar por bueno el arreglo, buscar en el módulo que se mueve quién más lo
+  toca: `grep` por el nombre de la conexión compartida habría stumbled en
+  `sqlite3.connect` antes del primer run.
+
+## A-088 — Un test que no puede fallar es peor que no tener test
+
+- **Qué pasó** (2026-10-04): se escribió un test de concurrencia para el lock de
+  escrituras, con dos hilos y un `Barrier` para forzar la carrera. **Pasaba con y
+  sin el lock.** Con el GIL y dos `mock.patch.object` sobre el mismo global, el
+  segundo sobrescribe al primero y al salir restaura el valor original:
+  `_syntax_ok` volvía a ser la de verdad, que devuelve True para un `.py` válido,
+  y el test se daba por bueno sin haber comprobado nada.
+- **La invariante que también estaba mal**: el test de atomicidad buscaba una marca
+  en el texto y fallaba con el contenido **original**, que es un fichero entero. La
+  invariante no es «no está vacío», es «es exactamente uno de los contenidos
+  completos».
+- **El arreglo**: comprobar la propiedad, no provocar la carrera. Ahora el test
+  pregunta si el lock **está cogido** durante la comprobación de sintaxis, que es
+  el hueco que el segundo run necesita. Y se verificó en las dos direcciones:
+  con el arreglo pasa, sin él falla.
+- **Regla**: **un test se valida quitando el arreglo**. Si sigue pasando, no
+  midiendo el cambio; midiendo otra cosa, y da sensación de cobertura. Y
+  verificar en las dos direcciones cuesta un minuto: es el único modo de saber que
+  el fallo que ves es el que crees.

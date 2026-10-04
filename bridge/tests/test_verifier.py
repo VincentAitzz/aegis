@@ -204,3 +204,58 @@ def asyncio_run(coro):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestElEntornoDelVerificador(unittest.TestCase):
+    """El verificador que dice «esto está verificado» tiene que estar en verde.
+
+    ## Lo que pasaba
+    `aegis` declaraba `test` sin `PYTHONPATH`, así que `repo_verify(test)` sobre
+    el **propio repo de Aegis** fallaba con `ImportError: Failed to import
+    test_actividad`: el paquete vive en `bridge/app/`, un nivel por debajo de la
+    raíz, y solo un test (`test_actividad.py`) no se insertaba el path a mano.
+
+    Un verificador rojo es peor que uno ausente: no es «no verificado», es
+    «verificado y rojo», y con el output truncado a las últimas 20 líneas nadie
+    distingue los dos casos. Solo se ve al leer la traza con calma.
+
+    ## Por qué no hay un test que corra la suite entera
+    Porque esto se ejecuta **dentro** de la suite: un test que llama a
+    `repo_verify('aegis', 'test')` would run 532 tests, one of which is itself.
+    Lo que se comprueba aquí es la propiedad de la que depende: el entorno que se
+    le pasa al proceso.
+    """
+
+    def test_el_paquete_esta_en_el_pythonpath(self):
+        import os
+
+        from app.projects import PROJECTS
+        from app.verifier import entorno_verificador
+
+        for alias, proj in PROJECTS.items():
+            with self.subTest(alias=alias):
+                env = entorno_verificador(proj)
+                camino = env.get("PYTHONPATH", "")
+                entradas = [p for p in camino.split(os.pathsep) if p]
+                if (proj.root / "bridge" / "app" / "main.py").exists():
+                    self.assertIn(str(proj.root / "bridge"), entradas,
+                                  f"{alias} declara un paquete importable y su "
+                                  "carpeta no está en PYTHONPATH")
+
+    def test_no_pisa_el_pythonpath_que_ya_venia(self):
+        """Se antepone el del proyecto, no se sustituye.
+
+        Si el bridge se lanza con un PYTHONPATH propio (lo hace `run.sh`), perderlo
+        rompería otros imports en el mismo proceso.
+        """
+        import os
+        from unittest import mock
+
+        from app.projects import PROJECTS
+        from app.verifier import entorno_verificador
+
+        proj = PROJECTS["aegis"]
+        with mock.patch.dict(os.environ, {"PYTHONPATH": "/otro/sitio"}):
+            env = entorno_verificador(proj)
+        self.assertIn("/otro/sitio", env["PYTHONPATH"])
+        self.assertIn(str(proj.root / "bridge"), env["PYTHONPATH"])

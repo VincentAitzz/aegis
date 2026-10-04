@@ -34,6 +34,11 @@ Consola de operación del negocio freelance, local-first:
 laptop se apaga, el negocio sigue. La autoridad vive en el Worker/Postgres del
 portafolio, no aquí.
 
+**El bridge es de un solo proceso.** El estado de control de un run en marcha
+(parar, dirigir) vive en memoria del proceso; con dos workers, un `stop` que llegara
+al otro daría un 404 que miente. `run.sh` rechaza `BRIDGE_WORKERS != 1` en vez de
+dejarlo pasar: escalar por encima requiere persistir ese estado primero.
+
 ## 2. El rol de opencode aquí: consultor y corrector
 
 El orden es siempre el mismo:
@@ -373,7 +378,7 @@ Un archivo de lecciones que no existe se carga vacío; no es un error.
 
 | Alias | Ruta | `check` | `test` |
 |---|---|---|---|
-| `aegis` | este repo | — (tests del bridge) | `.venv/bin/python -m unittest discover -s tests -q` |
+| `aegis` | este repo | `bridge/bin/check-imports.py` | `bridge/.venv/bin/python -m unittest discover -s bridge/tests -q` |
 | `portafolio` | `~/Workspace/web/portafolio` | `tsc --noEmit` | `vitest run` |
 | `trazeurs` | `~/Workspace/mobile/trazeurs` | `flutter analyze` | `flutter test` |
 | `compra-unida` | `~/Workspace/apps/compra-unida` | `tsc --noEmit` | `npm test` |

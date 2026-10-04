@@ -860,3 +860,176 @@ class TestLaEscaladaEstaMontada(unittest.TestCase):
                           {"alias": "aegis", "problemas": 10}, trace)
         self.assertFalse(r2["empeorada"])
         self.assertEqual(r2["answer"], "hecho")
+
+
+class TestElIdDeRunNoSeRepite(unittest.TestCase):
+    """Dos `POST /autopilot` seguidos no pueden compartir `run_id`.
+
+    ## Por qué importa más de lo que parece
+    El JSONL del run se abre en `"w"` (`_escribir_jsonl_de_autopilot`), o sea que
+    escribir es **truncar**. Con `f"autopilot-{int(time.time())}"`, dos missions
+    lanzadas en el mismo segundo producían el mismo identificador y la segunda
+    borraba el historial de la primera. No había error: un run simplemente
+    desaparecía del registro, y el principio que este repo dice defender es que la
+    caída a disco no puede ser una promesa.
+
+    La ruta asíncrona ya usaba uuid desde antes. Este test mira las dos, porque
+    eran dos formatos conviviendo y el peor de los dos estaba en la ruta síncrona.
+
+    ## Cómo se comprueba sin lanzar trabajo de verdad
+    Se sustituye `_run_autopilot_once` por un capturador: lo que se quiere ver es
+    **qué id se le pasa**, y el resto del run no importa. Se fija el reloj para que
+    los dos id caiGAN en el mismo segundo, porque si no la prueba pasaría también
+    con un timestamp y no mediría nada.
+    """
+
+    def test_dos_missions_no_comparten_id_aunque_caigan_en_el_mismo_segundo(self):
+        from fastapi.testclient import TestClient
+        from app import main as main_mod
+
+        vistos = []
+
+        async def _captura(body, ctx, puerta, run_id, token=None):
+            vistos.append(run_id)
+            return {"model": "qwen2.5:7b", "answer": "ok", "steps": 1,
+                    "trace": [], "fin": "sin_tools"}
+
+        # La cabecera va porque `AEGIS_API_KEY` está puesta y `/autopilot` la pide.
+        # Un 401 aquí no sería un fallo del id: sería la puerta funcionando.
+        cabeceras = {}
+        if main_mod.settings.aegis_api_key:
+            cabeceras["X-Aegis-Token"] = main_mod.settings.aegis_api_key
+
+        with mock.patch.object(main_mod, "_run_autopilot_once", _captura), \
+             mock.patch.object(main_mod.time, "time", lambda: 1_700_000_000.0):
+            c = TestClient(main_mod.app)
+            cuerpo = {"prompt": "di hola", "max_steps": 1}
+            for _ in range(2):
+                r = c.post("/autopilot", json=cuerpo, headers=cabeceras)
+                self.assertEqual(200, r.status_code, r.text)
+
+        self.assertEqual(2, len(vistos), "las dos llamadas tendrían que haber pasado")
+        self.assertNotEqual(
+            vistos[0], vistos[1],
+            f"los dos runs comparten id ({vistos[0]}): el segundo trunca el JSONL "
+            "del primero y desaparece del historial")
+        for run_id in vistos:
+            self.assertTrue(run_id.startswith("autopilot-"), run_id)
+
+
+def _respuesta_con_tool_call() -> dict:
+    """Una respuesta de Ollama con una tool call, tal cual la devuelve el API."""
+    return {"choices": [{"message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "x", "type": "function", "function": {
+            "name": "aegis_read_file",
+            "arguments": '{"path": "bridge/metodo.md"}'}}],
+    }}]}
+
+
+class TestElBucleNoSeBloquea(unittest.TestCase):
+    """Una tool lenta no puede congelar el bridge entero.
+
+    ## El fallo que esto mide
+    `_execute` se llamaba **en el event loop**, y varias tools lanzan procesos:
+    `repo_verify` es `subprocess.run(timeout=900)`, y `tsc --noEmit` o `vitest run`
+    tardan minutos. Con la tool en el loop, durante una verificación no contestaba
+    nada: ni `/health`, ni `/actividad`, ni el poll de 3 s del móvil, ni el
+    WebSocket, ni el propio `POST /autopilot/{id}/stop`.
+
+    El repo ya lo había notado y lo había arreglado dos veces en el sitio
+    equivocado —en `main.py`, en las dos rutas que lanzan hilo para deploy y
+    aprobaciones—, que no son las que se usan el 95 % del tiempo.
+
+    ## Por qué este test es determinista y no una carrera
+    La tool falsa **no duerme**: se queda esperando un `threading.Event`. El test
+    programa en el loop un coroutine que suelta ese evento dentro de un segundo.
+    Con la tool en el executor, el loop puede ejecutar ese coroutine y la tool
+    termina. Con la tool en el loop, el loop está ocupado esperando el evento que
+    solo él puede soltar: el `wait_for` se agota y el test falla con un mensaje que
+    dice exactamente qué pasó. No hay ventana de tiempo ni probabilidad.
+
+    La consecuencia que se comprueba de paso: `POST /autopilot/{id}/stop` ya puede
+    llegar mientras la verificación corre.
+    """
+
+    def test_una_tool_lenta_no_impide_que_el_loop_avance(self):
+        import asyncio
+        import threading
+        from unittest import mock
+        from app import autopilot as ap
+
+        listo = threading.Event()
+        igualmente = {"llego": False, "la_tool_entro": False}
+
+        def _tool_bloqueante(*_args, **_kwargs):
+            igualmente["la_tool_entro"] = True
+            listo.wait(timeout=10)
+            return "listo"
+
+        async def _escena():
+            async def _suelta_el_evento():
+                await asyncio.sleep(0.2)
+                igualmente["llego"] = True
+                listo.set()
+
+            async def _no_hace_nada(step, name, args, result):
+                return None
+
+            respuesta = _respuesta_con_tool_call()
+
+            class _ClienteFalso:
+                """Contesta siempre lo mismo, sin hablar con Ollama.
+
+                Depender del modelo real en este test sería meter dos fuentes de
+                variabilidad: su ánimo para emitir `tool_calls` (que ya se midió
+                que depende del prompt) y sus 10-60 s de latencia. Lo que se
+                comprueba aquí es el bloqueo del loop, y eso lo decide un
+                `threading.Event`.
+                """
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+                async def post(self, url, json=None, **kw):
+                    class _R:
+                        def raise_for_status(self_inner):
+                            return None
+
+                        def json(self_inner):
+                            return respuesta
+                    return _R()
+
+            with mock.patch.object(ap, "_execute", _tool_bloqueante), \
+                 mock.patch.object(ap.httpx, "AsyncClient", lambda **kw: _ClienteFalso()):
+                tarea = asyncio.create_task(ap.run_autopilot(
+                    "usa la tool para probar", ollama_url="http://inutil",
+                    model="qwen2.5:7b", on_step=None, gate=_no_hace_nada))
+                soltador = asyncio.create_task(_suelta_el_evento())
+                try:
+                    # Lo que se mide es que el loop atienda al soltador. **No** se
+                    # espera a que termine el run: eso hace una llamada real al
+                    # modelo y tardaría sus 10-60 s, y su fallo no diría nada del
+                    # bloqueo. El run se cancela después.
+                    await asyncio.wait_for(asyncio.shield(soltador), timeout=3)
+                finally:
+                    listo.set()          # por si acaso, para no dejar hilos colgados
+                    for t in (tarea, soltador):
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(tarea, soltador, return_exceptions=True)
+
+        asyncio.run(_escena())
+        self.assertTrue(igualmente["llego"],
+                        "el loop nunca llegó a ejecutar el coroutine: la tool lo "
+                        "tenía bloqueado")
+        # Que la tool llegara a ejecutarse de verdad: si el modelo no devolvió
+        # ninguna llamada, este test pasaría sin comprobar nada. Se registra dentro
+        # de la propia tool porque «esperando» solo es cierto **antes** de que el
+        # soltador le suelte el evento.
+        self.assertTrue(igualmente.get("la_tool_entro"),
+                        "la tool nunca llegó a ejecutarse: el modelo no devolvió "
+                        "una llamada y el test no comprobó nada")

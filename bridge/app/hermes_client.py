@@ -17,11 +17,47 @@ class HermesClient:
     def __init__(self, base_url: str, api_key: str) -> None:
         self.base_url = base_url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=None))
+        self._cerrado = False
+        self._http = self._nuevo()
+
+    def _nuevo(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=None))
+
+    @property
+    def _client(self) -> httpx.AsyncClient:
+        """El cliente de HTTP, o uno nuevo si estaba cerrado.
+
+        ## Por qué se rehace en vez de solo cerrarse
+        `hermes` es un **singleton a nivel de módulo**, así que un `aclose()` lo
+        dejaba muerto para el resto del proceso. En producción parece que no
+        importa —uvicorn apaga y el proceso se va— pero el apagado también ocurre
+        en los tests, y ahí la consecuencia era esta: al no poder usar
+        `with TestClient(app)` (el `with` dispara el lifespan, que cerraba el
+        cliente de hermes), **el lifespan no llegaba a ejecutarse**, así que
+        `init_memory`, `init_autonomia`, `init_agenda` y `relay.on_terminal` no
+        corrían en ningún test HTTP. De ahí que `hooks.py` estuviera casi sin test
+        de integración, y que algunos tests pudieran pasar sin comprobar nada.
+
+        La propiedad que se quiere: **cerrar no es irreversible**. Con esto, el
+        mismo apagón que en producción es inocuo, y los tests pueden usar el
+        gestor de contexto de verdad.
+        """
+        if self._cerrado:
+            self._cerrado = False
+            self._http = self._nuevo()
+        return self._http
+
+    @property
+    def cerrado(self) -> bool:
+        return self._cerrado
 
     # -- control ------------------------------------------------------------
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._cerrado:
+            return
+        await self._http.aclose()
+        self._cerrado = True
 
     async def health(self) -> dict[str, Any]:
         try:

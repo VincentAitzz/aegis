@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import typing
 from pathlib import Path
 from typing import Any
@@ -560,42 +561,24 @@ def repo_verify(what: str = "check", repo: str = "portafolio", tail: int = 40) -
         repo  alias de la raíz (portafolio | aegis)
         tail  cuántas líneas de salida devolver
     """
-    from .projects import PROJECTS
-    proj = PROJECTS.get(repo)
-    if proj is None:
-        return f"repo desconocido: {repo} (conocidos: {', '.join(PROJECTS)})"
-    root = proj.root
-    if not root.exists():
-        return f"la raíz de '{repo}' no existe: {root}"
-    node_dir = os.path.expanduser("~/.local/node/bin")
-    env = dict(os.environ)
-    env["PATH"] = f"{node_dir}:{env.get('PATH', '')}"
-    env.setdefault("JAVA_HOME", "/RUTA/AL/JDK")
-
-    spec = proj.verify or {}
-    if what not in ("check", "test", "build"):
-        return f"what inválido: {what} (usa check, test o build)"
-    cmd = spec.get(what)
-    if not cmd:
-        return (f"'{repo}' no declara verificador para '{what}'. "
-                f"Disponibles: {sorted(spec) or 'ninguno'}. "
-                f"Sin verificador, el agente solo tiene la validación de sintaxis.")
-    exe = Path(cmd[0])
-    if not exe.is_absolute() and "/" in cmd[0]:
-        # Un binario local del proyecto (node_modules/.bin/...) se ejecuta desde
-        # la raíz: si no existe, el proyecto no instaló sus dependencias.
-        if not (root / cmd[0]).exists():
-            return f"falta {cmd[0]} en {root} (¿`npm install` sin correr?)"
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              env=env, cwd=str(root), timeout=900)
-    except subprocess.TimeoutExpired:
-        return f"repo_verify({what}) agotó el tiempo"
-    except FileNotFoundError as exc:
-        return f"repo_verify({what}): no encontré {cmd[0]} ({exc})"
-    out = (proc.stdout + proc.stderr).strip().splitlines()
-    estado = "OK" if proc.returncode == 0 else f"FALLÓ (exit={proc.returncode})"
-    resumen = out[-tail:] if out else ["(sin salida)"]
+    # Esto **delega** en `verifier.ejecutar` en vez de repetir el `subprocess.run`.
+    #
+    # ## Lo que pasaba
+    # Había dos copias de lo mismo: la tool montaba su propio `env` (PATH, JAVA_HOME)
+    # y su propio `subprocess.run`, mientras `verifier.ejecutar` hacía lo mismo por su
+    # cuenta. Arreglé el `PYTHONPATH` que faltaba en una de las dos —la que usa la
+    # puerta de cada paso— y la otra siguió igual: `repo_verify` como **tool** seguía
+    # dando rojo mientras `ejecutar('aegis','test')` daba verde.
+    #
+    # Dos copias de una cosa que se ejecuta es exactamente el modo de fallo que este
+    # repo llama «un camino que se cuela en lo que escribo»: el arreglo entra por
+    # una puerta y no por la otra, y el síntoma es que algo que se dijo arreglado
+    # sigue roto. Ahora hay una sola implementación.
+    from .verifier import ejecutar
+    veredicto = ejecutar(repo, what)
+    estado = "OK" if veredicto.ok else (
+        veredicto.error or f"FALLÓ (exit={veredicto.exit_code})")
+    resumen = veredicto.resumen.splitlines()[-tail:] if veredicto.resumen else ["(sin salida)"]
     return f"repo_verify({what}) en {repo}: {estado}\n" + "\n".join(resumen)
 
 
@@ -832,20 +815,65 @@ def _quarantine(target: Path, content: str, detail: str) -> str:
         return ""
 
 
+#: Serializa todo el ciclo leer -> escribir -> comprobar -> revertir.
+#:
+#: ## Por qué un lock y no uno por ruta
+#: El bucle del autopilot es single-thread, así que el conflicto real no es entre
+#: dos pasos del mismo run, sino entre **el loop y los hilos de executor**
+#: (`deploy`, aprobaciones) o entre **dos runs a la vez**. Un lock por ruta deja
+#: libre el resto del sistema para seguir escribiendo en otros ficheros; un lock
+#: global no, y a esta escala no se nota: escribir un fichero son microsegundos.
+#:
+#: ## El problema que resuelve, que no era teórico
+#: `target.write_text()` es un read-modify-write sin atomicidad, y el rollback
+#: escribía el `before` que **este** run había leído. Con dos runs sobre el mismo
+#: fichero, el que fallaba la comprobación de sintaxis borraba la edición del otro
+#: — y el otro run reportaba `ok`. Pérdida de trabajo silenciosa: ningún error, y
+#: el resultado que ve el agente dice que salió bien.
+#:
+#: Con el lock, entre el `before` que se lee y el `after` que se escribe no cabe
+#: nadie. Es lo que convierte «casi nunca pasa» en «no puede pasar».
+_ESCRITURA = threading.Lock()
+
+
+def _escritura_atomica(target: Path, content: str) -> None:
+    """Escribe por atomicidad: temporal al lado y `replace`.
+
+    `Path.write_text()` abre en `"w"`, trunca, y escribe. Si el proceso muere en
+    ese medio —o si un lector mira en ese instante— el fichero está vacío o a
+    medias. `os.replace` sobre un temporal del **mismo directorio** es un rename,
+    que el sistema de ficheros hace atómico: quien lo lee ve el contenido viejo
+    entero o el nuevo entero, nunca un mitad. Es lo que ya hace `deploy.py` al
+    guardar su estado, y aquí no lo hacía.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + f".aegis-{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _write_guarded(target: Path, content: str, before: str | None) -> tuple[bool, str]:
-    """Escribe y, si el fuente deja de parsear, revierte. Devuelve (ok, mensaje)."""
-    if before is None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    ok, detail = _syntax_ok(target)
-    if ok:
-        return True, ""
-    if before is None:
-        target.unlink(missing_ok=True)
-        revert = "se eliminó (era nuevo)"
-    else:
-        target.write_text(before, encoding="utf-8")
-        revert = "se revirtió al contenido anterior"
+    """Escribe y, si el fuente deja de parsear, revierte. Devuelve (ok, mensaje).
+
+    Todo el ciclo va bajo `_ESCRITURA`. La comprobación de sintaxis también: si
+    quedara fuera, el rollback de un run podría pisar una escritura que otro
+    terminó mientras este corría el formateador.
+    """
+    with _ESCRITURA:
+        _escritura_atomica(target, content)
+        ok, detail = _syntax_ok(target)
+        if ok:
+            return True, ""
+        if before is None:
+            target.unlink(missing_ok=True)
+            revert = "se eliminó (era nuevo)"
+        else:
+            _escritura_atomica(target, before)
+            revert = "se revirtió al contenido anterior"
     copia = _quarantine(target, content, detail)
     pista = (f" Lo que escribiste quedó en {copia}: léelo con aegis_read_file y "
              f"corrige esa línea.") if copia else ""

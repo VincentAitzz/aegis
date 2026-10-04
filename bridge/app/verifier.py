@@ -100,6 +100,35 @@ def firmas_de(texto: str) -> tuple[str, ...]:
     return tuple(firmas)
 
 
+def entorno_verificador(proj: "Project") -> dict[str, str]:
+    """El entorno con el que corre un verificador declarado.
+
+    ## Por qué `PYTHONPATH` se pone aquí y no en el comando
+    El paquete de Aegis vive un nivel por debajo de la raíz del repo
+    (`bridge/app/…`), así que cualquier comando que lo importe —y los tests lo
+    hacen, con `from app import …`— necesita esa carpeta en el path.
+
+    Lo que pasaba antes: `aegis` declaraba su `test` sin esto, así que
+    `repo_verify(test)` sobre el **propio repo de Aegis** salía en rojo con
+    `ImportError: Failed to import test_actividad`. El verificador que dice «este
+    trabajo está verificado» llevaba tiempo mintiendo, por una causa que no era
+    del trabajo sino del entorno.
+
+    El coste de que esté rojo es peor de lo que parece: con el verificador en
+    rojo, un cambio se aceptaba como «no verificado» o, peor, como «verificado y
+    también rojo», y nadie distinguía los dos casos.
+
+    Va en el entorno y no como prefijo del comando porque los comandos son listas
+    que se pasan a `subprocess` sin shell: un `PYTHONPATH=… cmd` no se expande.
+    """
+    env = dict(os.environ)
+    env["PATH"] = f"{os.path.expanduser('~/.local/node/bin')}:{env.get('PATH', '')}"
+    env.setdefault("JAVA_HOME", "/RUTA/AL/JDK")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(proj.root / "bridge"), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    return env
+
+
 def ejecutar(proyecto: str, what: str = "check", timeout: int = 900) -> Verdict:
     """Corre el verificador declarado del proyecto y devuelve su veredicto."""
     if what not in ("check", "test", "build"):
@@ -123,9 +152,7 @@ def ejecutar(proyecto: str, what: str = "check", timeout: int = 900) -> Verdict:
         return _falla(proyecto, what,
                       f"falta {cmd[0]} en {proj.root} (¿instalaste las dependencias?)")
 
-    env = dict(os.environ)
-    env["PATH"] = f"{os.path.expanduser('~/.local/node/bin')}:{env.get('PATH', '')}"
-    env.setdefault("JAVA_HOME", "/RUTA/AL/JDK")
+    env = entorno_verificador(proj)
 
     inicio = time.monotonic()
     try:

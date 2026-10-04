@@ -92,11 +92,16 @@ class ProjectMemory:
     def render_context(self, results: dict[str, Any], max_chars: int = 1800) -> str:
         """Formatea los resultados de `recall` para inyectar en instructions.
 
-        Solo se inyectan los episodios que de verdad se resolvieron. El recall
-        devuelve lo más cercano sin mirar el `outcome`, y un `failed` (o un
-        `sin_evidencia`) presentado bajo "resueltos antes" le enseña al modelo un
-        patrón que no funcionó: medido, tres episodios falsos bajaban el tool
-        calling de 7/8 a 0/8. Ver A-016.
+        ## El filtro que hace que esto sirva
+        `recall` devuelve lo más cercano **sin mirar el `outcome`**, y el filtro
+        está aquí, tres líneas más abajo: solo pasan los `success`.
+
+        Un `failed` (o un `sin_evidencia`) presentado bajo «resueltos antes» le
+        enseña al modelo un patrón que no funcionó: medido, tres episodios falsos
+        bajaban el tool calling de 7/8 a 0/8. Ver A-016. Por eso el filtro es
+        explícito y no una propiedad del almacén: si el recall empezara a
+        filtrar por su cuenta, este bloque se seguiría creyendo que filtra y
+        dejaría de hacerlo sin que nada cambiara de aspecto.
         """
         episodes = [e for e in (results.get("episodes") or [])
                     if (e.get("metadata") or {}).get("outcome") == "success"]

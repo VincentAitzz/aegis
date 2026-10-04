@@ -361,6 +361,17 @@ class TestEscrituraDeFichaSinModelo(unittest.TestCase):
 
 
 
+def _cabecera() -> dict:
+    """La escritura **y la lectura** de una ficha piden token.
+
+    Leer no es inocuo aquí: la ficha de un cliente dice en qué consiste su
+    encargo, y el móvil la lleva en la cabecera global, así que no le cuesta
+    nada. Sin esto, cualquiera en la tailnet puede leer tu cartera de clientes.
+    """
+    from app.main import settings
+    return {"X-Aegis-Token": settings.aegis_api_key} if settings.aegis_api_key else {}
+
+
 class TestLeerLaFicha(unittest.TestCase):
     """Para poder corregir una ficha hay que poder leerla.
 
@@ -393,7 +404,8 @@ class TestLeerLaFicha(unittest.TestCase):
              mock.patch("app.fichas.ficha_path",
                         lambda alias: tmp / f"{alias}.md"):
             (tmp / "compra-unida.md").write_text(texto, encoding="utf-8")
-            r = TestClient(app).get("/fichas/compra-unida")
+            r = TestClient(app).get("/fichas/compra-unida",
+                                   headers=_cabecera())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["texto"], texto)
         self.assertEqual(r.json()["kind"], "producto")
@@ -401,4 +413,5 @@ class TestLeerLaFicha(unittest.TestCase):
     def test_un_proyecto_que_no_existe_es_404(self):
         from fastapi.testclient import TestClient
         from app.main import app
-        self.assertEqual(TestClient(app).get("/fichas/no-existe").status_code, 404)
+        self.assertEqual(TestClient(app).get("/fichas/no-existe",
+                                            headers=_cabecera()).status_code, 404)

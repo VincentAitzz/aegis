@@ -412,6 +412,18 @@ Unitarias (capa observabilidad + memoria + autopilot; corren SIN chromadb — de
 ```bash
 cd bridge && .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 
+# El verificador DECLARADO, que es lo que ejecuta Aegis. Si esto sale rojo, el
+# criterio de éxito de cualquier trabajo en este repo no significa nada: el rojo
+# no es «sin verificar», es «verificado y rojo». Desde 2026-10-04 lo estaba, por un
+# PYTHONPATH que faltaba (A-084).
+cd bridge && .venv/bin/python -c "
+import sys; sys.path.insert(0, '.')
+from app.verifier import ejecutar
+for what in ('check', 'test'):
+    v = ejecutar('aegis', what)
+    print(what, 'OK' if v.ok else 'FALLO')"
+
+
 # ciclo real contra Ollama (el modelo decide y ejecuta de verdad)
 cd bridge && AEGIS_SLOW_TESTS=1 .venv/bin/python -m unittest tests.test_autopilot -v
 

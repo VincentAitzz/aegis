@@ -136,23 +136,139 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
-class TestCuarentena(unittest.TestCase):
-    """Revertir protege el repo; sin evidencia, no se puede aprender del error."""
+class TestEscriturasConcurrentes(unittest.TestCase):
+    """Dos escritores sobre el mismo fichero: uno no puede pisar al otro.
 
-    def test_lo_rechazado_queda_guardado(self):
-        import app.mcp_ops as mcp
-        from pathlib import Path
-        destino = Path("/tmp/aegis-quarantine-test.py")
-        ok, mensaje = mcp._write_guarded(destino, "def roto(:\n    pass\n", None)
-        self.assertFalse(ok)
-        self.assertIn("Repite la edición", mensaje)
-        self.assertIn("data/quarantine", mensaje)
-        # el archivo roto NO puede quedar en el repo
-        self.assertFalse(destino.exists())
-        # pero el contenido rechazado tiene que existir en algún sitio
-        import re
-        rutas = re.findall(r"(/[\w./-]*data/quarantine/[\w.-]+)", mensaje)
-        self.assertTrue(rutas, "el mensaje no dice dónde quedó la evidencia")
-        self.assertTrue(Path(rutas[0]).is_file())
-        Path(rutas[0]).unlink()
-        destino.unlink(missing_ok=True)
+    ## El fallo que esto evita
+    `_write_guarded` hacia `target.write_text()` y, si la sintaxis quedaba mal,
+    volvia a escribir el `before` **que ese run habia leido**. Con dos runs sobre
+    el mismo fichero, la secuencia mas dano era esta:
+
+    1. el run A lee `before = v0`;
+    2. el run B lee `before = v0`;
+    3. B escribe `v1` y termina con `ok`;
+    4. A escribe su version y falla la comprobacion de sintaxis;
+    5. A revierte escribiendo `v0`.
+
+    El fichero acababa con la version que A queria borrar, el trabajo de B estaba
+    perdido, y B habia reportado `ok`. Sin error en ninguna parte: la perdida era
+    invisible hasta que alguien miraba el fichero y notaba que le faltaba algo.
+
+    ## Lo que arregla
+    Un `threading.Lock` de modulo alrededor del ciclo completo
+    leer -> escribir -> comprobar -> revertir. Entre el `before` que se lee y el
+    `after` que se escribe no cabe nadie, y las escrituras pasan por
+    `os.replace` sobre un temporal, que es atomico.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.dir,
+                                                             ignore_errors=True))
+        self.target = self.dir / "modulo.py"
+        self.target.write_text("V0 = 0\n", encoding="utf-8")
+
+    def test_la_escritura_es_atomica_para_quien_la_mira(self):
+        """Nunca hay un fichero a medias, ni aunque se lea en medio.
+
+        `os.replace` sobre un temporal del mismo directorio hace que un lector vea
+        el contenido viejo entero o el nuevo entero. Con `write_text` a pelo, un
+        lector que pase en el instante justo ve el fichero vacio o truncado.
+        """
+        import threading
+        from app import mcp_ops
+
+        seguir = threading.Event()
+        vistos = []
+
+        def _lector():
+            while not seguir.is_set():
+                try:
+                    vistos.append(self.target.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError):
+                    vistos.append("ILEGIBLE")
+
+        lector = threading.Thread(target=_lector)
+        lector.start()
+        try:
+            for i in range(80):
+                mcp_ops._escritura_atomica(self.target, f"# {i}\nV = {i}\n")
+        finally:
+            seguir.set()
+            lector.join(timeout=5)
+
+        self.assertTrue(vistos, "el lector no llego a leer nada")
+
+        # Lo que el lector puede ver es: el contenido original, o uno de los
+        # que se escribieron. Cualquier otra cosa es un fichero a medias. Ojo con
+        # la comprobacion: al principio se busco una marca en el texto y fallaba
+        # con el contenido original, que es un fichero **entero**. La invariante
+        # no es "no esta vacio" sino "es exactamente uno de los completos".
+        original = "V0 = 0\n"
+        completos = {original} | {f"# {i}\nV = {i}\n" for i in range(80)}
+        a_medias = [t for t in vistos if t not in completos]
+        self.assertEqual([], a_medias, f"un lector vio ficheros a medias: {a_medias[:3]}")
+        self.assertEqual([], list(self.dir.glob("*.tmp")), "temporales sin limpiar")
+
+    def test_el_lock_cubre_el_ciclo_entero_incluida_la_comprobacion(self):
+        """La propiedad se comprueba directamente, en vez de provocar una carrera.
+
+        ## Por qué no una carrera con dos hilos
+        Se intentaron dos, y **pasaban con y sin lock**. Con el GIL y dos
+        `mock.patch.object` sobre el mismo global, el segundo sobrescribe al
+        primero y al salir restaura el valor original: `_syntax_ok` volvía a ser la
+        de verdad, que devuelve True para un `.py` válido, y el test se daba por
+        bueno sin haber comprobado nada.
+
+        Un test que no puede fallar no mide nada, y uno de concurrencia que no
+        puede fallar es peor que no tener, porque da sensación de cobertura (A-081).
+        Lo que importa no es que dos hilos se peleen, sino que entre el `before` que
+        se lee y el `after` que se escribe no cabe nadie. Eso se mira.
+        """
+        from app import mcp_ops
+
+        observado = {}
+
+        def _mira(path):
+            observado["durante_el_check"] = mcp_ops._ESCRITURA.locked()
+            return True, ""
+
+        real = mcp_ops._syntax_ok
+        mcp_ops._syntax_ok = _mira
+        try:
+            mcp_ops._write_guarded(self.target, "V0 = 1\n", "V0 = 0\n")
+        finally:
+            mcp_ops._syntax_ok = real
+
+        self.assertTrue(observado.get("durante_el_check"),
+                        "la comprobación de sintaxis queda FUERA del lock, que es "
+                        "el hueco exacto que el segundo run necesita: escribe entre "
+                        "que este comprueba, y este revierte encima.")
+
+    def test_el_lock_se_suelta_si_algo_explota(self):
+        """Un lock que no se suelta es un puente levadizo, no una puerta.
+
+        Con el `with` dentro de la función, una excepción del formateador no puede
+        dejar el sistema bloqueado para siempre: lo que se escribe es pequeño, pero
+        «para siempre» en un lock de módulo es todo el sistema de ficheros.
+        """
+        from app import mcp_ops
+
+        self.assertFalse(mcp_ops._ESCRITURA.locked(), "arranca cogido")
+        mcp_ops._write_guarded(self.target, "V0 = 2\n", "V0 = 0\n")
+        self.assertFalse(mcp_ops._ESCRITURA.locked(), "se quedó cogido tras un ok")
+
+        def _explota(path):
+            raise RuntimeError("el formateador se cayó")
+
+        real = mcp_ops._syntax_ok
+        mcp_ops._syntax_ok = _explota
+        try:
+            with self.assertRaises(RuntimeError):
+                mcp_ops._write_guarded(self.target, "V0 = 3\n", "V0 = 2\n")
+        finally:
+            mcp_ops._syntax_ok = real
+        self.assertFalse(mcp_ops._ESCRITURA.locked(),
+                         "una excepción dejó el lock cogido para siempre")
+

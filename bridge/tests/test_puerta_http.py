@@ -61,15 +61,66 @@ class TestNingunMutanteSinPuerta(unittest.TestCase):
             main_mod.settings.aegis_api_key = original
 
     def test_lecturas_no_piden_token(self):
-        """Mirar no es hacer. `/proyectos` y `/runs` se quedan abiertos a propósito.
+        """Las de la lista se quedan abiertas. Y están en la lista, no «por omisión».
 
-        No es una concesión: son la superficie de diagnóstico, y un 401 en
-        `/health` hace que `stack.sh estado` dé el stack por caído cuando lo que
-        falla es una llave. Lo que se exige es que no se pueda **actuar**.
+        Un 401 en `/health` hace que `stack.sh estado` dé el stack por caído cuando
+        lo que falla es una llave, y ese es el trabajo de un watchdog: que verse.
         """
+        from app.main import LECTURAS_ABIERTAS
         c = TestClient(self.app)
-        for ruta in ("/health", "/proyectos"):
-            self.assertEqual(200, c.get(ruta).status_code, ruta)
+        for ruta in sorted(LECTURAS_ABIERTAS):
+            respuesta = c.get(ruta if "{" not in ruta else ruta.split("{")[0])
+            self.assertNotEqual(401, respuesta.status_code, ruta)
+
+    def test_lectura_nueva_nace_cerrada(self):
+        """**Toda** ruta ha de tener la dependencia o estar en `LECTURAS_ABIERTAS`.
+
+        Este es el test que hace la lista una puerta y no una sugerencia. La
+        versión anterior solo miraba las rutas que mutan, y por eso
+        `GET /autopilot/{id}` —que devuelve tu prompt literal y los argumentos de
+        cada tool— llevaba semanas abierta con el test de arriba en verde.
+        La diferencia entre mutar y leer no era la regla: la regla es si **sale
+        algo tuyo** por detrás.
+        """
+        from app.main import LECTURAS_ABIERTAS
+        sin_puerta = []
+        for ruta in self.app.routes:
+            metodos = getattr(ruta, "methods", None)
+            if not metodos:
+                continue
+            if ruta.path.startswith(("/docs", "/openapi", "/redoc", "/oauth2")):
+                continue
+            tiene = getattr(ruta, "dependant", None) and "exigir_token" in {
+                d.call.__name__ for d in ruta.dependant.dependencies}
+            if not tiene and ruta.path not in LECTURAS_ABIERTAS:
+                sin_puerta.append(", ".join(sorted(metodos)) + " " + ruta.path)
+        self.assertEqual([], sin_puerta,
+                         "estas rutas no piden token y no están en "
+                         "LECTURAS_ABIERTAS, así que nacieron abiertas:\n  "
+                         + "\n  ".join(sin_puerta))
+
+    def test_un_run_no_se_lee_sin_llave(self):
+        """La que se coló: la traza completa, con tus encargos y los argumentos."""
+        from app import main as main_mod
+        original = main_mod.settings.aegis_api_key
+        main_mod.settings.aegis_api_key = "clave-de-prueba"
+        try:
+            c = TestClient(self.app)
+            r = c.get("/autopilot/run_cualquiera")
+            self.assertEqual(401, r.status_code)
+        finally:
+            main_mod.settings.aegis_api_key = original
+
+    def test_una_ficha_no_se_lee_sin_llave(self):
+        """La ficha de un cliente es trabajo tuyo aunque no haya escrito nada."""
+        from app import main as main_mod
+        original = main_mod.settings.aegis_api_key
+        main_mod.settings.aegis_api_key = "clave-de-prueba"
+        try:
+            c = TestClient(self.app)
+            self.assertEqual(401, c.get("/fichas/recepcion-persa").status_code)
+        finally:
+            main_mod.settings.aegis_api_key = original
 
 
 class TestElWsTambienCierra(unittest.TestCase):

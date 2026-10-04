@@ -802,7 +802,33 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         continue
 
                 try:
-                    result = _execute(name, args)
+                    # La tool corre en un hilo, nunca en el event loop.
+                    #
+                    # ## Por qué
+                    # `_execute` llama a la función de la tool, y varias lanzan
+                    # procesos: `repo_verify` es `subprocess.run(timeout=900)`, y
+                    # `tsc` o `vitest` tardan **minutos**. En el bucle de eventos,
+                    # eso congela el bridge entero: `/health`, `/actividad`, el
+                    # poll de 3 s del móvil, el WebSocket y el propio
+                    # `POST /autopilot/{id}/stop` — que no se atiende hasta que la
+                    # verificación termina. Parar un run durante su propia
+                    # verificación era imposible.
+                    #
+                    # El repo ya había detectado el problema y lo había arreglado
+                    # dos veces en el sitio equivocado (`main.py`, en las dos rutas
+                    # que lanzan hilo para deploy y aprobaciones). Aquí es donde se
+                    # pasa el 95 % del tiempo.
+                    #
+                    # ## Lo que cuesta
+                    # La tool deja de estar en el loop, así que su rollback de
+                    # sintaxis y sus guardarraíles pasan a ejecutarse desde un hilo.
+                    # `_write_guarded` lo tiene en cuenta (lock de módulo), y
+                    # `SQLiteGraph` se abrió con `check_same_thread=False` y un
+                    # lock por el mismo motivo. **Las dos cosas van en el mismo
+                    # commit**: cambiar solo esto rompe la memoria.
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        None, _execute, name, args)
                 except (ToolNotAllowed, ValueError, TypeError) as exc:
                     entry["ok"] = False
                     entry["result"] = f"ERROR: {exc}"

@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from typing import Any, Iterable, Optional
 
 log = logging.getLogger("aegis.bridge.memory.graph")
@@ -85,7 +86,23 @@ class SQLiteGraph:
         parent = os.path.dirname(dsn)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        self._conn = sqlite3.connect(dsn)
+        # `check_same_thread=False` porque la conexión vive a nivel de módulo y la
+        # usan hilos distintos: el event loop la crea al inicializarse la memoria
+        # (dentro del lifespan, en el hilo que abre el TestClient o el de uvicorn)
+        # y la usa quien esté cuando hay que leer un concepto o guardar un
+        # episodio. Sin esto salta `sqlite3.ProgrammingError: SQLite objects
+        # created in a thread can only be used in that same thread`.
+        #
+        # WAL porque sin él un escritor bloquea a los lectores, y desde que las
+        # tools corren en un hilo (ver `_execute` en autopilot) los dos accesos
+        # coexisten de verdad.
+        #
+        # Y un lock, porque `check_same_thread=False` no significa «seguro»: la
+        # conexión se puede usar desde dos sitios a la vez, y `sqlite3` serializa
+        # a nivel de sentencia, no de transacción.
+        self._conn = sqlite3.connect(dsn, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._lock = threading.Lock()
         self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
@@ -182,6 +199,21 @@ class SQLiteGraph:
                   for v in agg.values()]
         result.sort(key=lambda n: -n["total_runs"])
         return result[:limit]
+
+    def episodes_recientes(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Los últimos episodios, del más nuevo al más viejo.
+
+        Existe para que nadie tenga que llegar a `_conn` desde fuera. El router de
+        `/memoria` lo hacía con dos `getattr` y un `__import__`, y funcionaba solo
+        porque `run.sh` exporta `PYTHONPATH=app`; fuera de ahí devolvía lista
+        vacía **en silencio**, que es indistinguible de una memoria sin episodios.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, agent, outcome, prompt, summary, created_at"
+                " FROM episodes ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+        return [{"run_id": r[0], "agent": r[1], "outcome": r[2], "prompt": r[3],
+                 "summary": r[4], "created_at": r[5]} for r in rows]
 
     def match_episodes(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
         """Recuperación léxica offline: episodios cuyos conceptos/prompt solapan con la consulta."""

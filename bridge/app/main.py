@@ -30,6 +30,7 @@ from .method import method_context
 from .models import ApprovalIn, EventOut, SteerIn, TaskIn, TaskOut, TaskStatus, WsMessageIn
 from .notas import init_agenda
 from .notas import agenda as notas
+from . import relay as relay_mod
 from .relay import relay
 from .telemetry import configure as configure_telemetry
 from .telemetry import stopwatch, telemetry
@@ -49,14 +50,18 @@ async def lifespan(app: FastAPI):
     relay.on_terminal = hooks.on_terminal_event  # episodios + telemetría al terminar
     log.info("bridge arriba (bind %s:%s -> hermes %s)",
              settings.bridge_bind, settings.bridge_port, settings.hermes_base_url)
-    yield
-    # `hermes` es un cliente **compartido a nivel de módulo**, así que cerrarlo
-    # lo deja muerto para el resto del proceso. En producción da igual: uvicorn
-    # apaga y el proceso se va. Pero en los tests no, porque un solo
-    # `with TestClient(app)` dispara este apagón y todas las pruebas siguientes
-    # fallan con «the client has been closed» sin relación aparente con lo que
-    # miden. Por eso los tests de este repo usan `TestClient(app)` sin contexto.
-    await hermes.aclose()
+    # El apagado lo hace `relay.lifespan_guard()`, que estaba escrita desde hace
+    # meses y a la que **nadie llamaba**: el lifespan repetía a mano las dos líneas
+    # que ella hace (cerrar hermes y cancelar los lectores SSE), y los lectores
+    # seguían vivos después de apagar.
+    #
+    # Que ahora se llame tiene un efecto que va más allá de los lectores: como
+    # `HermesClient` se puede reabrir (`hermes_client.HermesClient._client`), cerrar
+    # ya no es un tiro al cuello, y los tests pueden usar `with TestClient(app)`.
+    # Eso significa que **el lifespan se ejecuta en los tests HTTP**, que es lo que
+    # faltaba para poder testear `init_memory`, `init_autonomia` y `hooks.py`.
+    async with relay_mod.lifespan_guard():
+        yield
 
 
 app = FastAPI(title="Aegis Bridge", version="0.1.0", lifespan=lifespan)
@@ -119,6 +124,34 @@ def exigir_token(x_aegis_token: Optional[str] = Header(default=None)) -> None:
         detail="esta ruta pide X-Aegis-Token y la que llega no vale. "
                "El móvil la lleva en la cabecera; si acabas de rotar la "
                "clave, hay que reinstalarlo con la nueva.")
+
+
+#: Lecturas que quedan abiertas **a propósito**, porque devuelven estado del
+#: sistema y no trabajo tuyo.
+#:
+#: ## La regla, que no es «muta o no muta»
+#: Cerrar solo lo que muta parecía suficiente y no lo era: `GET /autopilot/{id}`
+#: devuelve tu prompt literal y los argumentos de cada tool, y `GET
+#: /fichas/{alias}` devuelve la descripción del trabajo de un cliente con su
+#: nombre. Ninguna de las dos cambia nada y las dos son lo que más te importa que
+#: no se lea desde otro dispositivo de la tailnet.
+#:
+#: La regla real es: **abierto si y solo si no sale nada tuyo ni del trabajo por
+#: detrás.** Y por eso esta lista es explícita: una lectura nueva nace cerrada y
+#: hay que abrirla a propósito, que es distinto de tener que acordarse de
+#: cerrarla. El test recorre las rutas y falla si alguna no está en la lista.
+#:
+#: De lo que hay aquí, ladiscussión es solo una: `/proyectos` devuelve las rutas
+#: absolutas de tus repos. Es inventario, no contenido, y la app lo necesita para
+#: pintar la lista antes de tener la llave.
+LECTURAS_ABIERTAS = frozenset({
+    "/health",        # ¿está el stack arriba? El watchdog de stack.sh depende de esto.
+    "/models",        # qué modelos hay.
+    "/enfoques",      # nombres de enfoques, sin su texto.
+    "/actividad",     # un reloj, no un registro: a propósito en memoria.
+    "/origen",        # quién tocó esto último. Sin historial.
+    "/proyectos",     # inventario de alias y rutas, sin contenido de las fichas.
+})
 
 
 def _store_bytes() -> int:
@@ -215,8 +248,20 @@ async def health() -> dict:
 
 
 async def asyncio_gather_health():
-    h = await hermes.health()
-    models = await ollama.list_models()
+    """Hermes y Ollama **a la vez**, y no uno detrás del otro.
+
+    El nombre de la función prometía un `gather` desde el principio y no lo había:
+    eran dos `await` seguidos, así que la respuesta tardaba lo que tardase la más
+    lenta **sumadas**. Con la gateway caída, `/health` tardaba lo que tardase
+    Hermes y encima le sumaba el tiempo de Ollama.
+
+    Importa más de lo que parece por quién la mira: el watchdog de
+    `infra/stack.sh` espera `/health` con 90 s, y el LED de la app lo consulta cada
+    1,2 s. Con un `gather`, que es lo que ya hacía `/models` dos líneas más abajo,
+    el LED sigue diciendo «voy bien» aunque uno de los dos esté muerto, que es
+    justo lo que tiene que decir: cuál de los dos.
+    """
+    h, models = await asyncio.gather(hermes.health(), ollama.list_models())
     return h, True, [m.get("name") for m in models]
 
 
@@ -271,7 +316,8 @@ class FichaIn(BaseModel):
 
 
 @app.get("/fichas/{alias}")
-async def leer_ficha(alias: str) -> dict:
+async def leer_ficha(alias: str,
+                  _auth: None = Depends(exigir_token)) -> dict:
     """La ficha de un proyecto, en texto, con su estado calculado.
 
     ## Por qué existe
@@ -900,8 +946,14 @@ async def autopilot(body: AutopilotIn,
     if body.verificar:
         from .verifier import gate as _gate
         puerta = _gate(project, body.que)
+    # El id es un uuid y no un timestamp. Con `int(time.time())`, dos POST en el
+    # mismo segundo producían el MISMO `run_id`, y como el JSONL se abre en "w"
+    # (ver `_escribir_jsonl_de_autopilot`), el segundo truncaba el historial del
+    # primero. Un run que desaparece del registro es justo lo que este repo dice
+    # no admitir: la caída a disco no puede ser una promesa.
     result = await _run_autopilot_once(
-        body, ctx, puerta, f"autopilot-{int(time.time())}", token=body.token)
+        body, ctx, puerta, f"{_AUTOPILOT_PREFIX}{uuid.uuid4().hex[:12]}",
+        token=body.token)
     return AutopilotOut(project=project or None, **result)
 
 
@@ -1049,7 +1101,8 @@ async def autopilot_steer(run_id: str, body: SteerIn,
 
 
 @app.get("/autopilot/{run_id}", response_model=AutopilotStatus)
-async def autopilot_status(run_id: str) -> AutopilotStatus:
+async def autopilot_status(run_id: str,
+                           _auth: None = Depends(exigir_token)) -> AutopilotStatus:
     """Progreso del run: pasos ya ejecutados, tools y por qué terminó.
 
     Si no está en el buffer en vivo —porque el bridge se reinició, o porque ya
@@ -1232,7 +1285,11 @@ async def memoria(consulta: str = "", limite: int = 20,
 
     if consulta:
         crudos = await mem.recall(consulta, k=limite)
-        filas = (crudos.get("episodios") or [])
+        # La clave es `episodes`. Con `episodios` esta rama devolvía [] con
+        # HTTP 200, es decir «no hay nada» como respuesta a una búsqueda que sí
+        # tenía resultados. No lo veía nadie porque la app nunca manda `consulta`,
+        # y un 200 con lista vacía es indistinguible de una memoria vacía.
+        filas = (crudos.get("episodes") or [])
     else:
         filas = _episodios_del_grafo(limite * 2)
 
@@ -1263,22 +1320,27 @@ async def memoria(consulta: str = "", limite: int = 20,
 
 
 def _episodios_del_grafo(limite: int) -> list[dict]:
-    """Episodios crudos del grafo, los más recientes primero."""
-    from .memory.sqlite_graph import extract_concepts  # noqa: F401 — carga el módulo
-    mem = __import__("app.memory", fromlist=["get_memory"]).get_memory()
+    """Episodios crudos del grafo, los más recientes primero.
+
+    Antes esto alcanzaba `graph._conn` con dos `getattr` y un
+    `__import__("app.memory")`. Cuatro capas de reach para hacer un `SELECT`, y
+    dependía de que `run.sh` exporte `PYTHONPATH=app` para que el `__import__`
+    resolviera: si alguien lanza el bridge de otra forma, esto devolvía `[]` en
+    silencio y `/memoria` parecía una memoria vacía. Ahora es un método público del
+    grafo, que es donde vive la consulta.
+    """
+    mem = get_memory()
     graph = getattr(mem, "graph", None) if mem else None
     if graph is None:
         return []
-    conn = getattr(graph, "_conn", None)
-    if conn is None:
-        return []
-    import json as _json
-    rows = conn.execute(
-        "SELECT run_id, agent, outcome, prompt, summary, created_at FROM episodes"
-        " ORDER BY rowid DESC LIMIT ?", (limite,)).fetchall()
-    return [{"metadata": {"run_id": r[0], "agent": r[1], "outcome": r[2],
-                          "prompt": r[3], "summary": r[4], "at": r[5]}}
-            for r in rows]
+    filas = graph.episodes_recientes(limite)
+    return [{"metadata": {"run_id": r.get("run_id", ""),
+                          "agent": r.get("agent", ""),
+                          "outcome": r.get("outcome", ""),
+                          "prompt": r.get("prompt", ""),
+                          "summary": r.get("summary", ""),
+                          "at": r.get("created_at", "")}}
+            for r in filas]
 
 
 def _proyecto_de(prompt: str) -> str:

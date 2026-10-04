@@ -18,11 +18,34 @@ if [[ ! -f .env ]]; then
   echo "⚠️  Creé .env desde .env.example — edita HERMES_API_KEY (ver ~/.hermes/.env)."
 fi
 
-# El --reload es de desarrollo y solo si se pide. `infra/stack.sh arrancar` lo
-# apaga (BRIDGE_RELOAD=0): en operación normal el vigilante recarga el bridge a
-# mitad de un run, que es peor que tener que reiniciar a mano.
+# El --reload es de desarrollo y **solo si se pide**: el valor por defecto es 0.
+#
+# Antes era 1, que significaba que seguir la instrucción de `AGENTS.md` §5
+# —«cd bridge && bash run.sh»— arrancaba el bridge con el vigilante puesto. Ese
+# vigilante recarga el proceso a mitad de un run: el run muere sin dejar JSONL, sin
+# episodio en memoria y sin `fin`, que es exactamente la clase de pérdida que este
+# repo no admite. Para desarrollo: `BRIDGE_RELOAD=1 bash run.sh`.
 RELOAD=()
-[[ "${BRIDGE_RELOAD:-1}" == "1" ]] && RELOAD=(--reload)
+[[ "${BRIDGE_RELOAD:-0}" == "1" ]] && RELOAD=(--reload)
+
+# El bridge es **single-process a propósito**, y no por descuido: el estado de
+# control de un run en marcha (parar, dirigir) vive en un dict de memoria
+# (`_AUTOPILOT_RUNS` en `main.py`), y las aprobaciones en SQLite. Con más de un
+# worker, un `POST /autopilot/{id}/stop` que llegara al proceso B daría un 404
+# con un mensaje que **mentiría** («se cayó del buffer») cuando el run está
+# vivo y sano en el proceso A.
+#
+# Es peor que no escalara: escalaría *pareciendo* que escala. Así que se impide,
+# aquí y no en el código Python, que es donde se nota al arrancar.
+WORKERS="${BRIDGE_WORKERS:-1}"
+if [[ "$WORKERS" != "1" ]]; then
+  echo "✗ BRIDGE_WORKERS=$WORKERS no está soportado." >&2
+  echo "  El estado de control de los runs vive en memoria del proceso: con dos" >&2
+  echo "  workers, parar un run desde el otro proceso da un 404 que miente." >&2
+  echo "  Para más de uno hay que persistir el estado de los runs primero." >&2
+  exit 1
+fi
 
 PYTHONPATH=app .venv/bin/uvicorn app.main:app \
-    --host "${BRIDGE_BIND:-0.0.0.0}" --port "${BRIDGE_PORT:-8000}" "${RELOAD[@]}"
+    --host "${BRIDGE_BIND:-0.0.0.0}" --port "${BRIDGE_PORT:-8000}" \
+    --workers "$WORKERS" "${RELOAD[@]}"
