@@ -710,32 +710,64 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
     if estado_base and estado_base.get("rojo"):
         log.info("autopilot %s: base de '%s' en rojo antes de empezar (%s problemas)",
                  run_id, project, estado_base.get("problemas"))
-    result = await run_autopilot(
-        body.prompt,
-        ollama_url=settings.ollama_base_url,
-        model=body.model or settings.autopilot_model,
-        max_steps=max(1, min(body.max_steps, 16)),
-        instructions=body.instructions or "",
-        project=project,
-        memory=ctx,
-        gate=puerta,
-        on_step=on_step,
-        run_id=run_id,
-        autonomy=autonomy_modulo,
-        token=token,
-        enfoque=body.enfoque or "",
-        estado_base=estado_base,
-        parar=parar,
-        extra=extra,
-    )
+    try:
+        result = await run_autopilot(
+            body.prompt,
+            ollama_url=settings.ollama_base_url,
+            model=body.model or settings.autopilot_model,
+            max_steps=max(1, min(body.max_steps, 16)),
+            instructions=body.instructions or "",
+            project=project,
+            memory=ctx,
+            gate=puerta,
+            on_step=on_step,
+            run_id=run_id,
+            autonomy=autonomy_modulo,
+            token=token,
+            enfoque=body.enfoque or "",
+            estado_base=estado_base,
+            parar=parar,
+            extra=extra,
+        )
+    except Exception as exc:  # noqa: BLE001 — un run que revienta también deja rastro
+        # Esto estaba fuera de todo try: un run que moría de una excepción se
+        # iba **sin traza y sin episodio**, porque los dos estaban aquí debajo.
+        # Lo que se perdía no era un dato, era el aprendizaje entero: sin
+        # episodio, esa forma de fallo no se vuelve a reconocer.
+        detalle = f"{type(exc).__name__}: {exc}".strip()[:400]
+        log.exception("autopilot %s: el run reventó", run_id)
+        return await _run_roto(run_id, project, body, detalle, on_step)
     log.info("autopilot %s: %d pasos, %d tools ejecutadas (proyecto=%s, enfoque=%s)",
              run_id, result["steps"], sum(1 for t in result["trace"] if t.get("tool")),
              project or "-", body.enfoque or "-")
+    await _registrar_run(run_id, project, body, result, on_step)
+    return result
+
+
+async def _registrar_run(run_id: str, project: str, body: AutopilotIn,
+                         result: dict[str, Any], on_step: Any = None) -> None:
+    """Escribe la traza a disco, el episodio en memoria y la telemetría.
+
+    ## Por qué está en una función
+    Estaba suelto en `_run_autopilot_once`, **después** del run. Eso convertía
+    cualquier excepción en un run que no existía: sin JSONL, sin episodio, sin
+    `GET /runs` que lo teachara. Un fallo que no deja rastro es un fallo que no
+    se puede ni detectar ni corregir, y el(repo) entero está montado para que los
+    fallos se puedan corregir.
+    """
     # La traza va al disco. Sin esto, el JSONL del run solo lo escribía el relay
     # de Hermes y un run de autopilot **no existía** fuera del buffer en memoria:
     # reiniciar el bridge lo borraba sin dejar rastro. Y `GET /runs` leía ficheros
     # que no existían para la mitad de los runs que sí habían ocurrido.
     _escribir_jsonl_de_autopilot(run_id, project, result)
+    if on_step is not None:
+        # En segundo plano, alguien puede haberse suscrito a este run. Se le
+        # avisa del desenlace sin que nadie lo estuviera esperando: antes, el
+        # cliente se quedaba mirando un run que ya no avanzaba.
+        await on_step(result["steps"], {
+            "step": result["steps"], "action": "fin", "fin": result.get("fin", ""),
+            "answer": result.get("answer", "")[:1200],
+        })
     # La traza es la evidencia. El `answer` del modelo no lo es: se ha medido que
     # llega a reportar éxito sin haber escrito nada (lessons/aegis.md A-013).
     for paso in result["trace"]:
@@ -744,29 +776,53 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
                              paso=paso["step"], tool=paso.get("tool"),
                              **{k: v for k, v in paso["gate"].items()
                                 if k in ("ok", "problemas", "delta", "mismo_error", "stop")})
-    if body.remember and get_memory():
-        tools_used = [t for t in result["trace"] if t.get("tool")]
-        # Una tool puede "funcionar" y aun así rechazar la edición (guardarraíl de
-        # sintaxis, whitelist). Eso es un fallo del agente, no un acierto: si no se
-        # cuenta, el recall le va a enseñar los runs como exitosos.
-        failures = [t for t in tools_used
-                    if t.get("ok") is False
-                    or "RECHAZADO" in str(t.get("result", ""))
-                    or "no se encontró" in str(t.get("result", ""))
-                    or "ERROR:" in str(t.get("result", ""))]
-        used = [t["tool"] for t in tools_used]
-        await get_memory().remember({
-            "run_id": run_id,
-            "agent": "autopilot",
-            "outcome": "failed" if failures else "success",
-            "prompt": f"[{project}] {body.prompt}".strip(),
-            "summary": f"tools={used or 'ninguna'}; pasos={result['steps']}; "
-                       f"rechazos={len(failures)}; respuesta={result['answer'][:200]}",
-            "text": json.dumps(result["trace"], ensure_ascii=False)[:4000],
-            "code": [],
-            "error": "; ".join(str(t.get("result"))[:200] for t in failures),
-            "at": "",
-        })
+    if not body.remember or not get_memory():
+        return
+    tools_used = [t for t in result["trace"] if t.get("tool")]
+    # Una tool puede "funcionar" y aun así rechazar la edición (guardarraíl de
+    # sintaxis, whitelist). Eso es un fallo del agente, no un acierto: si no se
+    # cuenta, el recall le va a enseñar los runs como exitosos.
+    failures = [t for t in tools_used
+                if t.get("ok") is False
+                or "RECHAZADO" in str(t.get("result", ""))
+                or "no se encontró" in str(t.get("result", ""))
+                or "ERROR:" in str(t.get("result", ""))]
+    used = [t["tool"] for t in tools_used]
+    await get_memory().remember({
+        "run_id": run_id,
+        "agent": "autopilot",
+        "outcome": "failed" if failures else "success",
+        "prompt": f"[{project}] {body.prompt}".strip(),
+        "summary": f"tools={used or 'ninguna'}; pasos={result['steps']}; "
+                   f"rechazos={len(failures)}; respuesta={result['answer'][:200]}",
+        "text": json.dumps(result["trace"], ensure_ascii=False)[:4000],
+        "code": [],
+        "error": "; ".join(str(t.get("result"))[:200] for t in failures),
+        "at": "",
+    })
+
+
+async def _run_roto(run_id: str, project: str, body: AutopilotIn,
+                    detalle: str, on_step: Any = None) -> dict[str, Any]:
+    """Un run que reventó, convertido en un run que **sí** se puede leer.
+
+    No se tira: se cierra con `fin: "reventado"` y su motivo. La razón es doble:
+    el móvil tiene que poder pintar algo, y el episodio `failed` es lo que
+    permite reconocer la próxima vez ese mismo fallo (A-016: el veredicto sale de
+    la traza, nunca de la ausencia de traza).
+    """
+    answer = (f"El run se interrumpió por un error del bridge, no por tu: {detalle}\n"
+              f"No he terminado. No hay más traza que esta, porque el fallo ha "
+              f"sucedido antes de poder registrarla.")
+    result = {
+        "model": body.model or settings.autopilot_model,
+        "answer": answer,
+        "steps": 0,
+        "trace": [{"step": 0, "action": "reventado", "text": detalle}],
+        "fin": "reventado",
+        "error": detalle,
+    }
+    await _registrar_run(run_id, project, body, result, on_step)
     return result
 
 
@@ -849,9 +905,26 @@ async def autopilot_start(body: AutopilotIn) -> AutopilotStarted:
                        or "El run se canceló antes de terminar.")
             raise
         except Exception as exc:  # noqa: BLE001 — el run no puede morir en silencio
-            log.warning("autopilot %s falló: %s", run_id, exc)
+            # Antes: `status="failed"` con `error="'fin'"` cuando la puerta del
+            # verificador paraba el run, porque aquel retorno no traía `fin` y
+            # esta línea pedía `result["fin"]`. El KeyError tapaba el motivo real
+            # y el run quedaba como un fallo sin explicación.
+            #
+            # Ahora `_run_autopilot_once` **no** propaga nada: devuelve un `fin`
+            # siempre. Este `except` queda como la red de debajo de la red, y por
+            # eso registra su propio rastro en disco antes de rendirse.
+            log.exception("autopilot %s: fallo en el envoltorio", run_id)
+            detalle = f"{type(exc).__name__}: {exc}".strip()[:400]
             run = _AUTOPILOT_RUNS.setdefault(run_id, {"run_id": run_id})
-            run.update(status="failed", error=str(exc)[:500])
+            run.update(status="completed", steps=run.get("steps", 0),
+                       fin="reventado", error=detalle,
+                       answer=run.get("answer")
+                       or f"El run se interrumpió por un error del bridge: {detalle}")
+            _escribir_jsonl_de_autopilot(run_id, body.project or "", {
+                "model": body.model or settings.autopilot_model,
+                "answer": run["answer"], "steps": run.get("steps", 0),
+                "trace": run.get("trace", []), "fin": "reventado",
+            })
 
     tarea = asyncio.create_task(_runner(), name=f"autopilot-{run_id}")
     # La tarea se guarda ya en marcha: el endpoint de parada solo necesita el
@@ -1823,13 +1896,28 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
             # payload. Escribir `task.max_steps` como evento deja el run en
             # "desconocido" para todo el que lo lea, y el motivo de cierre es
             # un dato, no un tipo de evento.
+            #
+            # Y el mapeo se declara **completo**, no con un `.get(..., done)`
+            # que manda todo lo desconocido a "terminado bien". Ese default era
+            # una mentira administrativa: un run que reventaba se guardaba como
+            # `task.done`, y cualquier informe que contara runs bien terminados
+            # contaba también los que se cayeron por el camino.
             fin = result.get("fin") or "sin_tools"
-            terminal = {"failed": "task.failed", "esperando_ok": "task.stopped"}.get(
-                fin, "task.done")
+            if fin in ("failed", "modelo_caido", "reventado", "verificador_rojo",
+                       "llamada_repetida"):
+                terminal = "task.failed"
+            elif fin in ("esperando_ok", "parado"):
+                terminal = "task.stopped"
+            else:
+                terminal = "task.done"
             fh.write(json.dumps({
                 "at": ahora, "run_id": run_id, "event": terminal,
                 "agent": "autopilot", "at_run": "",
+                # El error va en su propio campo y no metido dentro del
+                # `answer`: un run que falló tiene que poder localisation con un
+                # `jq '.payload.error'` y no leyendo prosa.
                 "payload": {"steps": result.get("steps", 0), "fin": fin,
+                            "error": (result.get("error") or "")[:500],
                             "answer": (result.get("answer") or "")[:1000]},
             }, ensure_ascii=False) + "\n")
     except OSError as exc:

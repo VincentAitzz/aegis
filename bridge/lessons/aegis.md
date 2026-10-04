@@ -181,10 +181,19 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 - **La lección A-011 estaba inyectada** y no evitó nada: la lección hablaba de
   reescribir tras un rechazo, y este modelo ni siquiera estava en el caso que
   describía. **Una lección solo previene el error que nombra.**
-- **Corolario**: el antidoto no es una lección más, es la mecánica. Ya está:
-  `verifier.es_repetido` cuenta la llamada idéntica que falló dos veces, y la
-  puerta pone `stop: True` cuando no hay mejora. La lección sirve para entender;
-  el mecanismo es lo que para.
+- **Corolario**: el antidoto no es una lección más, es la mecánica. La lección
+  sirve para entender; el mecanismo es lo que para.
+- **Corrección de esta misma lección, 2026-10-04 (A-079)**: aquí se escribió
+  «Ya está: `verifier.es_repetido` cuenta la llamada idéntica que falló dos
+  veces». **No estaba.** La función existía, con su docstring prometiendo lo que
+  hace, y `grep` la encontraba **sin una sola llamada** en `app/`. Una lección que
+  declara montado un mecanismo que no lo está es peor que una lección que no
+  habla de él: el que la lee deja de comprobar. Hoy `es_repetido` se usa en la
+  puerta del verificador, y `autonomy.empeora` compara la línea base con el
+  final del run —los dos mecanismos sin usar que había—.
+  **Regla que sale de aquí**: antes de escribir «ya está», `grep` la función y
+  mira si la llaman. Una afirmación de que algo está montado es un commit, y se
+  comprueba como un commit.
 - **Mejora del guardarraíl**: el mensaje de ruta ahora dice cuál era la correcta
   (`¿Querías decir: ...?`). Un error sin salida convierte una torpeza en un
   callejón; un error con la respuesta a un paso delata el hueco exacto.
@@ -1742,3 +1751,28 @@ blanco, deformados y con resolución mala.
   `aegis_patch_file` se niegan **antes** de mirar el modo, y el motivo dice cómo
   soltar el enfoque. Sin enfoque, la misma escritura se cae por `solo`, que es un
   motivo distinto y el correcto.
+
+## A-079 — Un `fin` que no está no es un `fin`: es un `KeyError` esperando
+
+- **Qué pasó** (2026-10-04): la parada por verificador devolvía un dict **sin
+  `fin`**, y quien lo consumía hacía `result["fin"]`. El `KeyError` se comía el
+  motivo real y el run se guardaba como `failed` con el error `'fin'`. O sea: la
+  puerta que existe para explicarle las cosas al agente era lo que le impedía
+  explicarle nada. Dos de los tres `return` del bucle traían `fin`; el tercero se
+  escribió después y se olvidó.
+- **Y de paso, dos cosas que nadie miraba**:
+  - Una **base en rojo** no paraba el run: `decide()` devolvía un «no» sin más, el
+    bucle lo leía como respuesta («sigue con otra cosa») y el run se consumía
+    entero —16 pasos— denegando la misma escritura. Ahora el «no» puede decir que
+    es un tope.
+  - Un **Ollama que no responde** se llevaba el run entero, sin traza ni episodio,
+    porque `_escribir_jsonl_de_autopilot` y `remember()` estaban **después** del
+    run y sin ningún `try`. Lo que se perdía no era un dato: era el aprendizaje.
+- **Regla**: **todo `return` de un bucle lleva su motivo, y el motivo se escribe en
+  la lista cerrada de `docs/runbook.md` §1.1.** Un motivo que no está en la lista
+  no existe; uno que no se escribe, tampoco.
+- **Y la de más fondo**: **toda salida tiene que dejar rastro, incluso la
+  exception**. `except` que escribe es infraestructura; `finally` que registra es un
+  diario. Un fallo que no deja rastro es un fallo que no se puede ni detectar
+  ni corregir, y todo este repo está montado para que los fallos se puedan
+  corregir.

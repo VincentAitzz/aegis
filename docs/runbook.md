@@ -98,8 +98,26 @@ curl -s localhost:8000/actividad | jq
 
 El JSONL por run es la traza real: un evento por tool llamada, con su resultado y
 su `ok`. `ok: false` con el motivo es lo que hay que leer antes de creer que un
-run salió bien; y el `fin` dice por qué terminó (`max_steps`, `esperando_ok`,
-`sin_evidencia`…), no solo si terminó.
+run salió bien; y el `fin` dice por qué terminó, no solo si terminó.
+
+**El vocabulario de `fin`**, que es cerrado y comprobable:
+
+| `fin` | Lo que pasó | ¿Te toca hacer algo? |
+|---|---|---|
+| `sin_tools` | el modelo respondió y no pidió ninguna tool | no, salvo que esperabas que trabajara |
+| `respuesta_vacia` | el modelo devolvió vacío y se agotaron los reintentos | mirar el prompt |
+| `max_steps` | se acabaron los pasos | normalmente no |
+| `esperando_ok` | Aegis necesita tu permiso | **sí**: aprobar o denegar |
+| `parado` | paraste el run tú | no |
+| `verificador_rojo` | el verificador reprueba el avance, o ya estaba rojo | sí, antes de seguir |
+| `llamada_repetida` | la misma llamada falló dos veces con esos argumentos | sí: cambia el enfoque |
+| `modelo_caido` | Ollama no respondió | mirar `infra/stack.sh estado` |
+| `reventado` | error del propio bridge | mirar el log; el run dejó rastro igualmente |
+
+En el JSONL, `task.done` es un run que terminó su trabajo; `task.stopped`, uno
+que espera a alguien; `task.failed`, uno que **no** pudo seguir (incluidos
+`modelo_caido`, `reventado`, `verificador_rojo` y `llamada_repetida`). Un
+`task.done` con `fin: reventado` sería un bug del bridge: no debería ocurrir.
 
 Para ver un run mientras crece —en vez de a posteriori— se lanza con
 `POST /autopilot/start` y se lee `GET /autopilot/<run_id>` (ver §4.2).

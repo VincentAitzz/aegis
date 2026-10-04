@@ -192,8 +192,17 @@ def gate(proyecto: str, what: str = "check") -> Callable:
 
     Pone `"stop": True` cuando el verificador falla y el problema no se movió: a
     partir de ahí, seguir gastando pasos es peor que devolver el control.
+
+    ## Y además, la escalada
+    `es_repetido` estaba escrita desde hacía tiempo y **no se llamaba**: la
+    lección que la nombra como antidoto describía un mecanismo que no estaba
+    montado. Aquí se usa para algo que la puerta sola no ve: la puerta compara
+    el verificador, y dos escrituras a la misma ruta equivocada con el mismo
+    contenido dejan el verificador igual. Eso es «no está progresando», y es
+    justo lo que `es_repetido` mide.
     """
     previo: dict[str, Optional[Verdict]] = {"v": None}
+    historial: list[dict[str, Any]] = []
 
     async def _gate(step: int, tool: str, argumentos: dict[str, Any],
                     resultado: str) -> Optional[dict[str, Any]]:
@@ -217,6 +226,17 @@ def gate(proyecto: str, what: str = "check") -> Callable:
             veredicto["motivo"] = (
                 "el verificador sigue en rojo y el número de problemas no bajó: "
                 "repetir el mismo paso no lo arregla")
+        if not v.ok and es_repetido(historial, tool, argumentos):
+            # El caso que la puerta sola no ve: el mismo write, con los mismos
+            # argumentos, que ya rompió dos veces. Aquí el rojo no ha cambiado,
+            # pero el **qué** tampoco: no hay nada nuevo que probar.
+            veredicto["stop"] = True
+            veredicto["repetida"] = True
+            veredicto["motivo"] = (
+                f"esta misma llamada a `{tool}` ya ha fallado dos veces con esos "
+                f"argumentos. Repetirla no lo arregla: cambia el enfoque o dime "
+                f"qué hacer.")
+        historial.append({"tool": tool, "arguments": argumentos, "ok": v.ok})
         return veredicto
 
     return _gate

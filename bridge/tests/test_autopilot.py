@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -506,3 +507,356 @@ class TestControlDeRun(unittest.TestCase):
         self.assertEqual(_AUTOPILOT_PREFIX, "autopilot-")
         self.assertTrue("autopilot-abc123".startswith(_AUTOPILOT_PREFIX))
         self.assertFalse("run_abc123".startswith(_AUTOPILOT_PREFIX))
+
+
+# =============================================================================
+# P0 · El run nunca se muere sin decir por qué
+# =============================================================================
+
+class _FalsoOllama:
+    """Un Ollama que responde lo que le pongas, sin llamar a ningún modelo.
+
+    Los tests de estos casos usan **esto** y no `qwen2.5:7b`: lo que se comprueba
+    es la reacción del bucle, no la capacidad del modelo. Un test que depende del
+    modelo pasa un día y falla otro sin que haya cambiado nada.
+    """
+
+    def __init__(self, respuestas, fallo=None):
+        self.respuestas = list(respuestas)
+        self.fallo = fallo
+        self.llamadas = 0
+
+    def __call__(self, *a, **k):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, **k):
+        self.llamadas += 1
+        if self.fallo is not None:
+            raise self.fallo
+        i = min(self.llamadas - 1, len(self.respuestas) - 1)
+        cuerpo = self.respuestas[i]
+        return _Respuesta(cuerpo)
+
+
+class _Respuesta:
+    def __init__(self, cuerpo):
+        self._cuerpo = cuerpo
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"choices": [{"message": {
+            "content": self._cuerpo.get("texto", ""),
+            "tool_calls": [{"function": {"name": c["name"], "arguments": c["args"]}}
+                           for c in self._cuerpo.get("calls", [])]}}]}
+
+
+def _verdict_rojo(problemas: int):
+    """El veredicto que devuelve el verificador cuando el rojo no se mueve."""
+    from app import verifier
+    texto = "\n".join(f"error: algo roto {i}" for i in range(problemas))
+    return verifier.Verdict(
+        ok=False, what="check", proyecto="aegis", exit_code=1,
+        resumen=texto, firmas=verifier.firmas_de(texto), ms=1, error="")
+
+
+def _arrancar_con_cliente(client, **kw):
+    import asyncio
+    from unittest import mock
+    from app.autopilot import run_autopilot
+    with mock.patch("app.autopilot.httpx.AsyncClient", return_value=client):
+        return asyncio.run(run_autopilot(
+            kw.pop("prompt", "encargo"), ollama_url="http://falso", model="m",
+            max_steps=kw.pop("max_steps", 4), **kw))
+
+
+class TestElRunSiempreDicePorqueTermino(unittest.TestCase):
+    """Cada salida del bucle tiene que traer su `fin`.
+
+    ## El fallo que esto previene
+    La parada por verificador devolvía un dict **sin `fin`**, y quien lo consume
+    hacía `result["fin"]`: `KeyError`. El run se guardaba como `failed` con el
+    error `'fin'`, que no le dice nada a nadie. O sea: la puerta del verificador,
+    que es lo que existe para explicarle las cosas al agente, le impedía
+    explicarle nada.
+    """
+
+    def test_la_puerta_del_verificador_devuelve_fin(self):
+        async def gate(step, tool, args, resultado):
+            return {"ok": False, "stop": True, "delta": 0, "problemas": 1}
+
+        cliente = _FalsoOllama([{"texto": "", "calls": [
+            {"name": "projects_list", "args": {}}]}])
+        r = _arrancar_con_cliente(cliente, gate=gate)
+        self.assertEqual(r["fin"], "verificador_rojo")
+        self.assertTrue(r.get("stopped_by_gate"))
+
+    def test_una_base_roja_para_el_run_en_el_primer_write(self):
+        """Antes quemaba los 16 pasos denegando la misma escritura.
+
+        El coste no era solo tiempo: un run que se agota denegando parece que el
+        agente no sabe obedecer, cuando lo que ocurre es que nadie le dijo que
+        aquello no tenía arreglo.
+        """
+        import tempfile
+        from app import autonomy
+
+        # Un almacén de verdad, en un fichero de verdad: en modo `permiso` y con
+        # el proyecto marcado. Un doble que devuelve el veredicto a mano
+        # comprobaría el doble, no `decide()`.
+        tienda = autonomy._Almacen(Path(tempfile.mkdtemp()) / "a.sqlite3")
+        tienda.set_modo("permiso")
+        # El alias sale de la **ruta**, no de `estado_base`: una escritura bajo
+        # el repo de Aegis pertenece a `aegis`, y por eso hay que marcar ese.
+        tienda.marcar("aegis")
+
+        class _AutonomiaReal:
+            """Lo justo para que el bucle llame a `decide()` del módulo real."""
+
+            def __init__(self, almacen):
+                self.almacen = almacen
+
+            def decide(self, *a, **k):
+                return autonomy.decide(*a, almacen_=self.almacen, **k)
+
+        cliente = _FalsoOllama([{"texto": "", "calls": [
+            {"name": "aegis_write_file", "args": {"path": "bridge/x.txt", "content": "y"}}]},
+            {"texto": "", "calls": [{"name": "aegis_write_file",
+                                      "args": {"path": "bridge/x.txt", "content": "z"}}]},
+            {"texto": "", "calls": [{"name": "aegis_write_file",
+                                      "args": {"path": "bridge/x.txt", "content": "w"}}]}])
+        rojo = {"alias": "aegis", "rojo": True, "problemas": 3, "detalle": "3 errores"}
+        r = _arrancar_con_cliente(cliente, autonomy=_AutonomiaReal(tienda),
+                                  estado_base=rojo, max_steps=3)
+        self.assertEqual(r["fin"], "verificador_rojo")
+        # Ni llega a preguntar tres veces: para en la primera.
+        self.assertEqual(cliente.llamadas, 1)
+
+    def test_una_tool_que_reventa_no_mata_el_run(self):
+        """Una tool puede lanzar cualquier cosa, y eso es un paso rojo.
+
+        Antes solo se atrapaban `ToolNotAllowed`, `ValueError` y `TypeError`; un
+        `OSError` de una tool se llevaba el run entero **sin traza**, y el modelo
+        no tenía ocasión de leer el error ni de intentar otra cosa.
+        """
+        from unittest import mock
+        cliente = _FalsoOllama([
+            {"texto": "", "calls": [{"name": "repo_verify", "args": {"what": "check"}}]},
+            {"texto": "hecho", "calls": []},
+        ])
+        with mock.patch("app.autopilot._execute", side_effect=OSError("adb: no such device")):
+            r = _arrancar_con_cliente(cliente)
+        paso = next((t for t in r["trace"] if t.get("tool")), None)
+        self.assertIsNotNone(paso)
+        self.assertFalse(paso["ok"])
+        self.assertIn("OSError", paso["result"])
+        self.assertEqual(r["fin"], "sin_tools",
+                         "el run debe poder terminar con su respuesta de verdad")
+
+    def test_sin_modelo_es_un_fin_con_nombre(self):
+        import httpx
+        cliente = _FalsoOllama([], fallo=httpx.ConnectError("connection refused"))
+        r = _arrancar_con_cliente(cliente)
+        self.assertEqual(r["fin"], "modelo_caido")
+        self.assertIn("ConnectError", r["answer"])
+        self.assertTrue(any(t.get("action") == "modelo_caido" for t in r["trace"]))
+
+    def test_sin_modelo_tambien_deja_el_razon_de_lo_que_hizo(self):
+        """Ollama no contesta en el paso 2: lo del paso 1 sigue en la traza."""
+        import httpx
+        from unittest import mock
+
+        class _AVeces:
+            def __init__(self):
+                self.n = 0
+
+            def __call__(self, *a, **k):
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+            async def post(self, url, json=None, **k):
+                self.n += 1
+                if self.n == 1:
+                    return _Respuesta({"texto": "", "calls": [
+                        {"name": "projects_list", "args": {}}]})
+                raise httpx.ReadTimeout("timeout")
+
+        cliente = _AVeces()
+        with mock.patch("app.autopilot.httpx.AsyncClient", return_value=cliente), \
+                mock.patch("app.autopilot._execute", return_value="ok"):
+            import asyncio
+            from app.autopilot import run_autopilot
+            r = asyncio.run(run_autopilot("x", ollama_url="http://falso", model="m",
+                                          max_steps=4))
+        self.assertEqual(r["fin"], "modelo_caido")
+        self.assertTrue(any(t.get("tool") == "projects_list" for t in r["trace"]))
+
+
+class TestTodoRunDejaRastroEnDisco(unittest.TestCase):
+    """Un run que falla tiene que poder falla*r otra vez mañana.
+
+    ## Por qué esto importa más que el mensaje
+    `_escribir_jsonl_de_autopilot` y `remember()` estaban **después** del run, sin
+    ningún `try` alrededor. Cualquier excepción se los comía: el run no existía
+    ni en el disco ni en la memoria. Lo que se perdía no era un dato, era el
+    aprendizaje —sin episodio, esa forma de fallo no se vuelve a reconocer—.
+    """
+
+    def _con_runs_temporales(self):
+        import tempfile
+        from unittest import mock
+        from app import main as main_mod
+        tmp = Path(tempfile.mkdtemp())
+        patcher = mock.patch.object(main_mod, "_runs_dir", lambda: tmp / "runs")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return tmp / "runs"
+
+    def test_un_run_roto_deja_jsonl(self):
+        import asyncio
+        from unittest import mock
+        from app import main as main_mod
+        runs = self._con_runs_temporales()
+        cuerpo = main_mod.AutopilotIn(prompt="x", max_steps=1)
+
+        async def revienta(*a, **k):
+            raise RuntimeError("se rompió el bucle")
+
+        with mock.patch.object(main_mod, "run_autopilot", revienta):
+            r = asyncio.run(main_mod._run_autopilot_once(cuerpo, "", None, "run-roto"))
+
+        self.assertEqual(r["fin"], "reventado")
+        self.assertIn("RuntimeError", r["error"])
+        self.assertTrue((runs / "run-roto.jsonl").exists(),
+                        "un run que revienta tiene que dejar fichero")
+
+    def test_el_jsonl_de_un_run_roto_dice_que_revento(self):
+        import json
+        import asyncio
+        from unittest import mock
+        from app import main as main_mod
+        runs = self._con_runs_temporales()
+        cuerpo = main_mod.AutopilotIn(prompt="x", max_steps=1)
+
+        async def revienta(*a, **k):
+            raise RuntimeError("se rompió el bucle")
+
+        with mock.patch.object(main_mod, "run_autopilot", revienta):
+            asyncio.run(main_mod._run_autopilot_once(cuerpo, "", None, "run-roto"))
+
+        lineas = [json.loads(x) for x in
+                  (runs / "run-roto.jsonl").read_text(encoding="utf-8").splitlines()]
+        eventos = [x["event"] for x in lineas if "event" in x]
+        self.assertIn("task.failed", eventos)
+        fallo = next(x for x in lineas if x.get("event") == "task.failed")
+        self.assertIn("RuntimeError", fallo["payload"].get("error", ""))
+
+
+class TestLaEscaladaEstaMontada(unittest.TestCase):
+    """La escalada: dejar de insistir, y decir si la base empeoró."""
+
+    """Las dos funciones que la lección daba por puestas, montadas de verdad.
+
+    `verifier.es_repetido` y `autonomy.empeora` llevaban tiempo escritas, con su
+    docstring prometiendo lo que hacen, y **sin una sola llamada** en `app/`. La
+    lección A-014 llegó a decir «el antidoto ya está: `verifier.es_repetido`
+    cuenta la llamada idéntica que falló dos veces». No era verdad, y esa clase de
+    mentira —documentar un mecanismo que no existe— es la que hace que luego
+    nadie mire si el mecanismo funciona.
+    """
+
+    def test_una_escritura_que_se_repite_para_el_run(self):
+        # Nota sobre el primer veredicto: para **sí**, porque con el verificador
+        # en rojo y sin corrida anterior contra la que comparar, `delta` sale
+        # negativo y la puerta para. Es lo prudente y no se cambia aquí; lo que
+        # se comprueba aquí es el distinguishing extra de la escalada.
+
+        import asyncio
+        from unittest import mock
+        from app import verifier
+
+        with mock.patch.object(verifier, "ejecutar") as ejecutar:
+            ejecutar.return_value = _verdict_rojo(3)
+            puerta = verifier.gate("aegis")
+            args = {"path": "bridge/x.txt", "content": "y"}
+
+            # Solo se llama a la puerta: aquí no hay run, y por lo tanto no hay
+            # `_execute` que pueda escribir nada en el repo.
+            async def _pide(paso):
+                return await puerta(paso, "aegis_write_file", args, "escrito")
+
+            v1, v2, v3 = asyncio.run(_pide(1)), asyncio.run(_pide(2)), asyncio.run(_pide(3))
+
+        self.assertFalse(v1.get("repetida"), "la primera no es una repetición")
+        self.assertTrue(v3["stop"])
+        self.assertTrue(v3.get("repetida"), "y la tercera ya es la misma llamada")
+        self.assertIn("ya ha fallado dos veces", v3["motivo"])
+
+    def test_una_escritura_distinta_no_es_repetida(self):
+        import asyncio
+        from unittest import mock
+        from app import verifier
+
+        with mock.patch.object(verifier, "ejecutar") as ejecutar:
+            ejecutar.return_value = _verdict_rojo(3)
+            puerta = verifier.gate("aegis")
+
+            async def _pide(paso, path):
+                return await puerta(paso, "aegis_write_file",
+                                    {"path": path, "content": "y"}, "escrito")
+
+            for paso in range(1, 4):
+                v = asyncio.run(_pide(paso, f"bridge/{paso}.txt"))
+        self.assertFalse(v.get("repetida"), "rutas distintas no son la misma llamada")
+
+    def test_el_resultado_dice_si_la_base_empeoro(self):
+        import asyncio
+        from unittest import mock
+        from app import autopilot as ap
+
+        base = {"alias": "aegis", "problemas": 10, "detalle": "10"}
+        # Un gate que dice que ahora hay más problemas de los que había.
+        async def gate(step, tool, args, res):
+            return {"ok": False, "stop": False, "problemas": 14, "delta": 4,
+                    "mismo_error": False}
+
+        cliente = _FalsoOllama([
+            {"texto": "", "calls": [{"name": "aegis_write_file",
+                                      "args": {"path": "bridge/x.txt",
+                                               "content": "y"}}]},
+            {"texto": "listo", "calls": []},
+        ])
+        # `_execute` falseado siempre. Sin esto el test **escribe en el repo de
+        # verdad**: no se pasa `autonomy`, así que nada impide la escritura y la
+        # tool real se ejecuta. Pasó, y dejó un `bridge/x.txt` en el árbol.
+        # Un test que toca el disco real no es un test: es una escritura sin
+        # querer (A-057, la misma clase de fallo cometida al revés).
+        with mock.patch("app.autopilot._execute", return_value="escrito"):
+            r = _arrancar_con_cliente(cliente, gate=gate, estado_base=base)
+        self.assertTrue(r["empeorada"])
+        self.assertIn("10 problema", r["answer"])
+        self.assertIn("14", r["answer"])
+
+    def test_si_no_empeora_no_dice_nada(self):
+        """Decir «empeoró» sin que empeore es ruido que entrena a ignorar avisos."""
+        from app.autopilot import _con_empeora
+        r = _con_empeora({"answer": "hecho", "trace": []},
+                         {"alias": "aegis", "problemas": 10}, [])
+        self.assertNotIn("empeorada", r)
+        trace = [{"gate": {"problemas": 9}}]
+        r2 = _con_empeora({"answer": "hecho", "trace": trace},
+                          {"alias": "aegis", "problemas": 10}, trace)
+        self.assertFalse(r2["empeorada"])
+        self.assertEqual(r2["answer"], "hecho")

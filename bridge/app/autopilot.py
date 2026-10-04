@@ -451,6 +451,30 @@ def _sembrar_enfoque(enfoque: str, prompt: str
     return [nombre], motivo, entrada
 
 
+def _con_empeora(result: dict[str, Any], estado_base: Optional[dict[str, Any]],
+                  trace: list[dict[str, Any]]) -> dict[str, Any]:
+    """Añade al resultado si el verificador quedó **peor** que al empezar.
+
+    `autonomy.empeora` estaba escrita y sin usar: la comparación entre la línea
+    base y el final no la hacía nadie. Se hace aquí con el último veredicto que
+    la puerta ya dejó en la traza, así que **no se vuelve a correr el verificador**
+    — que es de lo más caro que hay — solo se leen los números que ya se midió.
+
+    Y solo se dice si empeoró de verdad: con una base de 452 problemas, 452 → 460
+    es empeorar aunque los dos estén "en rojo", y 452 → 452 no es nada.
+    """
+    from .autonomy import empeora
+    ultimos = [t["gate"] for t in trace if t.get("gate")]
+    if not ultimos or not estado_base:
+        return result
+    nuevo = {"alias": estado_base.get("alias"), "problemas": ultimos[-1].get("problemas")}
+    motivo = empeora(estado_base, nuevo)
+    result["empeorada"] = bool(motivo)
+    if motivo:
+        result["answer"] = f"{result.get('answer', '')}\n\nAviso: {motivo}"
+    return result
+
+
 async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         max_steps: int = MAX_STEPS, instructions: str = "",
                         project: str = "", memory: str = "",
@@ -559,12 +583,36 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
             if steering:
                 log.info("autopilot %s: %d instrucción(es) del usuario aplicadas "
                          "antes del paso %d", run_id, steering, step)
-            r = await client.post(
-                f"{ollama_url.rstrip('/')}/v1/chat/completions",
-                json={"model": model, "stream": False, "messages": messages, "tools": tools},
-            )
-            r.raise_for_status()
-            choice = r.json()["choices"][0]
+            try:
+                r = await client.post(
+                    f"{ollama_url.rstrip('/')}/v1/chat/completions",
+                    json={"model": model, "stream": False, "messages": messages, "tools": tools},
+                )
+                r.raise_for_status()
+                choice = r.json()["choices"][0]
+            except Exception as exc:  # noqa: BLE001 — el run muere, pero no en silencio
+                # Antes esto se propagaba tal cual: el run se guardaba `failed`
+                # sin traza ni episodio (los dos están **después** de esta llamada),
+                # y un parpadeo de Ollama costaba un run entero sin dejar rastro.
+                # Un Ollama que no contesta es un `fin` con nombre, no un silêncio.
+                detalle = f"{type(exc).__name__}: {exc}".strip()[:300]
+                log.warning("autopilot %s: el modelo no respondió en el paso %d: %s",
+                            run_id, step, detalle)
+                trace.append({"step": step, "action": "modelo_caido",
+                              "text": detalle})
+                if on_step is not None:
+                    await on_step(step, trace[-1])
+                return {
+                    "model": model,
+                    "answer": f"El modelo no respondió en el paso {step}: {detalle}\n"
+                              f"Hasta aquí llegué:\n{answer_fallback(trace)}",
+                    "steps": len(trace),
+                    "trace": trace,
+                    "fin": "modelo_caido",
+                    # El motivo también en su campo: el JSONL se consulta con
+                    # `jq`, no leyéndolo como un cuento.
+                    "error": detalle,
+                }
             message = choice.get("message") or {}
             text = message.get("content") or ""
 
@@ -694,6 +742,17 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         trace.append(entry)
                         if on_step is not None:
                             await on_step(step, entry)
+                        if veredicto.fin:
+                            # Y un "no" que es un tope: aquí seguir es tonto, cada
+                            # paso va a recibir el mismo. Se acaba con su motivo.
+                            return {
+                                "model": model,
+                                "answer": f"Me he parado antes de usar `{name}`.\n\n"
+                                          f"{veredicto.motivo}",
+                                "steps": len(trace),
+                                "trace": trace,
+                                "fin": veredicto.fin,
+                            }
                         messages.append({
                             "role": "user",
                             "content": f"NO PUEDES HACER ESTO: {veredicto.motivo}\n"
@@ -707,6 +766,17 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                     entry["ok"] = False
                     entry["result"] = f"ERROR: {exc}"
                     result = entry["result"]
+                except Exception as exc:  # noqa: BLE001 — una tool que revienta es un paso rojo, no un run muerto
+                    # Se atrapa **todo**, y no por lujo: una tool que lance un
+                    # `OSError` o un `KeyError` se llevaba el run entero por
+                    # delante, sin traza y sin episodio. El modelo debería poder
+                    # leer el error y reintentar con otra cosa, que es justo lo que
+                    # se le ofrece aquí: el error vuelve como texto en el paso.
+                    result = f"ERROR: {type(exc).__name__}: {exc}"[:500]
+                    entry["ok"] = False
+                    entry["result"] = result
+                    log.warning("autopilot %s: la tool %s levantó %s en el paso %d",
+                                run_id, name, type(exc).__name__, step)
                 else:
                     entry["ok"] = True
                     entry["result"] = result[:1500]
@@ -719,12 +789,16 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                     if veredicto:
                         entry["gate"] = veredicto
                         if veredicto.get("stop"):
-                            messages.append({
-                                "role": "user",
-                                "content": "VEREDICTO DEL VERIFICADOR:\n"
-                                           + json.dumps(veredicto, ensure_ascii=False)[:MAX_CHARS_PER_STEP],
-                            })
-                            return {
+                            # Sin `fin` aquí, `_runner` hacía `result["fin"]` y
+                            # reventaba con KeyError: el run se guardaba como
+                            # `failed` con el error `'fin'`. Cada vez que la puerta
+                            # reprendía el avance, el registro decía «falló» sin
+                            # decir por qué. Un `fin` que no está es un `fin` que
+                            # no se puede leer.
+                            #
+                            # El mensaje al modelo no se añade: el run termina, y
+                            # nadie lo va a leer.
+                            return _con_empeora({
                                 "model": model,
                                 "answer": f"Pausado en el paso {step}: la puerta de "
                                           f"verificación reprueba el avance.\n"
@@ -732,13 +806,15 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                                 "steps": len(trace),
                                 "trace": trace,
                                 "stopped_by_gate": True,
-                            }
+                                "fin": "llamada_repetida" if veredicto.get("repetida")
+                                        else "verificador_rojo",
+                            }, estado_base, trace)
                 trace.append(entry)
                 messages.append({
                     "role": "user",
                     "content": f"RESULTADO de {name}:\n{result[:MAX_CHARS_PER_STEP]}",
                 })
-    return {
+    return _con_empeora({
         "model": model,
         "answer": answer or answer_fallback(trace),
         "steps": len(trace),
@@ -746,7 +822,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
         # El motivo de cierre es un dato, no un detalle: distingue "el modelo no
         # pidió más tools" de "se acabaron los pasos" de "la puerta lo paró".
         "fin": fin,
-    }
+    }, estado_base, trace)
 
 
 def answer_fallback(trace: list[dict[str, Any]]) -> str:

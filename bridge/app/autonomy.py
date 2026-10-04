@@ -132,6 +132,15 @@ class Decision:
     #: solo uso, y reenviarlo convertía el resto del run en "ese permiso ya se
     #: usó" en tools que no tienen nada que ver con la llamada aprobada.
     uso_token: bool = False
+    #: Por qué tiene que terminar el run, cuando un "no" no es una respuesta que
+    #: el agente pueda sortear sino un roadblocks que se repite en cada paso.
+    #:
+    #: Existía un caso así y se traducía en Sixteen wasted inferences: la base
+    #: del verificador ya estaba roja y `decide()` devolvía un "no" sin más, así
+    #: que el bucle lo trataba como una respuesta ("sigue con otra cosa") y lo
+    #: agotaba entero rechazando lo mismo. Ahora el "no" dice que el run se
+    #: acaba, y el bucle lo obedece con un `fin` que se puede leer.
+    fin: str = ""
     #: Cuando `ok` es False pero se puede reintentar con un token, esto es el id.
     peticion: Optional[str] = None
 
@@ -731,13 +740,19 @@ def decide(tool: str, args: dict[str, Any], *, run_id: str, paso: int,
 
         # La base en rojo antes de empezar: si no sabes qué fallaba antes de
         # tocar nada, el rojo deja de servir de referencia.
+        #
+        # Y con `fin`: esto no es una respuesta, es un tope. Antes devolvía un
+        # "no" más, el bucle lo leía como «sigue con otra cosa» y el run se
+        # consumía entero (16 pasos) rechazando la misma escritura. Se paraba en
+        # el primer write, que es justo cuando todavía no has gastado nada.
         if estado_base and estado_base.get("rojo"):
             return Decision(
                 False,
                 f"El verificador de '{estado_base.get('alias')}' ya estaba en rojo "
                 f"cuando empecé ({estado_base.get('detalle', 'sin detalle')}). "
                 f"No voy a escribir encima de una base que no conozco: "
-                f"arreglala o dime que siga.")
+                f"arreglala o dime que siga.",
+                fin="verificador_rojo")
 
         destructiva = _es_destructiva(tool, args, a)
         if destructiva:
