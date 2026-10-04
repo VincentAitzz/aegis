@@ -20,6 +20,11 @@ Consola de operación del negocio freelance, local-first:
 - `bridge/` — API FastAPI, memoria, telemetría y el autopilot.
 - `mobile/` — cliente Flutter (`aegis_console`).
 - `infra/` — scripts de arranque (`ollama/`, `hermes/`, `tailnet/`, `mobile/`).
+- `bridge/quien-eres.md` — lo que Aegis sabe de ti. **No lo escriba Aegis solo**
+  (se escribe con `quien_eres_actualiza`, nivel 3). Una sección, «Cómo hablo
+  contigo», va en todos los runs con tope de 600 chars; el resto se lee con
+  `aegis_read_file` cuando el encargo lo necesita (A-082: una tool propia serían
+  1 500 chars de schema que se pagan aunque no se use).
 - `bridge/bin/lab/` — instrumentos de **medición** (`medir-*`, `measure-models`,
   `derivar-ficha`). Nada del operarlo los llama, y por eso no están en `bin/`
   junto a `probe-toolcall.sh` y `check-imports.py`, que sí lo son.

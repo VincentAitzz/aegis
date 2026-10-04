@@ -30,6 +30,7 @@ from . import enfoques as enfoques_mod
 from . import lecciones
 from .fichas import context_for
 from .method import method_context
+from .quien import contexto as quien_context
 from .mcp_ops import coerce_args
 from .mcp_ops import mcp as ops_mcp
 
@@ -163,6 +164,18 @@ def build_system_prompt(instructions: str = "", project: str = "",
     metodo = method_context(project)
     if metodo:
         parts.append(metodo)
+    # Contigo va justo después del método: los dos son «cómo se trabaja aquí», y
+    # separarlos metiendo la ficha del proyecto en medio pondría tu perfil en la
+    # mitad del prompt, donde el 7B le da menos peso. Va después y no antes
+    # porque, si los dos se contradijeran, manda el método.
+    #
+    # Son ~384 caracteres con tope duro de 600 (`app/quien.py`). El resto del
+    # fichero NO entra aquí: se pide con `quien_eres(tema)`, igual que las
+    # lecciones. Añadirlo todo «porque el modelo lo aprovecha más» se pagaría en
+    # cada paso de cada run —A-016, A-080—.
+    quien = quien_context()
+    if quien:
+        parts.append(quien)
     # La ficha del proyecto va antes que las lecciones: dice de qué trata esto,
     # y las lecciones solo tienen sentido una vez que se sabe.
     ficha = context_for(project)

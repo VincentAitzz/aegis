@@ -38,6 +38,9 @@ settings = get_settings()
 
 ROOT = Path("/RUTA/AL/WORKSPACE/aegis")
 MOBILE = ROOT / "mobile"
+#: Lo que Aegis sabe del usuario. Vive junto a `metodo.md`, en la raíz del bridge,
+#: y solo se escribe con `quien_eres_actualiza`, que es de nivel 3.
+QUIEN_PATH_NAME = "quien-eres.md"
 #: La paleta de la app. `build_apk` la lee para no compilar un APK con una marca
 #: que no es la de Aegis.
 #:
@@ -346,6 +349,33 @@ def lecciones(alias: str, tema: str = "", numeros: str = "") -> str:
                 f"completo está en el prompt; si crees que debería, no la "
                 f"inventes: se escribe.")
     return "\n\n---\n\n".join(l.como_texto() for l in halladas)
+
+
+@mcp.tool()
+def quien_eres_actualiza(seccion: str, texto: str) -> str:
+    """Corrige o añade una sección de `bridge/quien-eres.md`. **Pide tu OK.**
+
+    ## Para leerlo no hace falta esta tool
+    Está en disco: `aegis_read_file('quien-eres.md')`. No hay tool de lectura a
+    propósito, porque `aegis_read_file` ya existe y añadir otra con el mismo
+    propósito son 1 500 caracteres de schema en cada paso de cada run, y el schema
+    se paga aunque la tool no se use (medido: 8,7 KB de menos son un 37 % de
+    latencia).
+
+    ## Por qué escribir aquí es de nivel 3
+    Ese fichero entra en el prompt de **todos** los runs, así que reescribirlo
+    cambia el sistema entero de golpe y para siempre, y sobrevive a cualquier chat
+    y a cualquier reinicio. En el ecosistema de OpenClaw, poder editar el propio
+    `USER.md` así es el vector de ClawHavoc. Aquí sigues viendo el texto entero en
+    la aprobación.
+
+    ## Qué es una sección
+    Un encabezado `## `. Para leer el texto entero antes de escribirlo, usa
+    `aegis_read_file`. No inventes el contenido de una sección: si no sabes qué
+    poner, no la escribas.
+    """
+    from . import quien
+    return quien.actualizar(seccion, texto)
 
 
 @mcp.tool()

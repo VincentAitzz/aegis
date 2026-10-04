@@ -106,6 +106,14 @@ CON_PERMISO = frozenset({"aegis_write_file", "aegis_patch_file"})
 REQUIERE_OK = frozenset({
     "db_migrate", "neon_branch", "build_apk", "install_apk",
     "project_create", "adb_connect", "deploy_smoke",
+    # Reescribir lo que Aegis sabe de ti. No es nivel 3 por prudencia abstracta:
+    # es que ese fichero entra en el prompt de **todos** los runs, así que
+    # reescribirlo cambia el comportamiento del sistema entero de golpe y para
+    # siempre, y sobrevive a cualquier chat y a cualquier reinicio. En el
+    # ecosistema de OpenClaw esto mismo (`USER.md` editable por el propio agente)
+    # es el vector de ClawHavoc. Aquí se sigue viendo el texto entero en la
+    # aprobación, y por eso es la diferencia entre una decisión y un ataque.
+    "quien_eres_actualiza",
 })
 
 MODOS = ("solo", "permiso", "pleno")

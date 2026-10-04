@@ -347,6 +347,15 @@ máquina es x86_64.
 > aprobar del móvil nunca habría visto la petición y el humo siempre habría
 > fallado.
 >
+> **El perfil del usuario va en un fichero, y en dos tramos.** OpenClaw inyecta
+> un `SOUL.md` y un `USER.md` en cada turno; aquí el prompt es el presupuesto
+> —A-016: este 7B deja de emitir `tool_calls` cuando crece, y A-080: se
+> re-evalúa en cada paso—, así que `bridge/quien-eres.md` se parte: la sección
+> «Cómo hablo contigo» (543 de 600 chars) va en todos los runs, y el resto se lee
+> con `aegis_read_file` cuando hace falta. No hay tool propia de lectura: duplicar
+> `aegis_read_file` costaría 1 500 caracteres de schema en cada paso de cada run
+> por no tener que escribir el nombre de un fichero (A-082).
+
 > Ese camino se retiró el 2026-10-04: el agente que Hermes lanza desde
 > `POST /tasks` corre con `platform_toolsets.api_server: []`, es decir **sin
 > toolsets**, así que los MCP `aegis-ops` y `aegis-memory` no los veía nadie. Y el

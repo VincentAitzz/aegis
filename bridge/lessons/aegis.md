@@ -1869,3 +1869,36 @@ blanco, deformados y con resolución mala.
 - **Regla**: antes de comparar dos schemas, comprobar que **la tool que el encargo
   nombra existe en los dos**. Un experimento mal armado produce un número
   impecable y una conclusión invertida, y el número es lo que se cita después.
+
+## A-082 — Una tool que duplica otra no es una función, es un coste
+
+- **Qué pasó** (2026-10-04): al meter `quien-eres.md` (lo que Aegis sabe del
+  usuario) añadí dos tools: `quien_eres(tema)` para leer y
+  `quien_eres_actualiza()` para escribir. El schema del prompt subió de 18 682 a
+  **21 173** caracteres: +2 491, el 13%, en cada paso de cada run.
+- **La observación que lo dejó claro**: la mitad del coste era una tool **que
+  duplicaba `aegis_read_file`**, que ya existe, ya está en el schema y ya es de
+  nivel libre. El fichero está en disco; leerlo era una llamada que ya se podía
+  hacer. Lo único que aportaba `quien_eres` era un `## ` con el nombre de la
+  sección.
+- **El riesgo de quitarla** —y el test lo cazó—: sin tool propia, **el modelo no
+  sabe que el fichero existe**. La sección inyectada decía «pídelo con
+  `quien_eres(tema)`»… en un comentario HTML que el parser se come, o sea donde
+  el modelo no lo lee. La solución no fue devolver la tool: fue **una línea en el
+  bloque que ya se inyecta** diciendo que se lea con `aegis_read_file`. 70
+  caracteres en el prompt, frente a 1 500 en el schema que se pagan aunque la tool
+  no se use. Schema final: 20 033 (+1 351, por la tool de escritura, que sí
+  aporta: es el guardarraíl de nivel 3).
+- **Medido, el bloque de 543 caracteres no cuesta nada** (intercalado, como
+  A-080): 12/12 tool_calls con y sin él, y la mediana de latencia **se dio la
+  vuelta** entre las dos tandas (primero +2,3 s, después −1,6 s). Con un ruido de
+  ±4 s en esta máquina, un signo que cambia es la definición de «no medible».
+- **Regla**: antes de añadir una tool, mirar si ya hay una que haga eso. Y al
+  elegir entre «tool nueva» y «una línea en el prompt», tener presente que **el
+  schema se paga aunque la tool no se use** (A-081: 8,7 KB de schema eran el 37 %
+  de la latencia). Una tool que solo ahorra escribir el nombre del fichero no
+  sale a cuenta.
+- **Y la parte incómoda**: la primera medición dio +2,3 s y casi sale en el
+  commit como «el bloque cuesta un 15%». Con n=5 y ±4 s de ruido, ese número no
+  distinguía nada. Repetido a n=12 por variante, la diferencia no solo desapareció:
+  cambió de signo. A-080 ya lo había escrito y no lo había aprendido del todo.
