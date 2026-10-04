@@ -64,12 +64,28 @@ def _post(url: str, payload: dict, timeout: int = 600) -> dict:
 
 
 def _generar(modelo: str, prompt: str, num_predict: int = 200,
-             system: str = "") -> dict:
+             system: str = "", timeout: int = 900,
+             num_ctx: int | None = None) -> dict:
+    """Una generación. **`timeout` es un parámetro de la función**, no solo de `_post`.
+
+    ## Por qué el parámetro es explícito
+    Estaba roto desde hacía meses: `medir_carga` pasaba `timeout=900` a `_generar`,
+    que no lo aceptaba, así que **toda** la medición moría con
+    `TypeError: _generar() got an unexpected keyword argument 'timeout'` antes de
+    tocar un modelo. Un instrumento que no corre no mide nada, y se dejaba
+    como si midiera: por eso está en `bin/lab/` y ahora tiene un comprobador.
+    """
+    opciones: dict = {"num_predict": num_predict, "temperature": 0.2}
+    if num_ctx:
+        # El contexto por defecto son 64 000 tokens en una tarjeta de 6 GB, y
+        # carga la KV cache antes que los pesos. Medido: de 64k a 16k, un paso
+        # real pasa de 11,2 s a 8,3 s. Ver A-089.
+        opciones["num_ctx"] = num_ctx
     cuerpo = {"model": modelo, "prompt": prompt, "stream": False,
-              "options": {"num_predict": num_predict, "temperature": 0.2}}
+              "options": opciones}
     if system:
         cuerpo["system"] = system
-    return _post(f"{OLLAMA}/api/generate", cuerpo)
+    return _post(f"{OLLAMA}/api/generate", cuerpo, timeout=timeout)
 
 
 def medir_carga(modelo: str) -> float:

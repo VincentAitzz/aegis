@@ -2047,3 +2047,67 @@ blanco, deformados y con resolución mala.
   midiendo el cambio; midiendo otra cosa, y da sensación de cobertura. Y
   verificar en las dos direcciones cuesta un minuto: es el único modo de saber que
   el fallo que ves es el que crees.
+
+## A-089 — El modelo lento no es el modelo: es la memoria
+
+- **Qué pasó** (2026-10-04): al medir modelos para decidir si enrutar por tarea, la
+  primera conclusión fue «un 3B es más rápido que el 7B». Estaba mal, por **dos
+  motivos de medición**, y el segundo es el que importa.
+- **Motivo 1, el fácil**: estaba midiendo con el contexto que trae el modelo por
+  defecto, **64 000 tokens**, en una RTX 3050 de 6 GB. A ese tamaño, la KV cache se
+  reserva en VRAM *antes* que los pesos, así que el modelo corre con parte de sí
+  mismo en la RAM del sistema. Medido con el payload real de Aegis (9 962 tokens de
+  prompt, 17 KB de system + 20 KB de schema de tools):
+
+  | ctx | qwen2.5:7b | llama3.2:3b |
+  |-----|-----------|--------------|
+  | 8 192 (trunca) | 6,25 s | 2,94 s |
+  | 12 288 | 8,33 s | 4,54 s |
+  | 16 384 | 8,69 s | 4,57 s |
+  | 64 000 (por defecto) | 11,20 s | 11,75 s |
+
+  **Con el contexto bien dimensionado, un paso del 7B baja de 11,2 s a 8,3 s solo
+  por no pedir 64k.** Eso no cuesta una descarga ni un modelo nuevo: es un
+  parámetro.
+- **Motivo 2, el caro**: el `ctx 8192` de la tabla es **el número más rápido y el
+  peor resultado**. El prompt real son 9 962 tokens, así que a 8192 solo entraron
+  4 098: **truncado**, y el recorte es por la **frente**, que es justo donde vive
+  el system prompt. Ese tiempo es el de un modelo corriendo sin instrucciones.
+  Comprobarlo cuesta un campo: `prompt_eval_count`. Un truncado en silencio
+  devuelve 200 y contesta igual de fluido, así que **ningún HTTP 200 lo delata**.
+- **El dato que explica la lentitud**: `/api/ps` dice que el 7B tiene el **70 %** de
+  sus pesos en VRAM y el 3B el **47 %**. Generar es trabajo de ancho de banda de
+  memoria, así que el parámetro que manda no es cuántos parámetros tiene el modelo
+  sino **cuántos están en la GPU**. Por eso el 3B «rápido» no lo era: estaba más
+  partido.
+- **Calidad, por el bucle real** (no con una llamada suelta, que es un error que
+  cometí: sin realimentar el resultado de la tool el modelo nunca lee nada y ambos
+  marcan 0). Encargos de solo lectura, 6 hechos verificables:
+  `qwen2.5:7b` 3/6 y termina limpio (`fin: sin_tools`); `llama3.2:3b` 2/6 y **vuelve
+  a llamar la misma tool** hasta agotar los pasos (`fin: max_steps`) en los dos
+  encargos. Es la modo de fallo de A-014.
+- **Conclusión, y es una no-acción**: **enrutar por modelo no paga en esta máquina.**
+  La diferencia de latencia entre los dos candidatos es ~5 %, y cambiar de modelo
+  cuesta entre 4 y 17 s de carga. Cambiar para ahorrar 1,8 s por paso.
+
+  El punto de partida era que «unos modelos para unas tareas y otros para otras», y
+  el resultado es que **aquí la variable que rinde es una sola: el contexto**.
+- **Regla**: antes de comparar modelos, comprueba **cuánta VRAM tiene disponible
+  cada uno con `nvidia-smi`**, no cuántos parámetros tiene. Y antes de bajar el
+  contexto para ganar velocidad, comprueba que el prompt **cabe**, mirando
+  `prompt_eval_count` y no el código de salida.
+
+## A-090 — Un instrumento que no corre se disfraza de instrumento
+
+- **Qué pasó**: `bin/lab/measure-models.py` llevaba meses dando
+  `TypeError: _generar() got an unexpected keyword argument 'timeout'` en las cinco
+  mediciones. Nadie lo había arreglado porque nadie lo había ejecutado, y porque un
+  script que existe **parece** que mide.
+- **La causa**: `medir_carga` pasaba `timeout=900` a `_generar`, que no lo aceptaba.
+  Un parámetro que no existe, en una función que nunca se ejecutó.
+- **El arreglo** son tres líneas, pero lo que vale es la decisión: ahora `timeout` y
+  `num_ctx` son parámetros explícitos de `_generar`, y el instrumento mide el
+  contexto porque **se descubrió que es la variable que manda** (A-089).
+- **Regla**: un instrumento de medición necesita un **comprobador de que corre**. Si
+  la salida es una traza de error, no es un cero: es una avería, y las dos se
+  parecen en la terminal. Un instrumento que nunca se ejecuta debería decirlo.
