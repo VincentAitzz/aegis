@@ -346,6 +346,39 @@ tools de nivel 3, con sus guardarraíles y con rastro en
 sirve para que Aegis **continúe** después de esa llamada. En el móvil son los dos
 botones de la tarjeta.
 
+### 4.4 Lecciones: índice, no el fichero entero
+
+`lessons/{alias}.md` es el registro de por qué el código es como es, y **no se
+borra**. Lo que cambió es cuánto se le enseña al modelo:
+
+- Al prompt va un **índice**: número, título y cuándo aplica (~8 000 caracteres
+  con 79 lecciones). Antes iban las 120 KB enteras.
+- La lección **más relevante** para el encargo va entera.
+- El resto se pide con la tool `lecciones(alias, tema)`.
+
+Por qué, medido el 2026-10-04 (n=5, intercalado, mismo proceso):
+
+| prompt | tool_calls | latencia |
+|---|---|---|
+| con las 120 KB | 5/5 | 60,2 s por llamada |
+| con el índice (16 720 chars) | 5/5 | **11,9 s** |
+| sin lecciones (4 489 chars) | 4/5 | 10,1 s |
+
+El índice cuesta **+1,8 s (+17%)** por llamada. Y el comportamiento que las
+lecciones describen tampoco cambiaba: se probó A-014 («no repitas la llamada
+idéntica que ya falló dos veces») y el modelo la repitió **3 de 3 con ellas y
+3 de 3 sin ellas** (A-079).
+
+Cada lección puede declarar su propio criterio con una línea
+`> Aplica cuando: …` bajo el título; las que no la tienen usan la primera frase
+de su «qué pasó». **No se inventa un disparador**: uno inventado suena específico
+y no sirve para nada.
+
+```
+lecciones(alias='aegis', tema='voy a decir que ya he hecho todo')
+lecciones(alias='aegis', numeros='A-055,A-061')
+```
+
 ### 4.4 Fases de trabajo
 
 Una fase son las instrucciones que solo valen mientras se piensa. Cada una es un

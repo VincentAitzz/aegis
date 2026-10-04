@@ -82,6 +82,10 @@ LIBRES = frozenset({
     "adb_devices",
     "deploy_estado",
     "verify_deploy",
+    # Leer lecciones no cambia nada del disco: es lo mismo que `ficha_read`, y
+    # si preguntara por ello acabaríamos sin leerlas —que es justo lo que pasaba
+    # cuando iban inyectadas en el prompt y el modelo no las obedecía.
+    "lecciones",
     # Cambiar la manera de trabajar del run actual. No toca el disco, no cambia
     # nada fuera de este encargo y se acaba con él —de hecho, `usar_enfoque('')`
     # lo suelta—, así que preguntar por ello sería una puerta para nada.

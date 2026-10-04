@@ -20,6 +20,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 
 ### A-002 · El recuento que da el agente no es evidencia
 
+> Aplica cuando: cuando vas a decir que has hecho N cosas
+
 - **Qué pasó**: respondió "4 enums creados" cuando había escrito 23. Los 23
   estaban bien; el recuento era falso.
 - **Regla**: un modelo de 6 GB **no cuenta**. Cuenta tú contra la fuente.
@@ -27,6 +29,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
   mitad del trabajo.
 
 ### A-003 · Un tool call que devuelve el mismo error dos veces no se repite
+
+> Aplica cuando: cuando una tool devuelve un error que ya habías visto
 
 - **Qué pasó**: `repo_verify` devolvió "no test files found" y el agente lo
   invocó cuatro veces seguidas, quemando un cuarto de los pasos. Nunca creó el
@@ -43,6 +47,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 - **Detección**: `wc -l` menor que el número de declaraciones.
 
 ### A-005 · Un id no se deduce de un host
+
+> Aplica cuando: cuando te toque adivinar un id, un host o una URL
 
 - **Qué pasó**: registré el proyecto de Neon `compra-unida` con el nombre de su
   **endpoint** (`young-waterfall-ace5iynr`) en vez del **id del proyecto**
@@ -138,6 +144,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 
 ### A-012 · Para Python, dale el esqueleto, no la especificación
 
+> Aplica cuando: cuando te pidan código sin decirte la firma exacta
+
 - **Qué pasó**: con la interfaz descrita en prosa, el modelo generó la estructura
   y metió un error de sintaxis. Con `projects.py` (interfaz corta) acertó.
 - **Por qué**: la estructura es lo único que el modelo puede hacer mal de forma
@@ -149,6 +157,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
   que tiene que hacer".
 
 ### A-013 · El agente declaró haber creado un archivo que nunca escribió
+
+> Aplica cuando: cuando tu respuesta diga que has escrito algo
 
 - **Qué pasó**: tercer intento de la misma unidad. La escritura falló con
   `aegis_write_file() got an unexpected keyword argument 'what'` (el tercer vez
@@ -174,6 +184,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
   auditar.
 
 ### A-014 · Siete reintentos idénticos, y la lección que no alcanzó
+
+> Aplica cuando: cuando vas a repetir una llamada que ya ha fallado dos veces
 
 - **Qué pasó**: el segundo intento escribió 7 veces `aegis_write_file` con la
   misma ruta equivocada (`/RUTA/AL/REPO/...`: armó la ruta a mano y perdió el
@@ -214,6 +226,8 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
   El doc que entregó se reemplazó a mano por uno que sí cita las funciones.
 
 ### A-016 · Una tool que falla en silencio es peor que una tool ausente
+
+> Aplica cuando: cuando una tool te devuelva texto en vez de un fallo
 
 - **Qué pasó** (medido el 2026-09-30): `POST /tasks` respondió `status: completed`
   y `final_text: "OK"` en **5 de 5** runs en los que la tool **nunca se ejecutó**.
@@ -431,6 +445,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 
 ### A-020 · Un sistema que interrumpe sin avisar también está roto
 
+> Aplica cuando: cuando una acción tuya tarde más de lo que el usuario espera
+
 - **Qué pasó** (2026-09-30): `install_apk` resolvía el galaxy por mDNS, lo
   instalaba **y abría la app encima** (`launch=True` por defecto). Ninguna
   puerta, ningún aviso. Una prueba de Aegis te podía interrumpir a media cosa, y
@@ -499,6 +515,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 
 
 ### A-023 · El botón de aprobación vivía dentro de lo que había que aprobar
+
+> Aplica cuando: cuando pongas una puerta detrás de algo que aún no está instalado
 
 - **Qué pasó** (2026-09-30): `install_apk(target="telefono")` exigía una
   autorización que se daba **pulsando un botón de la app del teléfono**. Sin la
@@ -679,6 +697,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 
 ### A-033 · Un permiso atado al run no se puede canjear
 
+> Aplica cuando: cuando ligues un permiso a un run o a un paso
+
 - **Qué pasó** (2026-10-01): la cola de aprobación ataba el token al `run_id` y
   al `paso`. Aprobar y relanzar **crea un run nuevo** con otro id, así que el
   token ya no encajaba: el paso volvía a pedir permiso, para siempre.
@@ -762,6 +782,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
 
 ### A-037 · Denegar con motivo es lo que hace crecer la confianza
 
+> Aplica cuando: cuando te digan que no, sin motivo
+
 - **Qué pasó** (2026-10-01): la primera versión de la cola guardaba un `estado` de
   `aprobada`/`denegada` y nada más. Denegar funcionaba, pero "no" sin razón no es
   aplicable a la siguiente situación parecida, así que Aegis volvía a proponer lo
@@ -802,6 +824,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
   token y que los endpoints nuevos van a dar 401.
 
 ### A-039 · Un APK que abre no es un APK que funciona
+
+> Aplica cuando: cuando digas que algo abre o funciona
 
 - **Qué pasó** (2026-10-01): con la puerta de `X-Aegis-Token` activada, hay dos
   binarios: el del emulador con el token y el del teléfono sin él (hasta que se
@@ -856,6 +880,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
   duplicado se limpia antes de intentar.
 
 ### A-042 · «aviso enviado» no es un aviso: el que avisa tiene que ser el dueño
+
+> Aplica cuando: cuando mandes un aviso y no compruebes que llegó
 
 - **Qué pasó** (2026-10-01): el puente avisaba con
   `adb shell cmd notification post` y devolvía `"aviso enviado"` si salía con
@@ -929,6 +955,8 @@ limpia el mismo código dio **16/16 en dos rondas**, sin falsos éxitos.
   el `pedir()` registra la excepción en vez de tragársela.
 
 ### A-045 · La puerta cubría menos de lo que su comentario decía
+
+> Aplica cuando: cuando el comentario de una puerta prometa más de lo que hace
 
 - **Qué pasó** (2026-10-01): `X-Aegis-Token` protegía notas, tareas, autonomía y
   aprobaciones de tools, pero **`/deploys` y `POST /deploys/{id}` estaban
@@ -1135,6 +1163,8 @@ blanco, deformados y con resolución mala.
 
 ## A-053 — El humo que falla por impaciencia bloquea una instalación legítima
 
+> Aplica cuando: cuando una espera venga de prisa y no de calidad
+
 **Cuándo**: 2026-10-01. Instalando una actualización en el teléfono real.
 
 - **El síntoma**: `install_apk(target='telefono')` se paró con «el humo en el
@@ -1192,6 +1222,8 @@ blanco, deformados y con resolución mala.
 
 ## A-055 — Un token que se gasta antes de comprobar es un permiso quemado
 
+> Aplica cuando: cuando gastes un permiso antes de comprobar la llamada
+
 - **Qué pasó** (2026-10-03): al cerrar el círculo de las aprobaciones desde el
   móvil (guardar el token, relanzar el run), `decide()` **gastaba** el token antes
   de comprobar que la llamada era la aprobada. Medido con `project_create`: el
@@ -1214,6 +1246,8 @@ blanco, deformados y con resolución mala.
   cobrar y luego comparar es una moneda de cobre que se pierde al primer desajuste.
 
 ## A-056 — Un argumento compuesto es un argumento que el 7B no repite igual
+
+> Aplica cuando: cuando le pidas al modelo un argumento compuesto (JSON, listas anidadas)
 
 - **Qué pasó** (2026-10-03): el alta de proyecto necesitaba declarar el
   verificador, y se pidió como un **JSON dentro de una cadena**
@@ -1250,6 +1284,8 @@ blanco, deformados y con resolución mala.
 
 ## A-058 — «Ejecutar lo aprobado» no es «relanzar el run»
 
+> Aplica cuando: cuando ejecutes algo que el usuario aprobó y no lo reemitas por el modelo
+
 - **Qué pasó** (2026-10-03): cerrar el círculo de una aprobación desde el móvil
   exigía relanzar el run con el token, y el token valida la llamada, no el run.
   Medido con `project_create`: de cuatro intentos, **uno solo** casó. La causa no
@@ -1274,6 +1310,8 @@ blanco, deformados y con resolución mala.
 
 ## A-059 — Una tool que deniega no lanza: «hecho» sobre «RECHAZADO»
 
+> Aplica cuando: cuando pintes un resultado de una tool sin leer lo que devuelve
+
 - **Qué pasó** (2026-10-03): `POST /aprobaciones/{id}/ejecutar` respondía `ok:
   true` con un `result` que decía `ALTA RECHAZADA: 'acme' ya está registrado`. Las
   tools de Aegis devuelven el motivo como **texto**, no como excepción.
@@ -1286,6 +1324,8 @@ blanco, deformados y con resolución mala.
   demasiado optimista en un caso raro que un `ok` que adivina.
 
 ## A-060 — Una variable documentada que no hace nada es peor que no documentarla
+
+> Aplica cuando: cuando uses una variable de entorno o un parámetro que declaraste
 
 - **Qué pasó** (2026-10-03): el teléfono estaba **enchufado por USB** y adb lo
   veía (`SERIAL1234567`), y Aegis respondía «tu teléfono no aparece en adb. Conéctalo».
@@ -1308,6 +1348,8 @@ blanco, deformados y con resolución mala.
   (`AEGIS_BRIDGE_TAILNET_IP`), y cuando se declara tiene que llegar a la puerta.
 
 ## A-061 — Una puerta que comprueba una cosa y responde por otra
+
+> Aplica cuando: cuando digas «verificado» o «listo»
 
 - **Qué pasó** (2026-10-03): se aprobó e instaló en el teléfono un APK de **dos
   días antes** del código que se estaba tocando. La puerta dio el visto bueno:
@@ -1568,7 +1610,7 @@ blanco, deformados y con resolución mala.
   cerrar nada a mano, pero tampoco se puede mantener un widget con el resultado de
   algo que ya te ha matado. Por eso el estado vive en el aviso.
 
-## A-071 — Fundir dos avisosdisabled weakens la verificación, si no se comprueba el estado
+## A-071 — Fundir dos avisos debilita la verificación, si no se comprueba el estado
 
 - **Qué pasó** (2026-10-03): al unificar los dos ids de notificación (A-069), la
   verificación dejó de comprobar nada. `_hay_aviso_aegis` miraba «¿hay una
@@ -1754,6 +1796,8 @@ blanco, deformados y con resolución mala.
 
 ## A-079 — Un `fin` que no está no es un `fin`: es un `KeyError` esperando
 
+> Aplica cuando: cuando devuelvas el resultado de un run, por el camino que sea
+
 - **Qué pasó** (2026-10-04): la parada por verificador devolvía un dict **sin
   `fin`**, y quien lo consumía hacía `result["fin"]`. El `KeyError` se comía el
   motivo real y el run se guardaba como `failed` con el error `'fin'`. O sea: la
@@ -1776,3 +1820,27 @@ blanco, deformados y con resolución mala.
   diario. Un fallo que no deja rastro es un fallo que no se puede ni detectar
   ni corregir, y todo este repo está montado para que los fallos se puedan
   corregir.
+
+## A-080 — Medir dos prompts alternando, o medir ruido
+
+- **Qué pasó** (2026-10-04): al reemplazar las 120 KB de lecciones por un índice
+  de 8 000 caracteres, la puerta que yo mismo había fijado («latencia en frío
+  ≤ 15 s») **no se cumplió: 20,0 s**. La primera reacción fue pensar que el
+  arreglo no valía. No era verdad: la medición estaba mal hecha.
+- **El fallo de medición**: comparé «con lecciones» contra un número absoluto
+  medido **en otra sesión**. La misma variante sin lecciones dio 10,5 s en una
+  tanda y 14,8 s en otra, con la máquina igual: **±4 s de deriva**. Con ese
+  ruido, cualquier umbral absoluto de segundos es inventado.
+- **La medición que sí sirve**: alternar las dos variantes **en el mismo
+  proceso**, que es lo que hace que la deriva afecte a las dos por igual. Resultado
+  intercalado: índice 11,9 s, sin lecciones 10,1 s → **+1,8 s (+17%)** por
+  llamada. El coste real del índice es un 17%, no 20 s.
+- **Regla**: **un umbral absoluto solo vale si el ruido está por debajo del
+  efecto**. Si no lo está, el criterio es relativo (cuánto más que la línea
+  base) o la comparación es intercalada. Y antes de descartar un arreglo por una
+  puerta que falla, comprobar que la puerta mide lo que dice medir: esta medía el
+  reloj de la máquina, no el arreglo.
+- **Y una segunda, más incómoda**: el motivo por el que las 120 KB salían tan
+  caro no era solo el tamaño, sino que **el prompt entero se re-evalúa en cada
+  paso**. 120 KB × 16 pasos es media hora de reloj por run. Un coste que se paga
+  por paso es un coste que multiplica, y es el que hay que mirar primero.

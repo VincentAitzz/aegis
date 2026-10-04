@@ -151,6 +151,25 @@ necesitan llamar tools.
 
 Añadir una fase es escribir un fichero. Sin código, sin enum, sin compilar.
 
+### Las lecciones: índice, no el fichero entero
+
+`bridge/lessons/{alias}.md` es el registro de por qué el código es como es, y
+**no se borra**. Al prompt solo va:
+
+1. un **índice** con número, título y cuándo aplica;
+2. la lección **más relevante** para el encargo, entera;
+3. el resto, con `lecciones(alias, tema)` — una tool de lectura, nivel libre.
+
+Medido el 2026-10-04 (n=5, intercalado): con las 120 KB enteras cada llamada
+tardaba **60,2 s**; con el índice, **11,9 s**. Y el comportamiento que las
+lecciones describen no cambia: A-014 dice «no repitas la llamada idéntica que ya
+falló dos veces» y el modelo la repitió 3 de 3 **con** las lecciones y 3 de 3
+**sin** ellas.
+
+Cada lección puede declarar su criterio con `> Aplica cuando: …`. Las que no lo
+declaran usan la primera frase de su «qué pasó», y **no se inventa uno**: un
+disparador inventado suena específico y no sirve.
+
 ### Desde el móvil, o cuando el run puede tardar
 
 `POST /autopilot` es síncrono y un paso puede tardar medio minuto: para no

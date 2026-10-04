@@ -27,6 +27,7 @@ from typing import Any, Optional
 import httpx
 
 from . import enfoques as enfoques_mod
+from . import lecciones
 from .fichas import context_for
 from .method import method_context
 from .mcp_ops import coerce_args
@@ -83,25 +84,56 @@ SYSTEM_PROMPT = (
 LESSONS_DIR = Path(__file__).resolve().parent.parent / "lessons"
 
 
-def load_lessons(project: str) -> str:
-    """Lecciones curadas del proyecto: reglas que ya se pagaron con un error.
+def load_lessons(project: str, encargo: str = "") -> str:
+    """Lecciones del proyecto para el prompt: **el índice y la que más aplica**.
 
-    Es la capa que hace que una corrección mía no se pierda. Cuando corrijo un
-    módulo, escribo aquí la regla; la lee TODO run posterior de ese proyecto.
+    ## Por qué ya no va el fichero entero
+    Medido el 2026-10-04, mismo encargo, n=5 cada caso (`app/lecciones.py` tiene
+    la tabla entera):
+
+    | prompt | tool_calls | latencia en frío |
+    |---|---|---|
+    | con las 120 KB enteras | 5/5 | **60,2 s** |
+    | sin lecciones | 5/5 | **10,5 s** |
+
+    5,7× por llamada y el mismo número de tool_calls. Y el comportamiento que
+    describen tampoco cambia: se probó A-014 («no repitas la llamada idéntica que
+    ya falló dos veces») y el modelo la repitió **3 de 3 con las lecciones
+    inyectadas y 3 de 3 sin ellas**.
+
+    ## Qué va ahora
+    Un índice (número, título y cuándo aplica) y la lección más relevante entera.
+    El resto se pide con la tool `lecciones(alias, tema)`. Las lecciones siguen
+    siendo el registro de por qué el código es como es —eso no cambia—; lo que
+    cambia es lo que se le enseña a un modelo que no las iba a obedecer.
+
+    ## Por qué una entera y no cero
+    Una concreta cabe, y es la que de verdad puede darle un motivo para mirar.
+   -meterla en el prompt la deja leída en el momento en que decide; depender de
+    que pida la tool es depender de que el 7B se acuerde.
     """
     if not project:
         return ""
-    path = LESSONS_DIR / f"{project}.md"
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
+    indice = lecciones.indice(project)
+    if not indice:
         return ""
+    partes = [
+        "LECCIONES DE ESTE PROYECTO (índice, no el texto entero). Si una encaja "
+        "con lo que te toca, pídela con la tool `lecciones(alias, tema)` antes de "
+        "actuar — o léela aquí si va entera:\n" + indice,
+    ]
+    encaja = lecciones.relevantes(project, encargo)
+    if encaja:
+        partes.append("La que más aplica a este encargo:\n\n"
+                      + encaja[0].como_texto())
+    return "\n\n".join(partes)
 
 
 def build_system_prompt(instructions: str = "", project: str = "",
                         memory: str = "", enfoque: str = "",
                         enfoque_por_que: str = "",
-                        enfoque_derivado: bool = False) -> str:
+                        enfoque_derivado: bool = False,
+                        encargo: str = "") -> str:
     """Sistema = identidad + método + base + ficha + enfoque + lecciones + memoria.
 
     El `enfoque` inyecta `bridge/enfoques/{enfoque}.md`, que es donde vive lo que
@@ -170,12 +202,9 @@ def build_system_prompt(instructions: str = "", project: str = "",
                 + "\n\nNo es una recomendación: la autonomía las niega antes de "
                   "ejecutarlas. Suelta el enfoque cuando ya no lo necesites.")
         parts.append(bloque_enfoque)
-    lessons = load_lessons(project)
+    lessons = load_lessons(project, encargo)
     if lessons:
-        parts.append(
-            "LECCIONES APRENDIDAS EN ESTE PROYECTO (aplícalas; ya se corrigieron "
-            "estas cosas una vez):\n" + lessons
-        )
+        parts.append(lessons)
     if memory:
         parts.append("EXPERIENCIA PASADA RELEVANTE:\n" + memory)
     # Lo que el usuario ya ha rechazado, con su motivo. Sin esto la columna
@@ -524,16 +553,15 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     "esperando_ok"` y devuelve el id de la petición. No es un fallo ni un paso
     más: es el run esperando a una persona, y el móvil lo pinta como tal.
     """
-    from . import enfoques as enfoques_mod
-
     tools = _tools_schema()
     activos, motivo_derivado, entrada_enfoque = _sembrar_enfoque(enfoque, prompt)
     messages: list[dict[str, Any]] = [
         {"role": "system",
-         "content": build_system_prompt(instructions, project, memory,
-                                        activos[0] if activos else "",
-                                        motivo_derivado,
-                                        bool(motivo_derivado))},
+         "content": build_system_prompt(
+             instructions, project, memory,
+             activos[0] if activos else "",
+             motivo_derivado, bool(motivo_derivado),
+             encargo=prompt)},
         {"role": "user", "content": prompt},
     ]
     trace: list[dict[str, Any]] = []

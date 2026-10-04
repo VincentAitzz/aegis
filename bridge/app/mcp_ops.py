@@ -305,6 +305,50 @@ def ficha_read(alias: str) -> str:
 
 
 @mcp.tool()
+def lecciones(alias: str, tema: str = "", numeros: str = "") -> str:
+    """Las lecciones de un proyecto, en texto entero.
+
+    ## Por qué existe una tool para leer
+    Medido: con las 79 lecciones de `aegis` inyectadas enteras, cada llamada al
+    modelo tardaba **60 segundos** en vez de 10, y el número de tool_calls no
+    mejoraba. Y el comportamiento que describen tampoco cambiaba. Así que al
+    prompt va solo el **índice** (número, título y cuándo aplica) y el resto se
+    pide aquí.
+
+    ## Qué pasarle
+    - `tema`: lo que vas a hacer («repartir el resultado de una tool que
+      deniega»), y devuelve las lecciones que más se le parecen.
+    - `numeros`: si ya sabes cuáles, pásalas separadas por comas (`A-014,A-055`).
+
+    ## Lo que no hace
+    No corrige nada ni obliga a nada. Son reglas que ya están pagadas por un
+    error; la mayoría tienen además una comprobación en el código que la hace
+    cumplir aunque nadie lea la lección.
+    """
+    from . import lecciones as mod
+    if not alias:
+        return "hace falta el alias del proyecto"
+    libros = mod.cargar(alias)
+    if not libros:
+        return (f"'{alias}' no tiene lecciones escritas. Un proyecto sin lecciones "
+                f"no es un problema: significa que todavía no se ha pagado ningún "
+                f"error en él.")
+    pedidos = [n for n in str(numeros or "").replace(" ", ",").split(",") if n]
+    if pedidos:
+        return mod.cuerpo(alias, pedidos)
+    if not tema:
+        idx = mod.indice(alias)
+        return ("Dime el tema de lo que vas a hacer, o los números. El índice es:\n"
+                + idx)
+    halladas = mod.por_tema(alias, tema)
+    if not halladas:
+        return (f"Ninguna lección de '{alias}' parece hablar de eso. El índice "
+                f"completo está en el prompt; si crees que debería, no la "
+                f"inventes: se escribe.")
+    return "\n\n---\n\n".join(l.como_texto() for l in halladas)
+
+
+@mcp.tool()
 def registry_list() -> str:
     """Qué proyectos puede operar Aegis y qué ficha tiene cada uno.
 
