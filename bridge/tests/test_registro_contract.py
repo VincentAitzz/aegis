@@ -116,3 +116,50 @@ class TestSinCopiasDelRegistro(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSoloUnMotor(unittest.TestCase):
+    """Aegis ejecuta tools en **un** sitio, no en dos.
+
+    ## Lo que esto previene
+    Existían dos tuberías: el autopilot (en el proceso del bridge) y el agente de
+    Hermes, que recibía las mismas tools por MCP. Se comprobó que la de Hermes no
+    tenía ninguna: `platform_toolsets.api_server: []` en `~/.hermes/config.yaml`
+    deja al agente **sin toolsets**, así que los MCP `aegis-ops` y `aegis-memory`
+    no los veía nadie (`pgrep` no encontraba ningún proceso de este repo). Dos
+    caminos con los mismos permisos y el doble de superficie: se arregla uno y el
+    otro se queda con el permiso viejo.
+
+    El repo además ya medía que un 7B dentro de Hermes no emite `tool_calls`
+    fiables, que es justo lo que el autopilot resolvió.
+
+    Por eso `mcp_ops.py` **no se borra**: el autopilot lo usa como librería
+    (`allowed_tools()`, `_execute()`). Lo que se retiró es la exposición MCP.
+    """
+
+    RAIZ = Path(__file__).resolve().parent.parent.parent
+
+    def test_no_queda_el_script_del_mcp_de_tools(self):
+        self.assertFalse((self.RAIZ / "bridge" / "bin" / "mcp-ops.sh").exists(),
+                         "el lanzador del MCP de tools ya no lo usa nadie")
+        self.assertFalse((self.RAIZ / "bridge" / "bin" / "mcp-memory.sh").exists())
+        self.assertFalse((self.RAIZ / "bridge" / "app" / "mcp_memory.py").exists())
+
+    def test_mcp_ops_no_se_arranca_como_servidor(self):
+        """Lo que se quitó es el `mcp.run()`, no las tools."""
+        fuente = (self.RAIZ / "bridge" / "app" / "mcp_ops.py").read_text(encoding="utf-8")
+        self.assertNotIn('mcp.run(transport="stdio")', fuente)
+        self.assertIn("@mcp.tool()", fuente, "las tools siguen ahí")
+
+    def test_la_config_de_hermes_no_declara_mcp_de_aegis(self):
+        """El registro fuera del repo es el otro lado del camino.
+
+        Si alguien los vuelve a registrar, el MCP vuelve a existir como promesa
+        que nadie usa: por eso se comprueba en el test y no solo en el commit.
+        """
+        config = Path.home() / ".hermes" / "config.yaml"
+        if not config.exists():
+            self.skipTest("no hay config de Hermes en esta máquina")
+        texto = config.read_text(encoding="utf-8")
+        self.assertNotIn("bridge/bin/mcp-ops.sh", texto)
+        self.assertNotIn("bridge/bin/mcp-memory.sh", texto)

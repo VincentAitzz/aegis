@@ -11,13 +11,13 @@ Consola de operación del negocio freelance, local-first:
 
 ```
 [App Flutter] ──REST/WS──► [Bridge FastAPI :8000] ──► [Hermes gateway :8642] ──► [Ollama :11434]
-                                  │                          └──► MCP aegis-ops / aegis-memory
+                                  │                          └──► autopilot: ejecuta las tools
                                   ├── autopilot: bucle modelo→tool, ejecución determinista
                                   ├── memoria episódica (Chroma + SQLiteGraph)
                                   └── telemetría
 ```
 
-- `bridge/` — API FastAPI, memoria, telemetría, los MCP y el autopilot.
+- `bridge/` — API FastAPI, memoria, telemetría y el autopilot.
 - `mobile/` — cliente Flutter (`aegis_console`).
 - `infra/` — scripts de arranque (`ollama/`, `hermes/`, `tailnet/`, `mobile/`).
 - `docs/` — arquitectura y runbook. **Actualízalos cuando cambie el operarlo.**
@@ -118,6 +118,20 @@ en el prompt del siguiente run, y Aegis no vuelve a proponerlo. Sin motivo,
 denegar es un "no" que no se puede aplicar a la siguiente situación parecida.
 
 El token valida **la llamada, no el run**, y es de un solo uso (A-033).
+
+### Un solo motor: el autopilot
+
+El autopilot es lo único que ejecuta tools. Hermes quedó como **motor de
+conversación**, sin tools: `platform_toolsets.api_server: []` deja al agente que
+lanza `POST /tasks` sin toolsets, así que los MCP `aegis-ops` y `aegis-memory`
+registrados en `~/.hermes/config.yaml` no los veía nadie. Se retiraron (con copia
+de la config), y con ellos `app/mcp_memory.py` y el punto de entrada `mcp.run()`
+de `app/mcp_ops.py` — **el módulo se queda**, porque el autopilot lo usa como
+librería.
+
+Dos motores son dos sitios donde puede vivir un guardarraíl. Un run de Hermes se
+graba en memoria como `conversacion` (no como `sin_evidencia`: no es un fallo, es
+que ese motor no tenía tools por diseño).
 
 Un permiso aprobado y no gastado **no se pierde**: `GET /aprobaciones` devuelve
 también `aprobadas`, con su token, y el móvil tiene un botón **Ejecutar** para

@@ -67,6 +67,9 @@ class FakeAgentRepository implements AgentRepository {
   final List<String> dirigidos = [];
   List<String> ejecutadasFake = [];
 
+  /// Lo que `readFicha` devuelve, para probar la pantalla sin bridge.
+  FichaTexto? fichaFake;
+
   /// Lo que el repo falso dice que Aegis hace. Por defecto, quieto: los tests
   /// que no hablan de esto no tienen que saber de él.
   ///
@@ -88,15 +91,6 @@ class FakeAgentRepository implements AgentRepository {
 
   @override
   Future<List<String>> models() async => salud.models;
-
-  @override
-  Future<AgentTask> createTask({
-    required String agent,
-    required String prompt,
-    String? instructions,
-    String? project,
-  }) async =>
-      AgentTask(runId: 'run_test', agent: agent, status: 'started');
 
   @override
   Future<List<ProjectInfo>> projects() async => const [
@@ -134,6 +128,10 @@ class FakeAgentRepository implements AgentRepository {
     deploys.add('instalar:$id');
     return 'la instalación arranca ya; el aviso del móvil confirma al terminar';
   }
+
+  @override
+  Future<FichaTexto> readFicha(String alias) async =>
+      fichaFake ?? FichaTexto(alias: alias, texto: '', estado: 'sin_ficha');
 
   @override
   Future<ProjectInfo> writeFicha({
@@ -198,18 +196,6 @@ class FakeAgentRepository implements AgentRepository {
   @override
   Future<void> steerAutopilot(String runId, String text) async =>
       dirigidos.add(text);
-
-  @override
-  Stream<AgentEvent> streamTask(String runId) => const Stream.empty();
-
-  @override
-  Future<void> approve(String runId, String decision, {String? comment}) async {}
-
-  @override
-  Future<void> steer(String runId, String text) async {}
-
-  @override
-  Future<void> stop(String runId) async {}
 
   // -- lo que Aegis sabe (fake) --------------------------------------------
 
@@ -334,8 +320,4 @@ class FakeAgentRepository implements AgentRepository {
         orElse: () => Tarea(id: id, titulo: titulo ?? ''));
   }
 
-  @override
-  Future<void> borrarTarea(String id) async {
-    tareasFake = tareasFake.where((t) => t.id != id).toList();
-  }
 }

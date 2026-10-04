@@ -94,6 +94,11 @@ class Ficha:
     kind: str = ""
     front: dict[str, str] = field(default_factory=dict)
     secciones: dict[str, str] = field(default_factory=dict)
+    #: El fichero tal cual, como se escribió. Lo parseado no basta para
+    #: **editarlo**: al devolver solo secciones, quien lo reescriba tiene que
+    #: reconstruir el frontmatter, y es justo ahí donde el 7B se come los `---`
+    #: (medido, `main.py`: la ficha queda sin tipo y la puerta la rechaza).
+    texto: str = ""
 
     @property
     def existe(self) -> bool:
@@ -170,9 +175,12 @@ def read_ficha(alias: str) -> Ficha:
     """La ficha del alias, o una Ficha vacía si no está. Nunca lanza."""
     path = ficha_path(alias)
     try:
-        return parse(alias, path.read_text(encoding="utf-8"))
+        texto = path.read_text(encoding="utf-8")
     except OSError:
         return Ficha(alias=alias)
+    ficha = parse(alias, texto)
+    ficha.texto = texto
+    return ficha
 
 
 def exige(alias: str) -> Ficha:

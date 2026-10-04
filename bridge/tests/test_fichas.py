@@ -350,3 +350,46 @@ class TestEscrituraDeFichaSinModelo(unittest.TestCase):
         self.assertNotIn("sk-live", r.text, "el valor filtrado no debe aparecer en la respuesta")
         self.assertFalse((self.tmp / "compra-unida.md").exists())
 
+
+
+class TestLeerLaFicha(unittest.TestCase):
+    """Para poder corregir una ficha hay que poder leerla.
+
+    ## Por qué el endpoint existe
+    El botón que guardaba la ficha desde el móvil vivía en la pantalla del run
+    de Hermes, que se quedó inalcanzable al quitar ese motor. Sin lectura no hay
+    edición: **desde el cliente era imposible escribir una ficha**, y la ficha es
+    la puerta de todo lo demás. Un camino que se cuela en lo que escribo (A-027).
+    """
+
+    def test_devuelve_el_texto_exacto_con_frontmatter(self):
+        """El texto entero, no las secciones parseadas.
+
+        Reconstruir el fichero desde secciones es donde el modelo se come los
+        `---` del frontmatter y la ficha acaba sin tipo. Quien edita es una
+        persona y edita el documento.
+        """
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import tempfile
+        from unittest import mock
+        from app import fichas as fichas_mod
+        from app import projects as projects_mod
+
+        tmp = Path(tempfile.mkdtemp())
+        texto = "---\nkind: producto\n---\n\n## Qué es\n\nUn inventario.\n"
+        with mock.patch.object(fichas_mod, "FICHAS_DIR", tmp), \
+             mock.patch.object(projects_mod, "PROJECTS",
+                               {"compra-unida": mock.Mock(root=tmp)}), \
+             mock.patch("app.fichas.ficha_path",
+                        lambda alias: tmp / f"{alias}.md"):
+            (tmp / "compra-unida.md").write_text(texto, encoding="utf-8")
+            r = TestClient(app).get("/fichas/compra-unida")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["texto"], texto)
+        self.assertEqual(r.json()["kind"], "producto")
+
+    def test_un_proyecto_que_no_existe_es_404(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        self.assertEqual(TestClient(app).get("/fichas/no-existe").status_code, 404)

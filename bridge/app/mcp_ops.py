@@ -1378,10 +1378,19 @@ def verify_deploy(target: str = "emulador") -> str:
     )
 
 
-def main() -> None:
-    log.info("aegis-ops MCP listo (file-tools + build/install del host). brand actual=%s", current_brand())
-    mcp.run(transport="stdio")
-
-
-if __name__ == "__main__":
-    main()
+# ## Por qué ya no se arranca como servidor MCP
+# Este módulo **era** el servidor MCP `aegis-ops` y además es la librería de
+# tools del autopilot. Lo segundo es lo vivo: `autopilot` llama a
+# `allowed_tools()` y `_execute()` directamente, en el mismo proceso que el
+# bridge.
+#
+# Lo primero murió solo: el agente que Hermes lanza desde `POST /tasks` corre con
+# `platform_toolsets.api_server: []`, es decir **sin toolsets**, así que los dos
+# MCP registrados en `~/.hermes/config.yaml` no los veía nadie (comprobado:
+# `pgrep` no encuentra ningún proceso de este repo). Y el propio repo ya medía que
+# un 7B dentro de Hermes no emite `tool_calls` fiables — por eso existe el
+# autopilot.
+#
+# Se retira el punto de entrada y **no se cambia el módulo**: las tools, los
+# guardarraíles y sus niveles siguen igual. Lo que se quita es un camino de
+# ejecución que tenía los mismos permisos y el doble de superficie.

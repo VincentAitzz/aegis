@@ -62,19 +62,23 @@ abstract interface class AgentRepository {
 
   Future<List<String>> models();
 
-  /// Crea una tarea (run) en Hermes vía el bridge y devuelve su run_id.
-  Future<AgentTask> createTask({
-    required String agent, // Aegis tiene un solo agente: 'worker'
-    required String prompt,
-    String? instructions,
-    /// Alias del proyecto (`compra-unida`, `aegis`…). Con esto el bridge carga
-    /// su ficha y su memoria en el prompt: sin él, el agente razona sin saber
-    /// de qué se trata, que es lo que el método prohíbe.
-    String? project,
-  });
 
   /// Proyectos que puede operar Aegis, con el estado de su ficha.
   Future<List<ProjectInfo>> projects();
+
+  /// La ficha de un proyecto en texto, para poder corregirla antes de guardarla.
+  ///
+  /// Sin esto no se puede escribir una ficha desde el móvil: el botón que lo
+  /// hacía vivía en una pantalla atada al motor de conversación, que ya no está.
+  Future<FichaTexto> readFicha(String alias);
+
+  /// Guarda la ficha **sin pasar por el modelo**. Se comprobó que un 7B copiando
+  /// un texto literal se come los `---` del frontmatter y deja la ficha sin
+  /// tipo, que es justo lo que la puerta rechaza.
+  Future<ProjectInfo> writeFicha({
+    required String alias,
+    required String contenido,
+  });
 
   /// Fases de trabajo que el puente ofrece: `idea`, `arquitectura`, …
   ///
@@ -140,34 +144,9 @@ abstract interface class AgentRepository {
 
   /// Mete una instrucción en un run que ya está corriendo.
   ///
-  /// Surte efecto en el **siguiente** paso, no en el que está en marcha: ese ya
-  /// tiene sus mensajes decididos, y cambiarlos dejaría la traza diciendo una
-  /// cosa y el resultado de la tool siendo otro.
+  /// No interrumpe el paso en curso: entra en una cola y el bucle la drena antes
+  /// del siguiente, que es el mismo criterio que la parada.
   Future<void> steerAutopilot(String runId, String text);
-
-  /// Escribe la ficha de un proyecto, **sin pasar por el modelo**.
-  ///
-  /// La ruta por el modelo no sirve, y se comprobó: un 7B al que se le pide
-  /// copiar un texto literal **se come los `---` del frontmatter**, que es lo
-  /// que declara el tipo. La ficha quedaba sin tipo y la puerta la rechazaba.
-  /// Aquí la persona ya revisó el texto en el móvil y el bridge lo guarda tal
-  /// cual: no hay nada que el modelo pueda tocar.
-  Future<ProjectInfo> writeFicha({
-    required String alias,
-    required String contenido,
-  });
-
-  /// Streaming bidireccional: suscribe al canal WS del run y entrega eventos.
-  ///
-  /// Devuelve un controlador; `[onEvent]` se invoca por cada evento, y el
-  /// stream se cierra cunado termina la tarea o se cancela el suscriptor.
-  Stream<AgentEvent> streamTask(String runId);
-
-  Future<void> approve(String runId, String decision, {String? comment});
-
-  Future<void> steer(String runId, String text);
-
-  Future<void> stop(String runId);
 
   // -- Lo que Aegis sabe y lo que recuerda -----------------------------------
   //
@@ -235,5 +214,4 @@ abstract interface class AgentRepository {
 
   Future<Tarea> actualizarTarea(String id, {String titulo, String notas, String para, String estado});
 
-  Future<void> borrarTarea(String id);
 }

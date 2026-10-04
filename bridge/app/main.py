@@ -237,6 +237,34 @@ class FichaIn(BaseModel):
     contenido: str = Field(min_length=1, max_length=20_000)
 
 
+@app.get("/fichas/{alias}")
+async def leer_ficha(alias: str) -> dict:
+    """La ficha de un proyecto, en texto, con su estado calculado.
+
+    ## Por qué existe
+    Para poder **escribirla** desde el móvil hay que poder leerla: la escritura
+    (`POST /fichas/{alias}`) es de una persona y no pasa por el modelo, y el
+    botón que la usaba vivía en una pantalla atada al motor de conversación que
+    ya no está. Sin este endpoint, escribir la ficha desde el cliente era
+    imposible: no había de dónde sacar el texto ni qué corregir.
+
+    Devuelve el texto tal cual. Es el mismo documento que versiona git, sin lo
+    comercial, que vive aparte (`fichas-privadas/`).
+    """
+    from . import fichas as fichas_mod
+    from .projects import PROJECTS
+    if alias not in PROJECTS:
+        raise HTTPException(status_code=404, detail=f"'{alias}' no es un proyecto registrado")
+    ficha = fichas_mod.read_ficha(alias)
+    return {
+        "alias": alias,
+        "texto": ficha.texto,
+        "kind": ficha.kind,
+        "estado": "completa" if ficha.completa else ("incompleta" if ficha.existe else "sin_ficha"),
+        "faltan": list(ficha.faltan()),
+    }
+
+
 @app.post("/fichas/{alias}")
 async def escribir_ficha(alias: str, body: FichaIn) -> dict:
     """Escribe la ficha de un proyecto, **sin pasar por el modelo**.
@@ -535,21 +563,6 @@ def PROJECTS_DATOS() -> set[str]:
 @app.post("/tasks", response_model=TaskOut)
 async def create_task(task: TaskIn) -> TaskOut:
     return await _submit_task(task.agent, task.prompt, task.instructions, task.project)
-
-
-@app.get("/tasks/{run_id}", response_model=TaskStatus)
-async def task_status(run_id: str) -> TaskStatus:
-    state = relay.status(run_id) or {}
-    try:
-        remote = await hermes.run_status(run_id)
-    except Exception as exc:  # noqa: BLE001
-        remote = {"status": "unknown", "error": str(exc)}
-    return TaskStatus(run_id=run_id,
-                      status=state.get("status") or remote.get("status", "unknown"),
-                      agent=state.get("agent", ""),
-                      final_text=(remote.get("final_text") or remote.get("output")
-                                  or (remote.get("data") or {}).get("final_response")),
-                      pending_approval=state.get("status") == "awaiting_approval")
 
 
 @app.post("/tasks/{run_id}/approval")
@@ -1469,13 +1482,6 @@ async def tarea_actualizar(tid: str, body: TareaPatch,
             estado=body.estado)
     except NotasError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.delete("/tareas/{tid}", )
-async def tarea_borrar(tid: str, _auth: None = Depends(exigir_token)) -> dict:
-    if not notas().tarea_borrar(tid):
-        raise HTTPException(status_code=404, detail=f"no hay ninguna tarea '{tid}'")
-    return {"borrada": tid}
 
 
 # -- La autonomía: qué puede hacer sin preguntar ------------------------------

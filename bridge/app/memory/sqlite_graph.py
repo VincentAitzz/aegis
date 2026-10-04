@@ -102,6 +102,10 @@ class SQLiteGraph:
             "ON CONFLICT(run_id) DO UPDATE SET agent=excluded.agent, outcome=excluded.outcome,"
             " prompt=excluded.prompt, summary=excluded.summary, text=excluded.text, code=excluded.code,"
             " error=excluded.error, concepts=excluded.concepts",
+            # `outcome` se corta a 16: es un identificador, y uno que se
+            # trunca en silencio se convierte en otro valor sin que nadie lo note
+            # (`solo_conversacion` -> `solo_conversacio`). Los nombres de aquí
+            # tienen que caber; si no caben, se acortan, no se agranda el corte.
             (run_id, (episode.get("agent") or "")[:64], (episode.get("outcome") or "")[:16],
              (episode.get("prompt") or ""), (episode.get("summary") or ""),
              (episode.get("text") or ""),

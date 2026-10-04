@@ -200,6 +200,37 @@ class _FilaProyectoState extends ConsumerState<_FilaProyecto> {
     }
   }
 
+  /// Abre la ficha para corregirla o escribirla.
+  ///
+  /// ## Por qué aquí y no en la pantalla de un run
+  /// El botón que guardaba la ficha vivía en la pantalla del run de Hermes, que
+  /// ya no existe: sin él, **desde el móvil no se podía escribir una ficha**, y
+  /// la ficha es la puerta de todo lo demás (sin ella Aegis no escribe en el
+  /// proyecto). Perder esa capacidad de un cambio de motor sin darme cuenta es
+  /// justo lo que este repo llama «un camino que se cuela en lo que escribo».
+  Future<void> _abrirFicha() async {
+    final alias = widget.proyecto.alias;
+    final repo = ref.read(agentRepositoryProvider);
+    FichaTexto ficha;
+    try {
+      ficha = await repo.readFicha(alias);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No pude leer la ficha de $alias: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    final guardado = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AegisPalette.bg1,
+      builder: (context) => _HojaFicha(alias: alias, ficha: ficha),
+    );
+    if (guardado == true) refrescarAsistente(ref);
+  }
+
   /// Por qué este interruptor está deshabilitado, o '' si puede tocarse.
   String get _bloqueo {
     if (widget.proyecto.verify.isEmpty) {
@@ -243,12 +274,20 @@ class _FilaProyectoState extends ConsumerState<_FilaProyecto> {
                 StatusLed(color: colorFicha, size: 7),
                 const SizedBox(width: 9),
                 Expanded(
-                  child: Text(
-                    p.alias,
-                    style: const TextStyle(
-                      fontFamily: AegisPalette.mono,
-                      fontSize: 14,
-                      color: AegisPalette.fg,
+                  child: InkWell(
+                    onTap: _abrirFicha,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                        p.alias,
+                        style: const TextStyle(
+                          fontFamily: AegisPalette.mono,
+                          fontSize: 14,
+                          color: AegisPalette.fg,
+                          decoration: TextDecoration.underline,
+                          decorationColor: AegisPalette.line,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -323,6 +362,125 @@ class _Explicacion extends StatelessWidget {
               height: 1.55,
               color: AegisPalette.fgFaint,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+/// La hoja de la ficha: leer, corregir y guardar.
+///
+/// Va **sin pasar por el modelo**, y eso no es una preferencia: se comprobó que
+/// un 7B copiando un texto literal se come los `---` del frontmatter, y la ficha
+/// queda sin tipo — que es exactamente lo que la puerta rechaza. Aquí quien
+/// escribe es la persona, y el bridge guarda lo que le dan.
+class _HojaFicha extends ConsumerStatefulWidget {
+  const _HojaFicha({required this.alias, required this.ficha});
+
+  final String alias;
+  final FichaTexto ficha;
+
+  @override
+  ConsumerState<_HojaFicha> createState() => _HojaFichaState();
+}
+
+class _HojaFichaState extends ConsumerState<_HojaFicha> {
+  late final _texto = TextEditingController(text: widget.ficha.texto);
+  String? _aviso;
+  bool _guardando = false;
+
+  @override
+  void dispose() {
+    _texto.dispose();
+    super.dispose();
+  }
+
+  Future<void> _guardar() async {
+    setState(() {
+      _guardando = true;
+      _aviso = null;
+    });
+    try {
+      final r = await ref.read(agentRepositoryProvider).writeFicha(
+            alias: widget.alias,
+            contenido: _texto.text,
+          );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(r.completa
+              ? 'Ficha de ${widget.alias} completa. La puerta se abre.'
+              : 'Guardada, pero sigue incompleta: faltan ${r.faltan.join(', ')}'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _guardando = false;
+        _aviso = 'No se pudo guardar: $e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final faltan = widget.ficha.faltan;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, MediaQuery.of(context).viewInsets.bottom + 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('FICHA · ${widget.alias}',
+              style: const TextStyle(
+                  fontFamily: AegisPalette.display,
+                  fontSize: 15,
+                  letterSpacing: 2,
+                  color: AegisPalette.fg)),
+          const SizedBox(height: 8),
+          Text(
+            widget.ficha.kind.isEmpty
+                ? 'Sin tipo declarado. La puerta no deja trabajar en un proyecto que no sabe qué es.'
+                : (faltan.isEmpty
+                    ? 'Completa. Aegis puede escribir aquí.'
+                    : 'Faltan: ${faltan.join(', ')}'),
+            style: TextStyle(
+              fontFamily: AegisPalette.mono,
+              fontSize: 11,
+              height: 1.5,
+              color: faltan.isEmpty ? AegisPalette.ok : AegisPalette.warn,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Flexible(
+            child: TextField(
+              controller: _texto,
+              maxLines: 20,
+              minLines: 10,
+              style: const TextStyle(
+                  fontFamily: AegisPalette.mono, fontSize: 11, height: 1.5),
+              decoration: const InputDecoration(
+                hintText: 'kind: producto\n\n## Qué es\n\n…',
+              ),
+            ),
+          ),
+          if (_aviso != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_aviso!,
+                  style: const TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 11,
+                      color: AegisPalette.danger)),
+            ),
+          const SizedBox(height: 12),
+          FilledButton(
+            onPressed: _guardando ? null : _guardar,
+            style: FilledButton.styleFrom(
+                backgroundColor: AegisPalette.ok, foregroundColor: AegisPalette.bg0),
+            child: Text(_guardando ? 'Guardando…' : 'Guardar la ficha'),
           ),
         ],
       ),

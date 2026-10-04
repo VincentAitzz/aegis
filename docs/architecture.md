@@ -271,7 +271,7 @@ El entorno de ejecución se estructura en tres capas: **aislamiento**,
                         │      ├─ recall(prompt) ──► memoria: SOLO episodios success
                         │      └─ instructions + contexto previo
                         │            ▼
-                        │         [Hermes API :8642] ──► [aegis-ops MCP]  (capA: guardarraíles)
+                        │         [Hermes API :8642] ──► conversación (sin tools desde 2026-10-04)
                         │            ├─ whitelist + rollback de sintaxis
                         │            └─ trazas → data/logs/runs/<id>.jsonl
                         │            ▼
@@ -341,10 +341,19 @@ máquina es x86_64.
   `AEGIS_BRIDGE_TAILNET_IP`. Una IP de reserva "razonable" en una dirección es peor
   que ninguna: antes `telefono` caía por defecto en la IP del propio teléfono.
 
-> **Dos procesos, un estado.** El MCP de `aegis-ops` corre aparte del bridge
-> FastAPI. Por eso el registro de orígenes va por HTTP y el estado de
-> despliegue a un fichero: en memoria, el botón de aprobar del móvil nunca
-> habría visto la petición y el humo siempre habría fallado.
+> **Dos procesos, un estado — y por qué ya no hay dos procesos.** El MCP de
+> `aegis-ops` corría aparte del bridge FastAPI, y por eso el registro de orígenes
+> va por HTTP y el estado de despliegue a un fichero: en memoria, el botón de
+> aprobar del móvil nunca habría visto la petición y el humo siempre habría
+> fallado.
+>
+> Ese camino se retiró el 2026-10-04: el agente que Hermes lanza desde
+> `POST /tasks` corre con `platform_toolsets.api_server: []`, es decir **sin
+> toolsets**, así que los MCP `aegis-ops` y `aegis-memory` no los veía nadie. Y el
+> repo ya había medido que un 7B dentro de Hermes no emite `tool_calls` fiables:
+> el autopilot existe por eso. `app/mcp_ops.py` **sigue existiendo** —el
+> autopilot lo usa como librería—; lo que se quitó fue la exposición MCP y el
+> punto de entrada `mcp.run()`.
 
 ### 7.1 Aislamiento (guardarraíles, no contenedor)
 

@@ -74,22 +74,44 @@ async def build_success_episode(run_id: str) -> dict:
              or (remote.get("data") or {}).get("final_response") or "")
     tools = tools_executed(run_id)
     if tools:
+        # Nunca ha pasado desde que el autopilot es el único que ejecuta tools
+        # (2026-10-04), pero el camino se queda: si un día vuelve a haber un
+        # ejecutor con tools, el veredicto tiene que ser el de la traza.
         summary = f"tools={tools}; respuesta={final}"
+        outcome, error, texto = "success", "", final[:4000]
     else:
-        # Se guarda marcado, pero `recall` no lo inyecta: si no lo inyecta, un
-        # "OK" sin tool deja de ser un ejemplo a imitar.
-        summary = ("SIN EVIDENCIA: el run terminó sin ejecutar ninguna tool; "
-                   f"respuesta del modelo={final}")
+        # `conversacion`: este run respondió y no hizo nada, porque su
+        # motor no tiene tools (`platform_toolsets.api_server: []` en Hermes).
+        #
+        # Antes se marcaba `sin_evidencia`, y eso era verdad pero **envejecía
+        # mal**: cada conversación dejaba en el almacén un episodio que no
+        # era ni un éxito ni un fallo, y la suma de esos `sin_evidencia` es
+        # exactamente el veneno que A-016 midió —un `success` sin evidencia de
+        # ejecución— con otro nombre.
+        #
+        # La diferencia importa para lo que viene después: `sin_evidencia` decía
+        # «este run no hizo nada y debería haberlo hecho». Esto dice «este run
+        # no podía hacer nada, y no era su trabajo». El recall acepta solo
+        # `success`, así que ninguno se inyecta; el punto es que el almacén
+        # pueda distinguir una cosa de la otra al mirarlo.
+        #
+        # **Y el nombre tiene que caber en 16 caracteres**: `sqlite_graph.py`
+        # trunca `outcome` a `[:16]` al guardar, y `solo_conversacion` salía
+        # como `solo_conversacio` — un valor corrupto que nadie iba a detectar
+        # porque es texto, no un número. Un identificador truncado en silencio es
+        # peor que uno largo: parece que funciona.
+        summary = f"conversación, sin tools por diseño: respuesta={final}"
+        outcome, error, texto = "conversacion", "sin tools: es el motor de conversación", ""
     return {
         "run_id": run_id,
         "agent": state.get("agent", ""),
-        "outcome": "success" if tools else "sin_evidencia",
+        "outcome": outcome,
         "tools": tools,
         "prompt": state.get("prompt", ""),
         "summary": " ".join(summary.split())[:400],
-        "text": final[:4000] if tools else "",
-        "code": extract_code(final),
-        "error": "" if tools else "run sin tool ejecutada",
+        "text": texto,
+        "code": extract_code(texto),
+        "error": error,
         "at": "",
     }
 
@@ -120,8 +142,13 @@ async def on_terminal_event(ev: EventOut) -> None:
             mem = get_memory()
             if mem:
                 await mem.remember(episode)
+            # El `outcome` va el que salió del episodio. Antes ponía "success"
+            # aquí fijo, así que la telemetría decía «success» para un episodio
+            # que no lo era: un panel que miente sobre el dato que sirve para
+            # medir es peor que no tener panel.
             telemetry.record("INFO", "episode.saved", run_id=run_id,
-                             outcome="success", text_len=len(episode.get("text") or ""))
+                             outcome=episode.get("outcome", ""),
+                             text_len=len(episode.get("text") or ""))
         elif ev.type == "task.failed":
             episode = await build_failure_episode(run_id, ev.payload)
             mem = get_memory()

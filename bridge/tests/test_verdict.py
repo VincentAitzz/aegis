@@ -91,15 +91,32 @@ class TestVeredictoDelEpisodio(unittest.TestCase):
         self.assertEqual(ep["tools"], ["projects_list"])
         self.assertIn("projects_list", ep["summary"])
 
-    def test_sin_tool_es_sin_evidencia(self) -> None:
-        # El caso que envenenó la memoria: el modelo dijo "OK" y no hizo nada.
+    def test_sin_tool_es_conversacion(self) -> None:
+        """Un run de Hermes ya no ejecuta tools: eso es por diseño, no un fallo.
+
+        Se llamaba `sin_evidencia`, que era verdad pero envejecía mal: la suma de
+        esas conversaciones es veneno con otro nombre (A-016). Y `conversacion`
+        dice algo que `sin_evidencia` no: que **no era su trabajo**, no que el
+        agente fallara.
+        """
         _trace(self.tmp, "falso", [{"event": "run.completed", "payload": {"data": {}}}])
         ep = asyncio.run(hooks.build_success_episode("falso"))
-        self.assertEqual(ep["outcome"], "sin_evidencia")
+        self.assertEqual(ep["outcome"], "conversacion")
         self.assertEqual(ep["tools"], [])
         # El texto del modelo no se guarda: si se guarda, se reimita como ejemplo.
         self.assertEqual(ep["text"], "")
         self.assertNotEqual(ep["outcome"], "success")
+
+    def test_conversacion_no_entra_al_recall(self) -> None:
+        """El filtro del recall es lo que evita que estas conversaciones
+        reaparezcan como «episodios resueltos antes». Debe seguir excluyéndolas."""
+        memoria = ProjectMemory(SimpleNamespace(
+            memory_enabled=False, memory_dir=self.tmp, memory_graph_backend="sqlite",
+            memory_recall_k=3, embed_model="nomic-embed-text"))
+        ctx = memoria.render_context({"episodes": [
+            {"document": "TAREA: algo SOLUCION: ok", "metadata": {"outcome": "conversacion"},
+             "distance": 0.01}]})
+        self.assertNotIn("algo", ctx)
 
 
 class TestRecallSoloInyectaResueltos(unittest.TestCase):

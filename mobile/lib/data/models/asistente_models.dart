@@ -317,3 +317,36 @@ class Actividad {
         run: d['run']?.toString() ?? '',
       );
 }
+
+/// La ficha de un proyecto tal como está escrita, para poder corregirla.
+class FichaTexto {
+  const FichaTexto({
+    required this.alias,
+    this.texto = '',
+    this.kind = '',
+    this.estado = 'sin_ficha',
+    this.faltan = const [],
+  });
+
+  final String alias;
+
+  /// El fichero completo, frontmatter incluido.
+  ///
+  /// Se manda entero a propósito: reconstruirlo desde secciones es donde el
+  /// modelo se come los `---` y la ficha acaba sin tipo. Quien edita es una
+  /// persona, y edita el documento, no un resumen de él.
+  final String texto;
+  final String kind;
+  final String estado;
+  final List<String> faltan;
+
+  bool get completa => estado == 'completa';
+
+  factory FichaTexto.fromJson(Map<String, dynamic> j) => FichaTexto(
+        alias: (j['alias'] ?? '') as String,
+        texto: (j['texto'] ?? '') as String,
+        kind: (j['kind'] ?? '') as String,
+        estado: (j['estado'] ?? 'sin_ficha') as String,
+        faltan: ((j['faltan'] as List?) ?? const []).cast<String>(),
+      );
+}

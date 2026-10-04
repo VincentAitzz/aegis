@@ -177,11 +177,6 @@ class Agenda:
             raise NotasError(f"no hay ninguna tarea con id '{tid}'")
         return self.tarea(tid) or {}
 
-    def tarea_borrar(self, tid: str) -> bool:
-        cur = self._c.execute("DELETE FROM tareas WHERE id=?", (tid,))
-        self._c.commit()
-        return cur.rowcount > 0
-
     def vencidas(self, ahora: str = "") -> list[dict[str, Any]]:
         """Tareas con fecha, sin hacer, cuya fecha ya pasó.
 
