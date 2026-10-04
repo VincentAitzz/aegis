@@ -339,10 +339,26 @@ class _AvisoSinPermiso extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final permiso = ref.watch(permisoNotificacionesProvider);
-    final deploys = ref.watch(deploysProvider);
-    final pendiente = (permiso.value ?? true) || deploys?.hayPendientes != true;
 
-    if (pendiente) return const SizedBox.shrink();
+    // ## Por qué esta franja seQuitaba sola y por eso era un aviso inútil
+    // Antes la condición era «no hay permiso **y** hay algo pendiente». Como en
+    // una instalación recién hecha las notificaciones están bloqueadas
+    // (`POST_NOTIFICATION: ignore`), la primera mitad era permanentemente cierta
+    // y la franja solo dependía de la segunda. Medido: con las notificaciones
+    // apagadas, era una fila que aparecía y desaparecía con cada refresco de
+    // `deploys`, sin que cambiara nada que ella pudiera arreglar.
+    //
+    // Ahora es lo que dice: **las notificaciones están apagadas y por eso no te
+    // vas a enterar de nada**. Es un dato que no cambia con el reloj, no un
+    // estado que baila. Y desaparece en cuanto lo concedes, que es lo único que
+    // la puede arreglar.
+    //
+    // ## Y la variable se llama `sinAvisos`, no `pendiente`
+    // `pendiente` decía lo contrario de lo que comprobaba: era `true` cuando
+    // **no** había que avisar. Un nombre así no cuesta nada hasta que alguien lo
+    // lee al revés, y entonces cuesta un bug que nadie sabe de dónde sale.
+    final sinAvisos = (permiso.value ?? true) != true;
+    if (!sinAvisos) return const SizedBox.shrink();
 
     return Positioned(
       top: _finCabecera(context),
@@ -361,8 +377,8 @@ class _AvisoSinPermiso extends ConsumerWidget {
                 const SizedBox(width: 8),
                 const Expanded(
                   child: Text(
-                    'Aegis espera tu OK y el móvil no le deja avisarte. Toca para '
-                    'permitirlo.',
+                    'Avisos apagados: no te vas a enterar cuando Aegis necesite '
+                    'algo. Toca para activarlos.',
                     style: TextStyle(
                       fontFamily: AegisPalette.mono,
                       fontSize: 11,

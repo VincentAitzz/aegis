@@ -317,6 +317,101 @@ def registry_list() -> str:
 
 
 @mcp.tool()
+def usar_enfoque(nombre: str, por_que: str = "") -> str:
+    """Trabaja de otra manera mientras dura este encargo. Se pide, no se elige.
+
+    ## Qué es un enfoque
+    Las instrucciones que solo tienen sentido durante un tipo de trabajo: la idea
+    ya está escrita y toca decidir cómo se construye, y esa decisión tiene que
+    poder defenderse. Va al prompt **y cierra puertas**: mientras estés en él, las
+    tools que ese enfoque prohíbe no se ejecutan.
+
+    ## Cuándo pedirla, y cuándo no
+    **Pídela cuando el encargo NO es todavía ejecutable.** Si ya sabes qué hacer y
+    dónde, no hace falta ningún enfoque: el método ya lo dice.
+
+    Si el encargo es claro pero doubts si aplica, **no la pidas**: sigue sin ella.
+
+    ## Por qué `por_que` es obligatorio y no un comentario
+    `por_que` **es** la subtarea de razonar el encargo, y su respuesta es lo que
+    queda escrito. No es documentación: es el único sitio donde queda por qué
+    decidiste que esto era una decisión de arquitectura y no otra cosa. Sin
+    razonamiento previo, elegir un enfoque es adivinar con palabras.
+
+    Escribe **por qué este encargo es de este tipo**, no para qué sirve el enfoque.
+
+    ## Para salir
+    `nombre=""` lo suelta. Se suelta solo cuando la razon ya ha dado su fruto —
+    el diseño cerrado y empieza a construir—, no porque se haya quedado corto.
+    """
+    from . import enfoques
+
+    if not str(nombre or "").strip():
+        return ("Sin enfoque activo. El método de siempre es lo que queda: "
+                "haz lo que pida el encargo.")
+
+    try:
+        f = enfoques.ficha(nombre)
+    except enfoques.EnfoqueNoExiste as exc:
+        # Se devuelve como texto y no como excepción: las tools de Aegis no
+        # lanzan, devuelven el motivo. Un `raise` aquí sería un run que muere
+        # por un nombre mal escrito.
+        return str(exc)
+
+    if not str(por_que or "").strip():
+        return (
+            f"Necesito el por qué antes de adjuntar '{f['titulo']}'. "
+            "Esta tool no es un menú: es el sitio donde razonas si el encargo "
+            "es de este tipo. Escribe en `por_que` por qué este encargo "
+            "necesita otra manera de trabajar. Si no lo necesitas, no la llames.")
+
+    texto = enfoques.bloque(nombre)
+    if not texto:
+        return f"No pude leer el bloque de '{nombre}'. No lo adjunto."
+
+    cabecera = f"## ENFOQUE ACTIVO: {f['titulo']}\n\n"
+    if f.get("restringe"):
+        cerrado = "\n\n".join(
+            f"- `{t}` — **prohibida** mientras estés en este enfoque."
+            for t in f["restringe"])
+        cabecera += (f"### Lo que este enfoque cierra\n\n{cerrado}\n\n"
+                     "Pedir una de esas herramientas no te va a salir: se niegan "
+                     "antes de ejecutarse. No es una recomendación, es una "
+                     "puerta.\n\n")
+    cabecera += (f"Por qué lo pediste: {str(por_que).strip()[:400]}\n\n"
+                 "Si al rato el diseño ya está cerrado y toca construir, suelta "
+                 "el enfoque con `usar_enfoque(nombre='')`.\n\n---\n\n")
+    return cabecera + texto
+
+
+@mcp.tool()
+def enfoques_disponibles() -> str:
+    """Qué enfoques hay, con lo que hace cada uno y lo que cierra.
+
+    Para decidir **si** pedir uno. El texto del enfoque no se trae: son 2 KB que
+    se pagan en el prompt de todos los runs, y la mayoría no aplican.
+    """
+    from . import enfoques
+
+    try:
+        nombres = enfoques.nombres()
+    except enfoques.EnfoqueNoExiste as exc:
+        return str(exc)
+    if not nombres:
+        return ("No hay enfoques registrados. El método de siempre es lo que "
+                "aplica, y está bien así.")
+    lineas = []
+    for n in nombres:
+        f = enfoques.ficha(n)
+        cierra = ""
+        if f.get("restringe"):
+            cierra = " Cierra: " + ", ".join(f["restringe"]) + "."
+        lineas.append(f"- **{n}** ({f['titulo']}): {f['resumen']}{cierra}")
+    return ("ENFOQUES DISPONIBLES. Pide uno con `usar_enfoque`, y solo si el "
+            "encargo no es ya ejecutable:\n\n" + "\n".join(lineas))
+
+
+@mcp.tool()
 def projects_list() -> str:
     """Qué proyectos hay en el workspace y cuáles puede operar Aegis.
 

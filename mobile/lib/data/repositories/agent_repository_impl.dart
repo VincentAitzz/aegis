@@ -97,9 +97,13 @@ class AgentRepositoryImpl implements AgentRepository {
   }
 
   @override
-  Future<List<String>> fases() async {
-    final r = await _dio.get<Map<String, dynamic>>('${config.httpBase}/fases');
-    return ((r.data?['fases'] as List?) ?? const []).cast<String>();
+  Future<List<Enfoque>> enfoques() async {
+    final r = await _dio.get<Map<String, dynamic>>(
+        '${config.httpBase}/enfoques');
+    return ((r.data?['enfoques'] as List?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(Enfoque.fromJson)
+        .toList();
   }
 
   @override
@@ -161,7 +165,7 @@ class AgentRepositoryImpl implements AgentRepository {
     bool remember = true,
     bool verify = false,
     String? token,
-    String? fase,
+    String? enfoque,
   }) async {
     final r = await _dio.post<Map<String, dynamic>>(
       '${config.httpBase}/autopilot/start',
@@ -173,7 +177,7 @@ class AgentRepositoryImpl implements AgentRepository {
         if (project != null && project.isNotEmpty) 'project': project,
         if (instructions != null && instructions.isNotEmpty) 'instructions': instructions,
         if (token != null && token.isNotEmpty) 'token': token,
-        if (fase != null && fase.isNotEmpty) 'fase': fase,
+        if (enfoque != null && enfoque.isNotEmpty) 'enfoque': enfoque,
       }),
     );
     return r.data!['run_id'] as String;

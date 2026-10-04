@@ -36,15 +36,15 @@ void main() {
     return repo;
   }
 
-  /// Abre el desplegable de fases, que es donde viven los chips.
+  /// Abre la hoja de enfoques, que sale de la línea «trabajando así».
   ///
-  /// Las fases están plegadas a propósito —solo hacen falta mientras se piensa, y
-  /// visibles por defecto invitan a pagar el prompt sin necesitarlas—, así que
-  /// cualquier test que elija una tiene que abrirlo como lo haría una persona.
-  Future<void> abrirFases(WidgetTester tester) async {
-    await tester.tap(find.text('Cómo trabajar'));
+  /// Aegis es quien elige el enfoque; esta hoja solo corrige. Por eso el test
+  /// tiene que abrirla como lo haría una persona, y no puede pulsar directamente un chip
+  /// que ya no existe.
+  Future<void> abrirFijar(WidgetTester tester) async {
+    await tester.tap(find.textContaining('trabajando así'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 320));
+    await tester.pump(const Duration(milliseconds: 400));
   }
 
   FakeAgentRepository repoConPeticion() => FakeAgentRepository()
@@ -130,9 +130,9 @@ void main() {
     // El selector de fases es lo que hace esto cómodo: el relanzado tiene que
     // salir de la misma pantalla donde se escribió el encargo. Está plegado, pero
     // existe y está a mano.
-    await abrirFases(tester);
-    expect(find.text('IDEA'), findsOneWidget);
-    expect(find.text('ARQUITECTURA'), findsOneWidget);
+    // La linea se ve siempre; lo que hay detras lo decide Aegis.
+    expect(find.textContaining('trabajando así'), findsOneWidget);
+    expect(find.textContaining('lo decide Aegis'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).first, 'da de alta el proyecto acme');
     await tester.pump();
@@ -198,20 +198,33 @@ void main() {
     expect(find.textContaining('Ejecutar hace justo lo que aprobaste'), findsOneWidget);
   });
 
-  testWidgets('la fase elegida viaja con el encargo', (tester) async {
+  testWidgets('sin fijar nada, el encargo no lleva enfoque', (tester) async {
+    // Lo normal: Aegis pide el suyo si lo necesita, y la app no dice nada. Un
+    // enfoque fijado «por si acaso» haría que Aegis trabajara con unas
+    // instrucciones que nadie ha comprobado que apliquen.
     final repo = await montar(tester, FakeAgentRepository());
-    await tester.enterText(find.byType(TextField).first, 'aterriza la idea');
+    await tester.enterText(find.byType(TextField).first, 'arregla el verificador');
     await tester.pump();
-    await abrirFases(tester);
-    await tester.tap(find.text('ARQUITECTURA'));
-    await tester.pump();
-    // Al elegirla se explica para qué sirve: una fase cambia lo que Aegis se
-    // permite hacer, y eso no se elige sin leer.
-    expect(find.textContaining('coste de cambio'), findsOneWidget);
     await tester.tap(find.text('Encargar'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
-    expect(repo.fasesLanzadas, contains('arquitectura'));
+    expect(repo.enfoquesLanzados, ['']);
+  });
+
+  testWidgets('el enfoque fijado viaja con el encargo', (tester) async {
+    final repo = await montar(tester, FakeAgentRepository());
+    await tester.enterText(find.byType(TextField).first, 'qué motor de base');
+    await tester.pump();
+    await abrirFijar(tester);
+    // Al verlo se dice **qué cierra**: fijar un enfoque puede dejarte sin poder
+    // escribir, y descubrirlo cuando Aegis dice «no puedo» no es descubrirlo.
+    expect(find.textContaining('Cierra:'), findsOneWidget);
+    await tester.tap(find.text('Cómo se va a construir'));
+    await tester.pump();
+    await tester.tap(find.text('Encargar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(repo.enfoquesLanzados, ['arquitectura']);
     // `pump` y no `pumpAndSettle`: la pantalla sigue preguntando el estado del
     // run cada 3 s, así que nunca se calma y `pumpAndSettle` se pasa el tiempo.
     await tester.pump(const Duration(milliseconds: 400));

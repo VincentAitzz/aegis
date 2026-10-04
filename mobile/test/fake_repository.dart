@@ -47,7 +47,10 @@ class FakeAgentRepository implements AgentRepository {
   /// gastó. Un token de un solo uso que se puede gastar dos veces es una puerta
   /// corriente, y eso se comprueba, no se supone.
   List<String> tokensGastados = [];
-  List<String> fasesLanzadas = [];
+  /// El enfoque de cada run lanzado: `''` cuando no iba ninguno fijado.
+  /// Se registra aunque esté vacío porque lo que se afirma es que Aegis
+  /// **no** recibe nada por defecto, y eso necesita un dato, no un silencio.
+  List<String> enfoquesLanzados = [];
   List<String> promptsLanzados = [];
   List<String> proyectosLanzados = [];
 
@@ -148,7 +151,7 @@ class FakeAgentRepository implements AgentRepository {
     bool remember = true,
     bool verify = false,
     String? token,
-    String? fase,
+    String? enfoque,
   }) async {
     promptsLanzados.add(prompt);
     if (project != null && project.isNotEmpty) proyectosLanzados.add(project);
@@ -157,12 +160,22 @@ class FakeAgentRepository implements AgentRepository {
     // por el verificador ni en un proyecto marcado.
     verificacionesLanzadas.add(verify);
     if (token != null && token.isNotEmpty) tokensGastados.add(token);
-    if (fase != null && fase.isNotEmpty) fasesLanzadas.add(fase);
+    // Se registra **siempre**, vacio incluido: lo que hay que poder afirmar es
+    // que Aegis NO recibe enfoque por defecto, y eso necesita un dato.
+    enfoquesLanzados.add(enfoque ?? '');
     return 'autopilot_test';
   }
 
   @override
-  Future<List<String>> fases() async => const ['idea', 'arquitectura'];
+  Future<List<Enfoque>> enfoques() async => const [
+        Enfoque(
+          nombre: 'arquitectura',
+          titulo: 'Cómo se va a construir',
+          resumen: 'para decidir cómo, y defender por qué esta y no las otras',
+          restringe: ['aegis_write_file', 'aegis_patch_file'],
+          bloqueChars: 1970,
+        ),
+      ];
 
   @override
   Future<AutopilotRun> autopilotStatus(String runId) async => const AutopilotRun(

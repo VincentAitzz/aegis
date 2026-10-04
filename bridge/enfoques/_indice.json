@@ -1,0 +1,48 @@
+{
+  "_comentario": [
+    "El registro de los enfoques. Añadir uno es un .md aquí al lado y una entrada",
+    "abajo: ni Python, ni enum, ni compilación. Es lo que hace que esto se pueda",
+    "ampliar a otras funciones sin tocar el agente.",
+    "",
+    "Un enfoque NO es una fase del trabajo: nadie elige una fase porque las fases",
+    "se derivan del encargo que Aegis recibe. Por eso Aegis pide el suyo con una",
+    "tool, en lugar de que la app le ofrezca un menú.",
+    "",
+    "campos obligatorios: nombre, titulo, resumen, bloque.",
+    "opcionales: restringe (tools que este enfoque prohibe), presupuesto (chars que",
+    "cuesta frente a los otros), expone (tools extra solo durante el encargo).",
+    "Ninguno es decoration: `restringe` lo hace cumplir decide(), no el prompt."
+  ],
+
+  "enfoques": [
+    {
+      "nombre": "arquitectura",
+      "titulo": "Cómo se va a construir",
+      "resumen": "Para una decisión de diseño que hay que defender: por qué esta opción y no las otras. Cuando el encargo es «qué usamos para…», «cómo lo montaríamos», o hay más de una forma razonable de hacerlo.",
+      "cuando": [
+        "arquitectura", "cómo lo montamos", "cómo se construye", "diseño", "diseñamos",
+        "qué usamos para", "con qué lo hacemos", "qué tecnología", "qué stack",
+        "qué motor de base de datos", "qué framework", "postgres o", "sqlite o",
+        "microservicio o monolito", "antes de escribir código"
+      ],
+      "restringe": [
+        "aegis_write_file",
+        "aegis_patch_file",
+        "project_create"
+      ],
+      "_por_que_restringe": [
+        "El propio bloque dice que nombrar una tecnología antes de saber qué",
+        "problema se resuelve es «la forma más rápida de construir lo que nadie",
+        "pidió». Escribir código mientras se sigue decidiendo cómo construir es",
+        "exactamente eso, así que la puerta lo impide en vez de confiar en que el",
+        "modelo se acuerde.",
+        "",
+        "Aegis sale del enfoque pasandole nombre vacío a la misma tool, cuando el",
+        "diseño ya está cerrado y empieza a construir. Por eso no hace falta una",
+        "segunda tool: cada tool del schema es un peaje de A-016."
+      ],
+      "presupuesto": 2050,
+      "bloque": "arquitectura.md"
+    }
+  ]
+}

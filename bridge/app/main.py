@@ -133,9 +133,10 @@ async def _submit_task(agent: str, prompt: str,
     model = _agents()[agent]
     # warm-up no bloqueante del modelo
     await ollama.ensure_model(model)
-    # El método va siempre; la ficha solo si se sabe de qué proyecto habla.
+    # El método va siempre —con su parte de proyectos solo si hay proyecto— y la
+    # ficha solo si se sabe de qué se trata.
     bloques = []
-    metodo = method_context()
+    metodo = method_context(project or "")
     if metodo:
         bloques.append(metodo)
     if project:
@@ -212,16 +213,23 @@ class ProyectoOut(BaseModel):
     existe: bool = True
 
 
-@app.get("/fases")
-async def fases_listar() -> dict:
-    """Qué fases de trabajo existen, para que la app ofrezca elegir una.
+@app.get("/enfoques")
+async def enfoques_listar() -> dict:
+    """Qué enfoques existen, para que la app pueda ofrecer **fijar** uno.
 
-    La lista sale del disco: añadir `bridge/fases/x.md` la enciende, sin tocar
-    Python. Se declara en un endpoint y no en un enum porque el conjunto útil
-    cambia con lo que se vaya pensando.
+    ## Por qué devuelven el título y el resumen, y no el texto
+    La app solo necesita saber **qué hay** para pintar la línea de «trabajando
+    así». Bajarle el texto entero serían ~2000 caracteres por enfoque en el móvil
+    que igual no se usa nunca, y el prompt es el presupuesto en los dos
+    sentidos (A-016).
+
+    ## Y por qué la lista sale del disco
+    Añadir `bridge/enfoques/x.md` más una entrada en `_indice.json` lo enciende.
+    Ni Python, ni enum, ni compilar. Es lo que hace que esto se pueda ampliar a
+    otras funciones sin tocar el agente.
     """
-    from .fases import known_fases
-    return {"fases": known_fases()}
+    from .enfoques import indice_publico
+    return {"enfoques": indice_publico()}
 
 
 class FichaIn(BaseModel):
@@ -580,14 +588,18 @@ class AutopilotIn(BaseModel):
     #: `/aprobaciones` lo devolvía, y no había por dónde meterlo. La fila se
     #: marcaba "aprobada" y el paso volvía a pedir permiso para siempre.
     token: str = ""
-    #: Fase de trabajo, para el prompt: `idea`, `arquitectura`, o vacía.
+    #: Enfoque **fijado a mano**, o vacío para que lo pida Aegis.
     #:
-    #: No es decoración. `bridge/fases/{fase}.md` se inyecta en el system prompt
-    #: **solo** en los runs que la piden, y por un motivo medido: A-016, el 7B
-    #: deja de emitir `tool_calls` cuando el prompt crece. Meter las fases en
-    #: `metodo.md` las pagaría **todos** los runs, incluidos los de operación
+    #: Lo normal es vacío: los enfoques los pide Aegis con `usar_enfoque`, que es
+    #: lo que hace que sean suyos y no un menú. Este campo existe para cuando la
+    #: derivación falla y hay que corregirlo sin cambiar el encargo.
+    #:
+    #: No es decoración. `bridge/enfoques/{enfoque}.md` se inyecta en el system
+    #: prompt **solo** en los runs que lo llevan, y por un motivo medido: A-016, el
+    #: 7B deja de emitir `tool_calls` cuando el prompt crece. Meterlo en
+    #: `metodo.md` lo pagaría **todos** los runs, incluidos los de operación
     #: normal, que son los que más necesitan llamar tools.
-    fase: str = ""
+    enfoque: str = ""
 
 
 class AutopilotOut(BaseModel):
@@ -711,14 +723,14 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
         run_id=run_id,
         autonomy=autonomy_modulo,
         token=token,
-        fase=body.fase or "",
+        enfoque=body.enfoque or "",
         estado_base=estado_base,
         parar=parar,
         extra=extra,
     )
-    log.info("autopilot %s: %d pasos, %d tools ejecutadas (proyecto=%s, fase=%s)",
+    log.info("autopilot %s: %d pasos, %d tools ejecutadas (proyecto=%s, enfoque=%s)",
              run_id, result["steps"], sum(1 for t in result["trace"] if t.get("tool")),
-             project or "-", body.fase or "-")
+             project or "-", body.enfoque or "-")
     # La traza va al disco. Sin esto, el JSONL del run solo lo escribía el relay
     # de Hermes y un run de autopilot **no existía** fuera del buffer en memoria:
     # reiniciar el bridge lo borraba sin dejar rastro. Y `GET /runs` leía ficheros

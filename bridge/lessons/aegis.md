@@ -1603,3 +1603,142 @@ blanco, deformados y con resolución mala.
 - **Corolario**: cuando un aviso **tiene** que poder irse, comprobarlo en el caso
   fácil («hay teléfono, funciona») no dice nada del difícil («no hay teléfono»).
   Los dos casos van en el mismo test o en ninguno.
+
+## A-073 — Un enfoque que solo va en el prompt es un consejo, y Aegis no los cumple
+
+- **Qué se hizo** (2026-10-03): los enfoques dejaron de ser fases que elige la
+  persona y pasaron a ser algo que **pide Aegis** con `usar_enfoque`, cuando su
+  encargo no es todavía ejecutable. `idea` se borró a propósito.
+- **Por qué `idea` fuera, y no por taste**: `metodo.md` ya lleva, en todos los
+  runs, las seis preguntas para aterrizar una idea hasta poder escribir su ficha.
+  Tenerlo además como enfoque era pagar dos veces lo mismo. Y una técnica de
+  prompt que se aplica **siempre** no es un enfoque: es texto.
+- **Lo importante es que tiene dientes**: `restringe` en el índice lo cumple
+  `decide()` **antes que ningún nivel**, y el motivo nombra el enfoque y dice cómo
+  salir. «No puedo escribir» es ruido —hay tres motivos y se arreglan de tres
+  maneras—; «el enfoque arquitectura cierra esto, suéltalo cuando el diseño esté
+  cerrado» cambia el comportamiento del 7B.
+- **El `por_que` de `usar_enfoque` no es un comentario**: ES la subtarea de razonar
+  el encargo, y su texto queda en la traza. Sin razonamiento previo, elegir un
+  enfoque es adivinar con palabras — y un adivino bien escrito es indistinguible
+  de uno pensado.
+- **Regla**: **una instrucción que Aegis debe cumplir bajo presión va en el código
+  que ejecuta, no en el prompt.** El prompt es lo que el modelo *intenta*; la
+  autonomía es lo que decide.
+
+## A-074 — El presupuesto se comprueba al pedir, no al cargar
+
+- **Qué pasó** (2026-10-03): con un solo enfoque el tope no se notaba, y el test
+  que lo cubría daba verde con cualquier tope. `cabe(n, ())` con la lista vacía
+  **no puede fallar nunca**: la pregunta no es «¿cabe este?», sino «¿cabe este
+  encima de lo que ya llevas?».
+- **Por qué importa de verdad**: A-016 midió que el prompt es el presupuesto.
+  Un único bloque de 2600 caracteres pasaba al cargarse y podía ser el segundo
+  de 2600 más 2600. El tope se evalúa **en cada petición**, contra lo ya gastado.
+- **Regla**: **un presupuesto se comprueba acumulando, no de una en una.** Y un
+  test que solo mira el caso vacío está midiendo la nada.
+- **Y el motivo del rechazo lleva las cifras.** «No cabe» sin decir cuánto es
+  esconde el motivo; y un aviso que no dice por qué hay que buscarlo es la clase
+  de error que este repo ya pagó dos veces (A-042, A-055).
+
+## A-075 — Meter una tool se mide, no se supone
+
+- **Contexto** (2026-10-03): hacer que Aegis pida su enfoque significa meter una
+  tool más en el schema, y A-016 avisaba de que los modelos de 6 GB rinden peor
+  con muchas tools. Eso era una afirmación sobre el *prompt*; el número de tools es
+  otra variable.
+- **Cómo se midió**: `bin/probe-toolcall.sh` acepta ahora un tercer argumento, el
+  número de tools, y las saca de `_tools_schema()` —las reales, no unas inventadas,
+  porque un número inventado mediría otra cosa.
+- **Resultado**: con **19** tools emite `tool_calls` en no-stream y en stream; con
+  **20** emite `tool_calls` reales en no-stream, dos veces seguidas. El autopilot
+  usa `stream: false`, así que la puerta que importa pasa. En stream los deltas
+  salieron a 0 con 20; anotado, no bloqueante, y conviene mirarlo si algún día se
+  emite en stream.
+- **Regla**: **antes de añadir una tool, medir antes y después.** El instrumento
+  ya existía para una tool; seBuddó a N porque una tool no mide un cambio de
+  cantidad.
+
+## A-076 — Un agente que «sí o sí» trabaja en un proyecto, porque su método lo dice
+
+- **Qué pasó** (2026-10-03): Aegis tenía que servir para el uso cotidiano —una
+  pregunta, una nota, mirar algo— y no había forma: la fila de proyecto pintaba el
+  primero de la lista cuando no había ninguno elegido, así que la app **parecía**
+  siempre trabajando en `aegis`, y «sin proyecto» no aparecía por ninguna parte.
+- **Pero la causa de fondo estaba en el prompt, no en la pantalla**: `metodo.md` se
+  inyectaba **siempre** y estaba escrito entero como si hubiera siempre un proyecto
+  —«el verificador del proyecto», «pruebo en el emulador», «tu teléfono»—. Eso no
+  solo recarga prompt: **le dice a Aegis que todo encargo es trabajo en un repo**,
+  que es la instrucción equivocada impresa en el sitio con más peso que tiene.
+- **Arreglo**: `metodo.md` y `metodo_proyectos.md`, y el segundo solo entra con
+  proyecto. Sin proyecto el prompt baja de 3571 a 1975 caracteres: **−45%**. Y la
+  fila dice «Sin proyecto», que se puede soltar con un toque sin abrir nada.
+- **Regla**: **un agente demuestra para qué sirve con lo que le metes en el prompt,
+  no con lo que su interfaz permite.** Si el método dice que todo es un repo, la
+  pantalla puede ofrecer «sin proyecto» y seguir siendo un agente de repos.
+- **Corolario**: una variable llamada como lo contrario de lo que comprueba
+  (`pendiente` significando «no hay que avisar») no cuesta nada hasta que alguien
+  la lee al revés.
+
+## A-077 — Medido: el 7B **razona** el enfoque y no lo pide
+
+- **Qué se probó** (2026-10-03): tres runs con el encargo «qué motor de base de
+  datos uso, postgres o sqlite, quiero dos opciones con el por qué», sin enfoque
+  fijado.
+- **Resultado**: **ninguno pidió el enfoque.** Los tres fueron distintos y los tres
+  mal:
+  1. `repair`, `repair`, y luego inventó la tool `verificar_check`, que no existe,
+     y acabó con ella de respuesta.
+  2. Escribió en prosa: «Apriori no hay un enfoque activo»,}y se inventó uno
+     llamado `basado_en_tamaño_y_complejidad` en Markdown, sin llamada.
+  3. Respondió **en chino**, sin pedir nada.
+- **Lo importante es que el modelo sí razona bien**: en el segundo dijo
+  literalmente que no hay enfoque activo y que el método estándar es lo que
+  aplica. La comprensión está; lo que falta es la acción.
+- **Y no es el peaje de A-016**: `probe-toolcall.sh` con **20 tools** emite
+  `tool_calls` reales en no-stream, dos veces seguidas. Saber llamar tools y
+  **elegir** llamar una son dos cosas distintas, y aquí falla la segunda.
+- **Por qué el runway de reparación no lo rescata**: `_mentions_tool` solo dispara
+  si el texto nombra una tool. Un modelo que razona en prosa sin nombrarla llega a
+  `fin: sin_tools`, y su propio razonamiento —que era correcto— se queda en la
+  respuesta en vez de convertirse en llamada.
+- **Regla**: **«el agente puede hacer X» no es lo mismo que «el agente elige X».**
+  Una capacidad nueva necesita medirse por las dos partes: que sepa, y que la
+  escoja. Aquí se midió la primera (20 tools, `tool_calls` reales) y se creyó que
+  cubría la segunda. No la cubría.
+- **Lo que sí funciona, y es determinista**: el enfoque **fijado**. Entra en el
+  prompt con su título y sus tools cerradas, y `decide()` las niega antes de
+  ejecutarlas. Ese camino no depende de que un 7B se acuerde.
+- **Lo que queda sin decidir**: si además el bridge **deriva** el enfoque del
+  encargo y se lo da a Aegis diciendo por qué —`enfoques.derivar()`, ya escrito y
+  sin usar—, la capacidad deja de depender del modelo. Es la opción que se
+  descartó al elegir «que lo pida Aegis», y la medición es el dato nuevo: no es
+  que sea peor, es que con este modelo no dispara.
+
+## A-078 — Resuelto: el bridge propone y Aegis corrige
+
+- **Decisión** (2026-10-04): el puente deriva el enfoque del encargo
+  (`enfoques.derivar()`, señales del `_indice.json`) y lo pone con su motivo
+  **escrito en la traza**; Aegis conserva la tool para **corregirlo** —
+  `usar_enfoque(nombre='')` lo suelta, `usar_enfoque(nombre, por_que)` pide otro.
+- **Medido, mismo encargo de A-077**: el bloque entró, la respuesta siguió la
+  estructura del enfoque («requisitos no funcionales», «coste de cambio»), y en ese
+  run Aegis **además lo pidió** con la tool en el paso 1. Los dos caminos coinciden;
+  ya no dependemos de que el segundo llegue.
+- **Y lo que cuesta**: el enfoque se propone sin que nadie lo pidiera. Por eso la
+  traza lleva `propuesto_por: "bridge"` y el prompt dice «No lo pediste tú». Una
+  propuesta que no se puede leer como propuesta es un impose con log.
+- **Lo que casi se cuela**: el enfoque lo fija una regla, y una regla se equivoca.
+  Las tres salidas son soltar, corregir, y no proponer cuando no hay señal —que es
+  lo que hace `derivar()` devolviendo `None`. Un enfoque equivocado cierra tools de
+  más, así que el `None` es la respuesta por defecto y no un caso raro.
+- **Lo que salió de escribir el test**: la entrada del paso 0 se escribía en `trace`
+  y una línea más abajo una re-declaración la **borraba**. El enfoque se aplicaba de
+  verdad y era invisible en `GET /autopilot/{run_id}`: lo que se leía no era lo que
+  había pasado. Por eso `_sembrar_enfoque()` es una función pura que **devuelve** la
+  entrada en vez de escribirla — si el test necesita un modelo delante, tarde medio
+  minuto y acabe sin comprobarse.
+- **La puerta, comprobada aparte**: con `arquitectura` activo, `aegis_write_file` y
+  `aegis_patch_file` se niegan **antes** de mirar el modo, y el motivo dice cómo
+  soltar el enfoque. Sin enfoque, la misma escritura se cae por `solo`, que es un
+  motivo distinto y el correcto.

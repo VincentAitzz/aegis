@@ -78,10 +78,16 @@ abstract interface class AgentRepository {
 
   /// Fases de trabajo que el puente ofrece: `idea`, `arquitectura`, …
   ///
-  /// Vienen del disco del bridge, no de una lista en la app: cada fase es un
-  /// fichero que se puede escribir sin compilar nada. Vacía = ninguna, y la app
-  /// simplemente no muestra el selector.
-  Future<List<String>> fases();
+  /// Qué enfoques existen, para poder **fijar** uno a mano.
+  ///
+  /// Lo normal es que Aegis pida el suyo y aquí no haya nada que hacer: esto está
+  /// para cuando la derivación falla y hay que corregirlo sin cambiar el encargo.
+  /// Viene del disco del bridge, no de una lista en la app: añadir un enfoque es
+  /// un `.md` más una entrada en el índice, sin tocar esto.
+  ///
+  /// Devuelve título y resumen, **no** el texto del enfoque: son ~2000 caracteres
+  /// por enfoque para descargarlos en el móvil y igual no usarse nunca.
+  Future<List<Enfoque>> enfoques();
 
   /// Despliegues esperando aprobación en el teléfono. Mientras haya algo aquí,
   /// Aegis **no ha instalado nada**: está esperando a que lo apruebes.
@@ -119,7 +125,7 @@ abstract interface class AgentRepository {
     bool remember,
     bool verify,
     String? token,
-    String? fase,
+    String? enfoque,
   });
 
   /// Progreso del run de autopilot. `AutopilotRun.finished` dice si paró.

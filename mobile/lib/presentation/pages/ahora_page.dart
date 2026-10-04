@@ -87,7 +87,7 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
     try {
       final proyecto = proyectoForzado ?? ref.read(selectedProjectProvider) ?? '';
       final sinProyecto = proyecto.isEmpty ? null : proyecto;
-      final fase = ref.read(faseElegidaProvider);
+      final fijado = ref.read(enfoqueFijadoProvider);
       final runId = await ref.read(agentRepositoryProvider).startAutopilot(
             prompt: prompt,
             project: sinProyecto,
@@ -100,7 +100,8 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
             // qué botón pulsaste.
             verify: _autonomiaEscribible(sinProyecto),
             token: token,
-            fase: fase.isEmpty ? null : fase,
+            // Sin nada fijado, Aegis pide su enfoque solo si lo necesita.
+            enfoque: fijado.isEmpty ? null : fijado,
           );
       if (!mounted) return;
       setState(() {
@@ -198,7 +199,7 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
               ref.read(selectedProjectProvider.notifier).select(a),
         ),
         const SizedBox(height: 12),
-        _ComoTrabajar(prompt: _prompt),
+        const _ComoTrabajar(),
         const SizedBox(height: 12),
         TextField(
           controller: _prompt,
@@ -258,129 +259,150 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
   }
 }
 
-/// Cómo trabajar: la fase del encargo.
+/// Fijar un enfoque a mano, o no.
 ///
-/// ## Por qué está plegada y no en la línea de arriba
-/// Una fase son las instrucciones que **solo valen mientras se piensa**, y solo
-/// las pagan los runs que las piden. En el prompt, la fase es el presupuesto:
-/// A-016 midió que los modelos de 6 GB dejan de emitir `tool_calls` cuando el
-/// prompt crece, y un selector de fases abierto por defecto invita a elegir una
-/// en cada encargo —que es pagarla sin necesitarla— mientras esconde el único
-/// dato que de verdad hay que ver a la primera: dónde vas a trabajar.
+/// ## Por qué una línea y no un desplegable con opciones
+/// Los enfoques los pide **Aegis**, con `usar_enfoque`, cuando su encargo no es
+/// todavía ejecutable. Eso es lo que hace que sean suyos y no un menú que alguien
+/// tiene que acertar. Lo único que queda aquí es **corregirlo** cuando se ha
+/// equivocado —y para eso basta una línea.
 ///
-/// Plegada, el criterio es "solo si ya estás pensando en ello", que es
-/// exactamente cuando la fase aplica. El equipo tampoco hace falta: el bucle
-/// termina solo en cuanto el modelo no pide más herramientas, así que una
-/// pregunta de razonamiento llega igual, y con su respuesta.
+/// Por defecto no hay nada fijado y pone «lo decide Aegis». Poner uno de salida
+/// haría que Aegis trabajara con instrucciones que nadie ha comprobado que
+/// apliquen, que es exactamente el gasto que A-016 midió.
+///
+/// ## Y por qué el texto de un enfoque **no** viene aquí
+/// Son ~2000 caracteres por enfoque, y la app solo necesita saber que existen
+/// para poder pintar esta línea. Bajárselos al móvil sería el mismo peaje de
+/// prompt por el otro lado.
 class _ComoTrabajar extends ConsumerWidget {
-  const _ComoTrabajar({required this.prompt});
-
-  final TextEditingController prompt;
-
-  static String _ayuda(String fase) => switch (fase) {
-        'idea' => 'Aterriza el problema y sus alternativas. No escribe código.',
-        'arquitectura' =>
-          'Decide cómo se construye, con alternativas y coste de cambio.',
-        _ => '',
-      };
+  const _ComoTrabajar();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final fases = ref.watch(fasesProvider);
-    final elegida = ref.watch(faseElegidaProvider);
-    return fases.maybeWhen(
+    final enfoques = ref.watch(enfoquesProvider);
+    final fijado = ref.watch(enfoqueFijadoProvider);
+
+    return enfoques.maybeWhen(
       orElse: () => const SizedBox.shrink(),
+      loading: () => const SizedBox.shrink(),
+      error: (e, _) => const SizedBox.shrink(),
       data: (lista) {
         if (lista.isEmpty) return const SizedBox.shrink();
-        return Theme(
-          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-          // El `ValueListenableBuilder` está **por dentro** del `ExpansionTile`,
-          // no en la página entera: el criterio para abrir es «ya hay algo
-          // escrito», y sacarlo a un `setState` del `State` reconstruiría el
-          // `ListView` completo en cada tecla —con las aprobaciones y la traza
-          // dentro— para saber si abrir un desplegable.
-          child: ValueListenableBuilder<TextEditingValue>(
-            valueListenable: prompt,
-            builder: (context, value, _) {
-              final escrito = value.text.trim().isNotEmpty;
-              return ExpansionTile(
-                initiallyExpanded: escrito && elegida.isNotEmpty,
-                tilePadding: const EdgeInsets.symmetric(horizontal: 0),
-                childrenPadding: const EdgeInsets.only(bottom: 4),
-                visualDensity: VisualDensity.compact,
-                shape: const Border(),
-                collapsedShape: const Border(),
-                title: Text(
-                  elegida.isEmpty
-                      ? 'Cómo trabajar'
-                      : 'Cómo trabajar · ${elegida.toUpperCase()}',
-                  style: TextStyle(
-                    fontFamily: AegisPalette.mono,
-                    fontSize: 10.5,
-                    letterSpacing: 1,
-                    color: elegida.isEmpty
+        final activo = lista.where((e) => e.nombre == fijado);
+        final texto = activo.isEmpty
+            ? 'trabajando así: lo decide Aegis'
+            : 'trabajando así: ${activo.first.titulo}';
+        return InkWell(
+          onTap: () => _abrir(context, ref, lista, fijado),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 2),
+            child: Row(
+              children: [
+                Icon(Icons.tune,
+                    size: 13,
+                    color: fijado.isEmpty
                         ? AegisPalette.fgFaint
-                        : AegisPalette.brand,
-                  ),
-                ),
-                trailing: Icon(
-                  Icons.tune,
-                  size: 14,
-                  color:
-                      elegida.isEmpty ? AegisPalette.fgFaint : AegisPalette.brand,
-                ),
-                children: [
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Wrap(
-                      spacing: 7,
-                      runSpacing: 7,
-                      children: [
-                        for (final f in lista)
-                          ChoiceChip(
-                            label: Text(f.toUpperCase()),
-                            selected: f == elegida,
-                            onSelected: (_) => ref
-                                .read(faseElegidaProvider.notifier)
-                                .alternar(f),
-                            labelStyle: TextStyle(
-                              fontFamily: AegisPalette.mono,
-                              fontSize: 10,
-                              letterSpacing: 1,
-                              color: f == elegida
-                                  ? AegisPalette.bg0
-                                  : AegisPalette.fgDim,
-                            ),
-                            selectedColor: AegisPalette.brand,
-                            backgroundColor: AegisPalette.bg1,
-                            side: BorderSide(
-                              color: f == elegida
-                                  ? AegisPalette.brand
-                                  : AegisPalette.bg1.withValues(alpha: 1),
-                            ),
-                            showCheckmark: false,
-                          ),
-                      ],
+                        : AegisPalette.brand),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    texto,
+                    style: TextStyle(
+                      fontFamily: AegisPalette.mono,
+                      fontSize: 10.5,
+                      letterSpacing: 0.6,
+                      color: fijado.isEmpty
+                          ? AegisPalette.fgFaint
+                          : AegisPalette.brand,
                     ),
                   ),
-                  if (_ayuda(elegida).isNotEmpty) ...[
-                    const SizedBox(height: 7),
-                    Text(
-                      _ayuda(elegida),
-                      style: const TextStyle(
-                        fontFamily: AegisPalette.mono,
-                        fontSize: 10.5,
-                        height: 1.45,
-                        color: AegisPalette.fgDim,
-                      ),
-                    ),
-                  ],
-                ],
-              );
-            },
+                ),
+                const Icon(Icons.expand_more,
+                    size: 14, color: AegisPalette.fgFaint),
+              ],
+            ),
           ),
         );
       },
+    );
+  }
+
+  Future<void> _abrir(BuildContext context, WidgetRef ref,
+      List<Enfoque> lista, String fijado) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AegisPalette.bg1,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+      ),
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Aegis elige el enfoque según lo que le pidas. Esto solo es para '
+                'corregirlo cuando se ha equivocado.',
+                style: TextStyle(
+                    fontFamily: AegisPalette.mono,
+                    fontSize: 11,
+                    height: 1.5,
+                    color: AegisPalette.fgDim),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                selected: fijado.isEmpty,
+                selectedTileColor: AegisPalette.bg2,
+                onTap: () {
+                  ref.read(enfoqueFijadoProvider.notifier).soltar();
+                  Navigator.pop(ctx);
+                },
+                title: const Text('Lo decide Aegis',
+                    style: TextStyle(
+                        fontFamily: AegisPalette.mono, fontSize: 12.5)),
+                subtitle: const Text('lo normal',
+                    style: TextStyle(
+                        fontFamily: AegisPalette.mono,
+                        fontSize: 10,
+                        color: AegisPalette.fgFaint)),
+              ),
+              for (final e in lista)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  selected: e.nombre == fijado,
+                  selectedTileColor: AegisPalette.bg2,
+                  onTap: () {
+                    ref.read(enfoqueFijadoProvider.notifier).alternar(e.nombre);
+                    Navigator.pop(ctx);
+                  },
+                  title: Text(e.titulo,
+                      style: const TextStyle(
+                          fontFamily: AegisPalette.mono, fontSize: 12.5)),
+                  subtitle: Text(
+                    e.cierra == null
+                        ? e.resumen
+                        : '${e.resumen}\n${e.cierra}',
+                    style: TextStyle(
+                        fontFamily: AegisPalette.mono,
+                        fontSize: 10,
+                        height: 1.4,
+                        color: e.cierra == null
+                            ? AegisPalette.fgFaint
+                            : AegisPalette.warn),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -447,33 +469,75 @@ class _SelectorProyecto extends ConsumerWidget {
           orElse: () => lista.first,
         );
         final color = _color(actual);
+        final sinProyecto = seleccionado.isEmpty;
         return InkWell(
+          // La clave no es decoracion: ahora hay **dos** iconos de `expand_more`
+          // en la pantalla —este y el de la linea «trabajando asi»—, y sin ella no
+          // hay forma de decir cual de los dos se quiere pulsar. Un icono que hay
+          // que adivinar es un icono que alguien pulsara el equivocado.
+          key: const Key('aegis.proyecto'),
           onTap: () => _abrirHoja(context, ref, lista),
           borderRadius: BorderRadius.circular(4),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
             child: Row(
               children: [
-                StatusLed(color: color, size: 6),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    seleccionado.isEmpty ? actual.alias : seleccionado,
-                    style: TextStyle(
-                      fontFamily: AegisPalette.mono,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: color,
+                // Sostener el proyecto abierto es fácil —una hoja— y soltarlo
+                // es lo que se usa a diario. Por eso el propio control se
+                // puede pulsar para dejarlo ir, sin abrir nada.
+                if (!sinProyecto)
+                  GestureDetector(
+                    onTap: () => onChanged(nadaElegido),
+                    child: const Padding(
+                      padding: EdgeInsets.only(right: 6),
+                      child: Icon(Icons.close,
+                          size: 13, color: AegisPalette.fgFaint),
                     ),
                   ),
-                ),
-                Text(
-                  _globo(actual),
-                  style: const TextStyle(
-                      fontFamily: AegisPalette.mono,
-                      fontSize: 10,
-                      color: AegisPalette.fgFaint,
-                      height: 1.4),
+                StatusLed(color: sinProyecto ? AegisPalette.fgFaint : color,
+                    size: 6),
+                const SizedBox(width: 8),
+                // En **columna**, no en fila. En fila el título y el texto largo
+                // se pelean por el ancho y el título se parte a mitad de palabra
+                // («Sin pr» / «oyecto»), que es el peor sitio posible para leer
+                // el dato que decide dónde vas a trabajar.
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        // Sin proyecto se dice **sin proyecto**, y no se enseña
+                        // el primero de la lista. Antes ponía `lista.first`
+                        // cuando no había nada elegido, así que la app parecía
+                        // siempre trabajando en `aegis` y el uso cotidiano
+                        // quedaba invisible.
+                        sinProyecto ? 'Sin proyecto' : seleccionado,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: AegisPalette.mono,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color:
+                              sinProyecto ? AegisPalette.fgDim : color,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        sinProyecto
+                            ? 'Aegis también sirve para lo que no es un repo'
+                            : _globo(actual),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontFamily: AegisPalette.mono,
+                            fontSize: 10,
+                            color: AegisPalette.fgFaint,
+                            height: 1.4),
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(width: 6),
                 const Icon(Icons.expand_more,
@@ -485,6 +549,11 @@ class _SelectorProyecto extends ConsumerWidget {
       },
     );
   }
+
+  /// Lo que significa «no hay proyecto elegido». Es lo que hace `selectedProjectProvider`
+  /// cuando nadie ha elegido, y es el estado **normal**: Aegis sirve para
+  /// preguntas, notas y mirar cosas, sin repo de por medio.
+  static const String nadaElegido = '';
 
   Future<void> _abrirHoja(
       BuildContext context, WidgetRef ref, List<ProjectInfo> lista) async {
@@ -513,7 +582,10 @@ class _SelectorProyecto extends ConsumerWidget {
 /// proyectos es más comoda de recorrer deslizando, y porque el buscador necesita el
 /// teclado sin tapar el botón de cerrar.
 class _HojaProyectos extends ConsumerStatefulWidget {
-  const _HojaProyectos({required this.proyectos, required this.seleccionado});
+  const _HojaProyectos({
+    required this.proyectos,
+    required this.seleccionado,
+  });
 
   final List<ProjectInfo> proyectos;
   final String seleccionado;
@@ -619,6 +691,36 @@ class _HojaProyectosState extends ConsumerState<_HojaProyectos> {
               ),
             ),
             const SizedBox(height: 8),
+            // «Sin proyecto» va **primero**, y no como un proyecto más. Es el
+            // estado normal de un uso cotidiano, y esconderlo al final de una
+            // lista de repositorios es lo que hace que Aegis parezca una herramienta
+            // que solo sirve para trabajar en repos.
+            // Con el filtro de escribibles, «sin proyecto» desaparece: no se
+            // puede escribir en nada sin proyecto, así que sería una fila que
+            // al pulsarla no cambia nada. Un botón que no hace nada es peor que
+            // no tenerlo.
+            if (!_soloEscribibles)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                selected: widget.seleccionado.isEmpty,
+                selectedTileColor: AegisPalette.bg2,
+                onTap: () => Navigator.pop(context, _SelectorProyecto.nadaElegido),
+                leading: const StatusLed(color: AegisPalette.fgFaint, size: 7),
+                title: const Text('Sin proyecto',
+                    style: TextStyle(
+                        fontFamily: AegisPalette.mono,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700)),
+                subtitle: const Text(
+                    'preguntas, notas, mirar cosas. Aegis no necesita un repo '
+                    'para eso.',
+                    style: TextStyle(
+                        fontFamily: AegisPalette.mono,
+                        fontSize: 10,
+                        height: 1.4,
+                        color: AegisPalette.fgFaint)),
+              ),
             Flexible(
               child: visibles.isEmpty
                   ? const Padding(

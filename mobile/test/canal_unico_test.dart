@@ -70,7 +70,9 @@ void main() {
       find.descendant(of: find.byType(ListTile), matching: find.text(alias));
 
   Future<void> abrirHoja(WidgetTester tester) async {
-    await tester.tap(find.byIcon(Icons.expand_more));
+    // Por la clave y no por el icono: la pantalla tiene dos `expand_more` y sin
+    // esto el finder es ambiguo (y el error sale aqui, no en un test de verdad).
+    await tester.tap(find.byKey(const Key('aegis.proyecto')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
   }

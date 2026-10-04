@@ -257,23 +257,36 @@ final aprobacionesProvider = FutureProvider<List<Aprobacion>>((ref) async {
 
 /// Las fases de trabajo que ofrece el puente. La lista sale de su disco, así
 /// que aquí no hay nada que mantener cuando se añada una.
-final fasesProvider = FutureProvider<List<String>>((ref) async {
-  return ref.watch(agentRepositoryProvider).fases();
+/// Qué enfoques hay. Solo para poder **fijar** uno a mano.
+///
+/// Lo normal es que Aegis pida el suyo y esto no se use: el plegable sale con
+/// «fijar» y lo normal es que estés en «lo decide Aegis».
+final enfoquesProvider = FutureProvider<List<Enfoque>>((ref) async {
+  return ref.watch(agentRepositoryProvider).enfoques();
 });
 
-/// Fase elegida para el próximo encargo. Vive aquí, y no en el `State` de la
-/// pantalla, para que el botón de relanzar un permiso —que está en otra
-/// tarjeta— pueda recuperarla.
-final faseElegidaProvider =
-    NotifierProvider<FaseController, String>(FaseController.new);
+/// El enfoque **fijado a mano** para el próximo encargo. Vacío = lo decide Aegis.
+///
+/// ## Por qué está vacío por defecto y no puesto
+/// Un enfoque es lo que Aegis deduce del encargo que recibe. Fijarlo a mano es
+/// corregirlo cuando se ha equivocado, y esa corrección es de quien conoce el
+/// encargo. Dejarlo fijado «por si acaso» haría que Aegis trabajara con unas
+/// instrucciones que nadie ha comprobado que apliquen.
+///
+/// Vive en un provider y no en el `State` de la pantalla porque el botón de
+/// relanzar un permiso está en otra tarjeta y necesita recuperarlo.
+final enfoqueFijadoProvider =
+    NotifierProvider<EnfoqueFijadoController, String>(EnfoqueFijadoController.new);
 
-class FaseController extends Notifier<String> {
+class EnfoqueFijadoController extends Notifier<String> {
   @override
   String build() => '';
 
-  /// Volver a pulsar la misma la quita: elegirla es una declaración, no un
-  /// ajuste que se queda puesto para siempre.
-  void alternar(String fase) => state = state == fase ? '' : fase;
+  /// Fijarlo es una declaración para el próximo encargo, no un ajuste permanente:
+  /// por eso pulsar dos veces el mismo lo suelta y vuelve a decidir Aegis.
+  void alternar(String nombre) => state = state == nombre ? '' : nombre;
+
+  void soltar() => state = '';
 }
 
 /// El estado de la autonomía: el modo y los proyectos marcados.

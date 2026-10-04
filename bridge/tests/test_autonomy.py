@@ -66,7 +66,7 @@ class TestLasTresNiveles(_Piso):
     concede permisos a medida que se añaden herramientas, sin que nadie lo decida.
     """
 
-    def test_las_18_tools_estan_clasificadas(self):
+    def test_todas_las_tools_estan_clasificadas(self):
         from app.autopilot import allowed_tools
         reales = allowed_tools()
         clasificadas = (autonomy.LIBRES | autonomy.CON_PERMISO
@@ -851,14 +851,14 @@ class TestElCicloMedido(_Piso):
                               run_id="r1", paso=1, almacen_=self.a).peticion
         self.a.denegar_con_motivo(pid, "compra-unida solo lee por ahora")
         with mock.patch.object(autonomy, "almacen", lambda: self.a):
-            prompt = build_system_prompt("", "compra-unida", "")
+            prompt = build_system_prompt("", "compra-unida", "", enfoque="")
         self.assertIn("compra-unida solo lee por ahora", prompt)
         self.assertIn("No lo vuelvas a proponer", prompt)
 
     def test_sin_denegaciones_el_prompt_no_crece(self):
         from app.autopilot import build_system_prompt
         with mock.patch.object(autonomy, "almacen", lambda: self.a):
-            prompt = build_system_prompt("", "compra-unida", "")
+            prompt = build_system_prompt("", "compra-unida", "", enfoque="")
         self.assertNotIn("Lo que ya me dijiste que no", prompt)
 
 

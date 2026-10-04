@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 import httpx
 
-from .fases import phase_context
+from . import enfoques as enfoques_mod
 from .fichas import context_for
 from .method import method_context
 from .mcp_ops import coerce_args
@@ -71,7 +71,13 @@ def _looks_truncated(text: str) -> bool:
 SYSTEM_PROMPT = (
     "Eres el agente Aegis. Para trabajar en el host llamas SIEMPRE a las tools "
     "disponibles, una por llamada, y esperas su resultado antes de seguir. "
-    "Respondes con texto plano corto cuando ya no necesitas tools."
+    "Respondes con texto plano corto cuando ya no necesitas tools.\n"
+    "Si el encargo todavía NO es ejecutable —porque falta decidir cómo se "
+    "construye algo, o cómo quedaría— puede que te venga un enfoque puesto. Si "
+    "te viene, úsalo: es el bridge leyendo el encargo. Si no encaja, suéltalo con "
+    "usar_enfoque(nombre='') y razona tú. Si no te viene ninguno y no sabes por "
+    "dónde empezar, pide uno con usar_enfoque y explica en `por_que` por qué este "
+    "encargo es de ese tipo."
 )
 
 LESSONS_DIR = Path(__file__).resolve().parent.parent / "lessons"
@@ -93,16 +99,36 @@ def load_lessons(project: str) -> str:
 
 
 def build_system_prompt(instructions: str = "", project: str = "",
-                        memory: str = "", fase: str = "") -> str:
-    """Sistema = identidad + método + base + ficha + fases + lecciones + memoria + el spec.
+                        memory: str = "", enfoque: str = "",
+                        enfoque_por_que: str = "",
+                        enfoque_derivado: bool = False) -> str:
+    """Sistema = identidad + método + base + ficha + enfoque + lecciones + memoria.
 
-    `fase` inyecta `bridge/fases/{fase}.md`, que es donde vive lo que solo tiene
-    sentido mientras se piensa: qué es una idea, cuándo se puede nombrar una
-    tecnología. Va **después** de la ficha y **antes** de las lecciones, porque
-    las fasesomena lo que hay que hacer y las lecciones lo que no hay que repetir.
+    El `enfoque` inyecta `bridge/enfoques/{enfoque}.md`, que es donde vive lo que
+    solo tiene sentido mientras se piensa: cómo se va a construir algo, y en qué
+    orden se decide. Va **después** de la ficha y **antes** de las lecciones,
+    porque el enfoque dice lo que hay que hacer y las lecciones lo que no hay que
+    repetir.
+
+    ## Y por qué cabe uno solo
+    A-016 midió que los modelos de 6 GB dejan de emitir `tool_calls` cuando el
+    prompt crece. `arquitectura.md` son ~1970 caracteres sobre ~3400 de base: un
+    +58 %. El tope vive en `enfoques.MAX_CHARS` y se comprueba en cada peticion, no
+    al cargar el indice.
+
+    ## Por qué el bloque dice de quién es la propuesta
+    `enfoque_derivado` es la diferencia entre «Aegis decidió esto» y «esto se lo
+    puso el bridge encima». Dejarlo sin decir sería escribir una traza que miente:
+    la auditoría de A-077 se apoyó justo en que se puede leer quién eligió qué, y
+    un enfoque que parece elegido por el modelo y no lo fue rompe justo eso. Con
+    el aviso, Aegis además sabe que puede corregirlo, que es lo que convierte la
+    derivación en una propuesta y no en un impose.
     """
     parts = [SYSTEM_PROMPT]
-    metodo = method_context()
+    # El metodo se lee con el proyecto porque se parte en dos: lo que siempre es
+    # cierto, y lo que solo tiene sentido trabajando en un proyecto. Un encargo
+    # cotidiano sin proyecto paga la parte que no le sirve.
+    metodo = method_context(project)
     if metodo:
         parts.append(metodo)
     # La ficha del proyecto va antes que las lecciones: dice de qué trata esto,
@@ -110,9 +136,40 @@ def build_system_prompt(instructions: str = "", project: str = "",
     ficha = context_for(project)
     if ficha:
         parts.append(ficha)
-    bloque_fase = phase_context(fase)
-    if bloque_fase:
-        parts.append(bloque_fase)
+    bloque_enfoque = enfoques_mod.bloque(enfoque)
+    if bloque_enfoque:
+        # El **titulo** va delante, y no solo en la tool: un enfoque fijado o
+        # derivado llega aqui sin pasar por `usar_enfoque`, y sin el titulo Aegis
+        # leeria un bloque sin saber de donde sale.
+        try:
+            cabecera = (f"## ENFOQUE DERIVADO POR EL BRIDGE: "
+                        if enfoque_derivado else "## ENFOQUE FIJADO: ")
+            bloque_enfoque = (cabecera
+                              + f"{enfoques_mod.ficha(enfoque)['titulo']}\n\n"
+                              + bloque_enfoque)
+        except enfoques_mod.EnfoqueNoExiste:
+            pass
+        if enfoque_derivado:
+            bloque_enfoque += (
+                "\n\n### De dónde salió este enfoque\n\n"
+                f"{enfoque_por_que or 'el encargo encajaba con él'}. **No lo pediste "
+                "tú**: lo sugirió el bridge porque las señales del encargo "
+                "aparecen en su ficha. Si no encaja con lo que te han pedido, no "
+                "lo arrastres: suéltalo con `usar_enfoque(nombre='')`, o pide otro "
+                "con `usar_enfoque(nombre, por_que)` diciendo por qué.")
+        partes_cerradas = []
+        try:
+            partes_cerradas = enfoques_mod.restringe(enfoque)
+        except enfoques_mod.EnfoqueNoExiste:
+            partes_cerradas = []
+        if partes_cerradas:
+            bloque_enfoque = (
+                bloque_enfoque + "\n\n### Lo que este enfoque cierra\n\n"
+                + "\n".join(f"- `{t}` — **prohibida** mientras dure este enfoque."
+                            for t in partes_cerradas)
+                + "\n\nNo es una recomendación: la autonomía las niega antes de "
+                  "ejecutarlas. Suelta el enfoque cuando ya no lo necesites.")
+        parts.append(bloque_enfoque)
     lessons = load_lessons(project)
     if lessons:
         parts.append(
@@ -283,6 +340,117 @@ def _execute(name: str, args: dict[str, Any]) -> str:
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
 
 
+TOOL_ENFOQUE = "usar_enfoque"
+
+
+def _aplicar_enfoque(args: dict, activos: list[str], *,
+                     run_id: str = "", paso: int = 0
+                     ) -> tuple[list[str], str]:
+    """Aplica lo que Aegis pidió con `usar_enfoque`, y dice si lo attachment.
+
+    ## Por qué aquí y no dentro de la tool
+    La tool no puede cambiar el estado del run: `_execute` es una funcion suelta
+    y no sabe de que run se trata. Y el estado que importa —**cuales** hay
+    ahora— vive en el bucle. Ademas el ajuste tiene que ocurrir **antes** de que
+    este paso pase por la autonomia, no despues: si no, el primer write posterior
+    al enfoque se cuela sin que nadie lo mire.
+
+    ## Y por que se comprueba el presupuesto aquí
+    El tope de enfoques y de caracteres se evalua en cada peticion, no solo al
+    cargar el indice. Un unico enfoque de 2600 caracteres podria pasar al
+    cargarse y ser el segundo de 2600 mas 2600.
+    """
+    from . import enfoques as mod
+
+    nombre = str(args.get("nombre") or "").strip()
+    por_que = str(args.get("por_que") or "").strip()
+
+    # Soltar: nombre vacio. No es un caso raro, es la salida normal.
+    if not nombre:
+        if not activos:
+            return activos, ""
+        return [], f"suelta {', '.join(activos)}"
+
+    if nombre in activos:
+        return activos, f"'{nombre}' ya estaba activo"
+    if not por_que:
+        return activos, ""
+    try:
+        mod.ficha(nombre)
+    except mod.EnfoqueNoExiste:
+        return activos, ""
+    cabe, motivo = mod.cabe(nombre, tuple(activos))
+    if not cabe:
+        return activos, f"'{nombre}' no cabe: {motivo}"
+    return [*activos, nombre], f"-activa '{nombre}': {por_que[:160]}"
+
+
+def _aviso_de_enfoque(activos: list[str], por_que: str) -> str:
+    """Lo que Aegis lee de vuelta tras pedir un enfoque."""
+    from . import enfoques as mod
+    if not activos:
+        return ("Sin enfoque activo. El método de siempre es lo que queda.")
+    nombre = activos[0]
+    try:
+        texto = mod.bloque(nombre)
+        f = mod.ficha(nombre)
+    except mod.EnfoqueNoExiste as exc:
+        return str(exc)
+    if not texto:
+        return ""
+    cabecera = f"## ENFOQUE ACTIVO: {f['titulo']}\n\n"
+    if f.get("restringe"):
+        cerrado = "\n".join(f"- `{t}` — **prohibida** en este enfoque."
+                            for t in f["restringe"])
+        cabecera += (f"### Lo que este enfoque cierra\n\n{cerrado}\n\n"
+                     "No es una recomendación: `decide()` las niega antes de "
+                     "ejecutarlas.\n\n")
+    if por_que:
+        cabecera += f"Por qué lo pediste: {por_que[:400]}\n\n"
+    return cabecera + texto
+
+
+def _sembrar_enfoque(enfoque: str, prompt: str
+                     ) -> tuple[list[str], str, dict[str, Any]]:
+    """El enfoque con el que arranca el run: `(activos, motivo, entrada_de_traza)`.
+
+    ## Por qué el bridge propone y Aegis corrige
+    Porque está medido (A-077) que Aegis **no pide** un enfoque solo: con
+    `qwen2.5:7b` razonó bien y no llamó a la tool, tres veces de tres. Tener la
+    capacidad y que no dispare no es tenerla.
+
+    Así que al arrancar se lee el encargo con reglas (`enfoques.derivar`), y si hay
+    señal clara se propose el enfoque con su motivo **escrito en la traza**. Aegis
+    sigue teniendo la última palabra: lo suelta con `usar_enfoque(nombre='')` o
+    pide otro con su propio `por_que`.
+
+    ## Por qué lo fijado manda sobre lo derivado
+    Una persona que elige en la app sabe más que una regla, y el modo de derivar
+    es el que se equivoca solo. Si viene fijado, no se deriva nada.
+
+    ## Y por qué devuelve la entrada de traza en vez de escribirla
+    Para que sea comprobable sin llamar a un modelo. El bucle entero necesita
+    inferencia, y una parte que solo se puede medir con un 7B delante termina sin
+    medirse. Esta se prueba en milisegundos.
+    """
+    from . import enfoques as mod
+
+    if enfoque and mod.bloque(enfoque):
+        return [enfoque], "", {}
+    sug = mod.derivar(prompt)
+    if not sug or not sug[0]:
+        return [], "", {}
+    nombre, motivo = sug
+    cabe, _ = mod.cabe(nombre, ())
+    if not cabe:
+        # Un enfoque que no cabe no se propone: el prompt es el presupuesto y
+        # recortarlo a medias daría a Aegis un método sin su final.
+        return [], "", {}
+    entrada = {"step": 0, "action": "enfoque_derivado", "enfoque": nombre,
+               "por_que": motivo, "propuesto_por": "bridge"}
+    return [nombre], motivo, entrada
+
+
 async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         max_steps: int = MAX_STEPS, instructions: str = "",
                         project: str = "", memory: str = "",
@@ -291,7 +459,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         run_id: str = "run_sin_id",
                         autonomy: Any = None,
                         token: str = "",
-                        fase: str = "",
+                        enfoque: str = "",
                         estado_base: Optional[dict[str, Any]] = None,
                         parar: Optional[asyncio.Event] = None,
                         extra: Optional[asyncio.Queue] = None) -> dict[str, Any]:
@@ -332,13 +500,25 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     "esperando_ok"` y devuelve el id de la petición. No es un fallo ni un paso
     más: es el run esperando a una persona, y el móvil lo pinta como tal.
     """
+    from . import enfoques as enfoques_mod
+
     tools = _tools_schema()
+    activos, motivo_derivado, entrada_enfoque = _sembrar_enfoque(enfoque, prompt)
     messages: list[dict[str, Any]] = [
         {"role": "system",
-         "content": build_system_prompt(instructions, project, memory, fase)},
+         "content": build_system_prompt(instructions, project, memory,
+                                        activos[0] if activos else "",
+                                        motivo_derivado,
+                                        bool(motivo_derivado))},
         {"role": "user", "content": prompt},
     ]
     trace: list[dict[str, Any]] = []
+    # El enfoque derivado entra en la traza como su propia entrada, y no como un
+    # `final` ni como un campo suelto: A-077 se mide sobre estas líneas. Un enfoque
+    # que no se puede ver en la traza no se puede auditar, que es justo lo que un
+    # 7B necesita para que se le pueda preguntar por qué lo cogió.
+    if entrada_enfoque:
+        trace.append(entrada_enfoque)
     answer = ""
     repairs = 0
     fin = "max_steps"
@@ -436,6 +616,25 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 from . import actividad
                 actividad.marcar("autopilot", run_id)
             for name, args in calls:
+                # El enfoque se ajusta **antes** de la autonomia de este paso, no
+                # despues. Es lo unico que hace que el cierre de puertas valga:
+                # si `usar_enfoque` se contara al final del paso, el primer write
+                # de despues del enfoque habria pasado sin mirarlo.
+                if name == TOOL_ENFOQUE:
+                    activos, por_que = _aplicar_enfoque(
+                        args, activos, run_id=run_id, paso=step)
+                    if por_que:
+                        entry_extra = {"step": step, "action": "enfoque",
+                                       "por_que": por_que, "activos": list(activos)}
+                        trace.append(entry_extra)
+                        if on_step is not None:
+                            await on_step(step, entry_extra)
+                    messages.append({
+                        "role": "user",
+                        "content": f"RESULTADO de {name}:\n" + (
+                            _aviso_de_enfoque(activos, por_que))})
+                    continue
+
                 # El texto del modelo **sí** va en la traza. Antes no, y era una
                 # pérdida doble: se perdía para el móvil (que solo pintaba
                 # "projects_list OK") y para el log de disco. Es la diferencia
@@ -453,7 +652,8 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 if autonomy is not None:
                     veredicto = autonomy.decide(
                         name, args, run_id=run_id, paso=step,
-                        estado_base=estado_base, token=token)
+                        estado_base=estado_base, token=token,
+                        enfoque=activos[0] if activos else "")
                     entry["autonomia"] = {"ok": veredicto.ok, "motivo": veredicto.motivo,
                                           "peticion": veredicto.peticion}
                     # El token era para **esa** llamada. En cuanto se gasta, el run

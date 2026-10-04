@@ -262,6 +262,53 @@ class BridgeHealth {
       );
 }
 /// Una petición de despliegue esperando aprobación.
+/// Un enfoque de trabajo, de lo que el bridge tiene en `bridge/enfoques/`.
+class Enfoque {
+  const Enfoque({
+    required this.nombre,
+    required this.titulo,
+    required this.resumen,
+    this.cuando = const [],
+    this.restringe = const [],
+    this.bloqueChars = 0,
+  });
+
+  final String nombre;
+  final String titulo;
+
+  /// Por qué sirve, en una frase. Lo que se lee **antes** de decidir fijarlo.
+  final String resumen;
+
+  /// Las señales del encargo que lo sugieren. No las usa la app: están para que
+  /// un humano entienda cuándo aplica.
+  final List<String> cuando;
+
+  /// Las tools que este enfoque cierra mientras dure el encargo.
+  final List<String> restringe;
+
+  /// Cuánto prompt cuesta, para poder decir si merece la pena fijarlo a mano.
+  final int bloqueChars;
+
+  factory Enfoque.fromJson(Map<String, dynamic> j) => Enfoque(
+        nombre: (j['nombre'] ?? '') as String,
+        titulo: (j['titulo'] ?? '') as String,
+        resumen: (j['resumen'] ?? '') as String,
+        cuando:
+            ((j['cuando'] as List?) ?? const []).map((e) => '$e').toList(),
+        restringe:
+            ((j['restringe'] as List?) ?? const []).map((e) => '$e').toList(),
+        bloqueChars: (j['bloque_chars'] as num?)?.toInt() ?? 0,
+      );
+
+  /// Si este enfoque cierra algo, y qué.
+  ///
+  /// Se pinta porque es la parte que **cuesta**: fijar un enfoque puede dejarte
+  /// sin poder escribir. Decirlo antes de fijarlo es mejor que descubrirlo
+  /// cuando Aegis dice «no puedo escribir» y no se sabe por qué.
+  String? get cierra =>
+      restringe.isEmpty ? null : 'Cierra: ${restringe.join(', ')}';
+}
+
 class DeployRequest {
   const DeployRequest({
     required this.id,

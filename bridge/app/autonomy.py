@@ -82,6 +82,16 @@ LIBRES = frozenset({
     "adb_devices",
     "deploy_estado",
     "verify_deploy",
+    # Cambiar la manera de trabajar del run actual. No toca el disco, no cambia
+    # nada fuera de este encargo y se acaba con él —de hecho, `usar_enfoque('')`
+    # lo suelta—, así que preguntar por ello sería una puerta para nada.
+    #
+    # Lo que sí hace es **cerrar tools**, y eso parece una excepción: se comprueba
+    # antes que cualquier nivel, en `decide()`. Preguntar «¿quieres arquitectura?»
+    # cada vez que Aegis elige cómo trabajar sería volver a poner un menú delante
+    # de algo que no es una decisión de la persona sino del encargo.
+    "usar_enfoque",
+    "enfoques_disponibles",
 })
 
 #: Herramientas que escriben en tu disco. Necesitan que hayas marcado el
@@ -585,7 +595,8 @@ def forgetting_tocados() -> None:
 def decide(tool: str, args: dict[str, Any], *, run_id: str, paso: int,
            almacen_: Optional[_Almacen] = None,
            estado_base: Optional[dict[str, Any]] = None,
-           token: str = "") -> Decision:
+           token: str = "",
+           enfoque: str = "") -> Decision:
     """¿Puede Aegis ejecutar esta llamada ahora?
 
     ## Por qué recibe el almacén
@@ -661,11 +672,36 @@ def decide(tool: str, args: dict[str, Any], *, run_id: str, paso: int,
         return Decision(True, f"aprobado por ti (paso {paso}, {pagada['tool']})",
                         uso_token=True)
 
+    # -- 0. lo que el enfoque activo cierra, antes que nada ----------------
+    #
+    # ## Por que va **primero**, antes incluso de los niveles
+    # Un enfoque se pide para trabajar de otra manera, y parte de esa manera es
+    # **no** hacer algo. Si esto se comprobara despues, una tool prohibida pasaria
+    # por su nivel normal —que muchas veces es «libre» o «con permiso»— y llegaria
+    # al disco. El cierre tiene que ser la primera puerta que mira la llamada.
+    #
+    # ## Y por que el motivo nombra el enfoque
+    # «No puedo escribir» es un ruido: hay tres motivos distintos para no poder y
+    # son arreglables de tres maneras. El mensaje dice **cual** es y **que hacer**:
+    # un 7B que recibe «no puedes» reintenta lo mismo; uno que recibe «el enfoque
+    # arquitectura cierra esto, sueltalo cuando el diseño este cerrado» cambia de
+    # comportamiento.
+    if enfoque:
+        from . import enfoques
+        cerradas = enfoques.restringe(enfoque)
+        if tool in cerradas:
+            return Decision(
+                False,
+                f"El enfoque '{enfoque}' tiene '{tool}' cerrada. No es una "
+                f"recomendación: mientras estés en él no se ejecuta. Si ya "
+                f"terminaste de decidir, suelta el enfoque con "
+                f"usar_enfoque(nombre='') y vuelve a intentarlo.")
+
     a = almacen_ or almacen()
     nivel = nivel_de(tool)
     alias = alias_de(tool, args)
 
-    # -- 0. lo que siempre pregunta, en todos los modos --------------------
+    # -- 1. lo que siempre pregunta, en todos los modos --------------------
     if nivel == "requiere_ok":
         fuera = FUERA_DEL_DISCO.get(tool, "")
         motivo = _motivo_de_que_va_a_pedir(tool, args, alias, fuera)
@@ -673,7 +709,7 @@ def decide(tool: str, args: dict[str, Any], *, run_id: str, paso: int,
                       motivo=motivo, proyecto=alias)
         return Decision(False, motivo, peticion=pid)
 
-    # -- 1. escritura: depende del modo y de que el proyecto esté marcado ---
+    # -- 2. escritura: depende del modo y de que el proyecto esté marcado ---
     if nivel == "con_permiso":
         modo = a.modo()
         if modo == "solo":
