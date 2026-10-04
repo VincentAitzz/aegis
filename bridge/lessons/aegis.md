@@ -2111,3 +2111,57 @@ blanco, deformados y con resolución mala.
 - **Regla**: un instrumento de medición necesita un **comprobador de que corre**. Si
   la salida es una traza de error, no es un cero: es una avería, y las dos se
   parecen en la terminal. Un instrumento que nunca se ejecuta debería decirlo.
+
+## A-091 — El historial no decía qué tool se había llamado
+
+- **Qué pasó** (2026-10-04): Aegis se quedaba sin pasos. En el banco de calidad,
+  `fin: max_steps` salía en 3/8 de los encargos del 7B y 5/8 del 3B, y la causa
+  visible era que **en el paso 2 volvían a llamar la misma tool** que ya les había
+  devuelto resultado.
+- **Lo que se sospechó primero, y era falso**: que eran los 42 del schema, o la
+  cabeza del modelo. Se midió: con las 22 tools, por los dos endpoints (el nativo y
+  el compatible con OpenAI), los dos modelos **aciertan la tool 4/4 y 3-4/4** y no
+  inventan ni un solo nombre. El schema no era el culpable.
+- **La causa real, en dos líneas del historial**: el autopilot guardaba
+  `{"role": "assistant", "content": "(tool call)"}` — **sin la llamada** — y luego
+  el resultado como un mensaje `user`. O sea que el modelo recibía un resultado sin
+  vínculo con lo que había pedido, y un mensaje de usuario es una petición nueva.
+  Contando repeticiones en el paso 2:
+
+  | formato | qwen2.5:7b | llama3.2:3b |
+  |---|---|---|
+  | como estaba (`user`) | 3/4 | 1/4 |
+  | con su rol y su `tool_call_id` | **0/4** | **0/4** |
+
+- **El relleno era peor que inútil**: un mensaje de asistente que dice «(tool call)»
+  y no contiene ninguna llamada es un historial que se contradice a sí mismo. El
+  modelo tenía que deducir de un texto de relleno qué tool se había ejecutado.
+- **Efecto en el bucle real**: `fin: max_steps` pasó de 3/8 y 5/8 a **0/8** en los
+  dos modelos. Y no fue cambiar de modelo: fue arreglar el historial.
+- **Regla**: el historial de una conversación con tools tiene que **conservar la
+  llamada junto a su resultado**. Si el resultado vuelve por un canal que no lo
+  vincula a la llamada, el modelo no puede saber si ya lo tenía, y lo que hace es
+  repetir. Un `"(tool call)"` de relleno es una mentira silenciosa: parece que se
+  registró la llamada, y no se registró nada.
+
+## A-092 — Dos cosas que ninguna elección de modelo arregla
+
+- **Las lecciones son inaccesibles leyendo.** `aegis_read_file` devuelve «máx. 400
+  líneas» y `lessons/aegis.md` tiene **2 113**. O sea que 82 de las 85 lecciones no
+  se pueden leer, y quien intentara buscarlas se encuentra un fichero cortado sin
+  aviso de que está cortado. El banco lo detectó solo: las tareas de «lee la
+  lección A-089» fallaron **con los dos modelos**, y con razón: era imposible.
+- **El scanner de secretos se bloquea a sí mismo.** `_no_secrets` rechaza el
+  contenido de `app/mcp_ops.py`, que es el fichero que implementa el scanner: le
+  muestran los patrones que busca. Comprobado:
+  `ValueError: contenido con posible secreto`. O sea que **el agente no puede leer
+  el módulo que define los guardarraíles**, que es justo lo que necesitaría para
+  entender por qué una escritura se denegó.
+- **Por qué lo que se anota**: los dos fallos son *estructurales* yNeither se
+  arregla con un modelo mejor. Un banco de calidad que solo compara modelos se
+  habría limitado a decir «el 7B es mejor», y la mejora real estaba en que dos
+  encargos del banco eran **imposibles** para cualquiera.
+- **Regla**: antes de comparar candidatos, comprueba que **el encargo es
+  realizable con las tools que hay**. Un modelo que no encuentra la lección A-089 no
+  está fallando: le pediste algo que no se puede leer. Y un guardarraíl que no puede
+  leerse a sí mismo deja al agente sin explicación cuando le detiene.
