@@ -1902,3 +1902,23 @@ blanco, deformados y con resolución mala.
   commit como «el bloque cuesta un 15%». Con n=5 y ±4 s de ruido, ese número no
   distinguía nada. Repetido a n=12 por variante, la diferencia no solo desapareció:
   cambió de signo. A-080 ya lo había escrito y no lo había aprendido del todo.
+
+## A-083 — Un fichero que carga cero no falla, y por eso nadie lo ve
+
+- **Qué pasó** (2026-10-04): `lessons/portafolio.md` tiene 14 lecciones
+  encabezadas `### R-001 · …`, y el patrón del parser pedía `(A-\d+)`. La
+  consequence: `cargar('portafolio')` devolvía una tupla vacía y el índice
+  también, así que **cada run del portafolio salía sin lecciones**, desde
+  hacía semanas, sin error ni aviso.
+- **Por qué ningún test lo cazó**: todas las pruebas de lecciones usan `aegis`,
+  cuyo fichero sí usa `A-`. El código funcionaba. Un test que verifica «esto
+  funciona» solo ve el caso que él conoce; hace falta uno que verifique «nada de
+  lo que existe queda fuera».
+- **El arreglo fue una clase de caracteres**: `(A-\d+)` → `([A-Za-z]{1,4}-?\d+)`.
+  Reescribir los 14 encabezados habría costado más, y habría dejado el mismo
+  agujero para el siguiente que titule con otro prefijo.
+- **Regla**: dos pruebas para cada cosa que se lee de disco por convención —
+  una de que funciona el caso que conozco, y otra de que **todo lo que hay en el
+  directorio entra**. La segunda es la que encuentra los zombies. Un índice vacío
+  es un dato válido para el código, así que no hay excepción que lo delate: solo
+  un test que mire los ficheros.

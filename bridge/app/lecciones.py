@@ -82,7 +82,19 @@ MAX_INYECTADAS = 1
 #: Cuántas devuelve la tool cuando pides un tema. Todas las que casen, con tope.
 MAX_DEVUELTAS = 4
 
-_HEAD = re.compile(r"^(#{2,4})\s+(A-\d+)\s*[·—–-]\s*(.+?)\s*$")
+#: Encabezado de una lección: `## A-001 · título`.
+#:
+#: El prefijo admite **cualquier letra**, no solo `A`, porque los ficheros ya
+#: escritos usan el prefijo de su proyecto: `### R-001` en `portafolio`. Con un
+#: patrón estricto, esas 14 lecciones se escribieron, se pagaron y **nunca
+#: llegaron al prompt**: `indice('portafolio')` devolvía cadena vacía, sin error
+#: ni aviso. Relajar el patrón cuesta una clase de caracteres; reescribir los 14
+#: encabezados perdería su historial y, además, no arreglaría el caso siguiente:
+#: alguien con un prefijo raro.
+#:
+#: El **número** sigue siendo lo que se cita y por lo que se ordena, así que lo
+#: único que cambia es que ya no se descarta una lección entera por cómo se tituló.
+_HEAD = re.compile(r"^(#{2,4})\s+([A-Za-z]{1,4}-?\d+)\s*[·—–-]\s*(.+?)\s*$")
 _CUE = re.compile(r"^\s*>\s*Aplica cuando:\s*(.+?)\s*$", re.IGNORECASE)
 _QUE_PASO = re.compile(r"\*\*Qué pasó\*\*:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 

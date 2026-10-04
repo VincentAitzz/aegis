@@ -207,3 +207,37 @@ class TestElPromptYaNoSeCompeLasLecciones(unittest.TestCase):
         self.assertIn("La que más aplica a este encargo", p)
         self.assertIn("### A-002", p)
         self.assertNotIn("### A-001", p.split("La que más aplica")[1])
+
+
+class TestNingunFicheroSeQuedaFuera(unittest.TestCase):
+    """Un fichero de lecciones que no se lee no avisa: carga cero.
+
+    ## Qué se rompió
+    `lessons/portafolio.md` titula sus 14 lecciones `### R-001 · …`, y el patrón
+    de encabezado exigía `(A-\d+)`. Resultado: `cargar('portafolio')` devolvía
+    una tupla vacía, `indice('portafolio')` devolvía cadena vacía, y el prompt de
+    cada run del portafolio salía **sin lecciones**. Sin error, sin aviso, y sin
+    forma de notarlo salvo llevando la cuenta a mano.
+
+    Es la clase de bug que solo se ve con un test que itere los ficheros: el
+    patrón funciona para `aegis`, así que ninguna prueba de `aegis` falla.
+    """
+
+    def test_cada_fichero_de_lecciones_aporta_al_menos_una(self):
+        vacios = []
+        for p in sorted(mod.LESSONS_DIR.glob("*.md")):
+            if p.name.startswith("_"):
+                continue
+            alias = p.stem
+            if not mod.cargar(alias):
+                vacios.append(alias)
+        self.assertEqual([], vacios,
+                         "estos ficheros de lecciones no aportan ninguna al "
+                         "prompt: " + ", ".join(vacios))
+
+    def test_el_prefijo_no_descarta_lecciones(self):
+        """El título es lo que el autor escribió; el prefijo no lo invalida."""
+        for alias in ("aegis", "portafolio"):
+            with self.subTest(alias=alias):
+                self.assertTrue(mod.cargar(alias),
+                                f"{alias} no carga ninguna lección")
