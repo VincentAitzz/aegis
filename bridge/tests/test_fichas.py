@@ -322,7 +322,16 @@ class TestEscrituraDeFichaSinModelo(unittest.TestCase):
     def _post(self, alias: str, contenido: str):
         from fastapi.testclient import TestClient
         from app.main import app
-        return TestClient(app).post(f"/fichas/{alias}", json={"contenido": contenido})
+        # La escritura de una ficha pide `X-Aegis-Token` como el resto de rutas que
+        # cambian algo. Se manda aquí la que hay en el entorno, que es lo que
+        # hace el móvil: si la puerta se abriera, estas pruebas empezarían a
+        # fallar por el motivo equivocado.
+        from app import main as main_mod
+        cabeceras = {}
+        if main_mod.settings.aegis_api_key:
+            cabeceras["X-Aegis-Token"] = main_mod.settings.aegis_api_key
+        return TestClient(app).post(f"/fichas/{alias}", json={"contenido": contenido},
+                                    headers=cabeceras)
 
     def test_escribe_byte_exacto_incluido_el_frontmatter(self) -> None:
         texto = "---\nkind: producto\n---\n\n# Trazeurs\n\n## Que es\n\naplicacion\n"

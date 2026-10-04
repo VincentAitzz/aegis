@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import (FastAPI, Header, HTTPException, Request, WebSocket,
+from fastapi import (FastAPI, Header, HTTPException, Query, Request, WebSocket,
                      WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
@@ -50,6 +50,12 @@ async def lifespan(app: FastAPI):
     log.info("bridge arriba (bind %s:%s -> hermes %s)",
              settings.bridge_bind, settings.bridge_port, settings.hermes_base_url)
     yield
+    # `hermes` es un cliente **compartido a nivel de módulo**, así que cerrarlo
+    # lo deja muerto para el resto del proceso. En producción da igual: uvicorn
+    # apaga y el proceso se va. Pero en los tests no, porque un solo
+    # `with TestClient(app)` dispara este apagón y todas las pruebas siguientes
+    # fallan con «the client has been closed» sin relación aparente con lo que
+    # miden. Por eso los tests de este repo usan `TestClient(app)` sin contexto.
     await hermes.aclose()
 
 
@@ -68,6 +74,35 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # permiso de escritura sobre tus proyectos, denegar una aprobación, leer tus
 # notas. Eso no es "ver una traza", es poder.
 
+def _token_aceptado(x_aegis_token: Optional[str]) -> bool:
+    """El veredicto de una clave, sin la excepción. Lo comparten el HTTP y el WS.
+
+    Sin clave configurada, todo vale: ver la nota de `exigir_token`.
+    """
+    esperada = settings.aegis_api_key
+    return not esperada or bool(x_aegis_token) and x_aegis_token == esperada
+
+
+async def _ws_exigir_token(ws: WebSocket, token: str) -> None:
+    """Rechaza el socket si la clave no vale, **antes** de aceptar.
+
+    ## Qué ve el cliente
+    Un `websocket.close` enviado antes del `accept()` lo traduce el servidor a un
+    **HTTP 403 en el propio handshake**: el cliente nunca llega a tener un socket
+    abierto, y su `connect()` falla. No se ve un 1008, porque un 1008 solo
+    existiría sobre un socket que ya se aceptó — o sea, después de haber dejado
+    la puerta abierta un instante.
+
+    Y ese instante es el que hay que evitar: este socket es el que empuja la traza
+    de los runs a la pantalla, así que aceptar y comprobar después significa
+    publicar la ejecución de Aegis a quien llegue durante la comprobación.
+    """
+    if _token_aceptado(token):
+        return
+    log.warning("WS rechazado: token ausente o incorrecto")
+    await ws.close(code=1008, reason="esta ruta pide X-Aegis-Token y la que llega no vale")
+
+
 def exigir_token(x_aegis_token: Optional[str] = Header(default=None)) -> None:
     """Verifica `X-Aegis-Token`. Sin clave configurada, no exige nada.
 
@@ -77,15 +112,13 @@ def exigir_token(x_aegis_token: Optional[str] = Header(default=None)) -> None:
     a exigirlo, y el móvil deja de funcionar si no lo lleva — que es el motivo
     de que el fallo sea explícito y no un 500.
     """
-    esperada = settings.aegis_api_key
-    if not esperada:
+    if _token_aceptado(x_aegis_token):
         return
-    if not x_aegis_token or x_aegis_token != esperada:
-        raise HTTPException(
-            status_code=401,
-            detail="esta ruta pide X-Aegis-Token y la que llega no vale. "
-                   "El móvil la lleva en la cabecera; si acabas de rotar la "
-                   "clave, hay que reinstalarlo con la nueva.")
+    raise HTTPException(
+        status_code=401,
+        detail="esta ruta pide X-Aegis-Token y la que llega no vale. "
+               "El móvil la lleva en la cabecera; si acabas de rotar la "
+               "clave, hay que reinstalarlo con la nueva.")
 
 
 def _store_bytes() -> int:
@@ -266,7 +299,8 @@ async def leer_ficha(alias: str) -> dict:
 
 
 @app.post("/fichas/{alias}")
-async def escribir_ficha(alias: str, body: FichaIn) -> dict:
+async def escribir_ficha(alias: str, body: FichaIn,
+                       _auth: None = Depends(exigir_token)) -> dict:
     """Escribe la ficha de un proyecto, **sin pasar por el modelo**.
 
     Existe porque la ruta por el modelo no funciona, y se comprobó: un 7B
@@ -561,22 +595,25 @@ def PROJECTS_DATOS() -> set[str]:
 
 # -- tareas -------------------------------------------------------------------
 @app.post("/tasks", response_model=TaskOut)
-async def create_task(task: TaskIn) -> TaskOut:
+async def create_task(task: TaskIn,
+                    _auth: None = Depends(exigir_token)) -> TaskOut:
     return await _submit_task(task.agent, task.prompt, task.instructions, task.project)
 
 
 @app.post("/tasks/{run_id}/approval")
-async def approve(run_id: str, body: ApprovalIn) -> dict:
+async def approve(run_id: str, body: ApprovalIn,
+                _auth: None = Depends(exigir_token)) -> dict:
     return await hermes.approve(run_id, body.decision, body.comment)
 
 
 @app.post("/tasks/{run_id}/steer")
-async def steer(run_id: str, body: SteerIn) -> dict:
+async def steer(run_id: str, body: SteerIn,
+              _auth: None = Depends(exigir_token)) -> dict:
     return await hermes.steer(run_id, body.text)
 
 
 @app.post("/tasks/{run_id}/stop")
-async def stop(run_id: str) -> dict:
+async def stop(run_id: str, _auth: None = Depends(exigir_token)) -> dict:
     return await hermes.stop(run_id)
 
 
@@ -840,7 +877,8 @@ async def _run_roto(run_id: str, project: str, body: AutopilotIn,
 
 
 @app.post("/autopilot", response_model=AutopilotOut)
-async def autopilot(body: AutopilotIn) -> AutopilotOut:
+async def autopilot(body: AutopilotIn,
+                   _auth: None = Depends(exigir_token)) -> AutopilotOut:
     """Ejecuta una tarea con el bucle modelo→aegis-ops, sin depender de tool_calls.
 
     Es la vía fiable de autonomía: el modelo local decide QUÉ tool usar y el
@@ -868,7 +906,8 @@ async def autopilot(body: AutopilotIn) -> AutopilotOut:
 
 
 @app.post("/autopilot/start", response_model=AutopilotStarted)
-async def autopilot_start(body: AutopilotIn) -> AutopilotStarted:
+async def autopilot_start(body: AutopilotIn,
+                        _auth: None = Depends(exigir_token)) -> AutopilotStarted:
     """Lanza el run y devuelve ya, con la traza creciendo en GET /autopilot/{id}."""
     run_id = f"{_AUTOPILOT_PREFIX}{uuid.uuid4().hex[:12]}"
     # `parar` y `extra` se crean **antes** de la tarea y se guardan en el run: un
@@ -954,7 +993,8 @@ class SteerIn(BaseModel):
 
 
 @app.post("/autopilot/{run_id}/stop")
-async def autopilot_stop(run_id: str) -> dict:
+async def autopilot_stop(run_id: str,
+                      _auth: None = Depends(exigir_token)) -> dict:
     """Pide que el run deje de empezar pasos.
 
     ## Por qué no se cancela la tarea
@@ -986,7 +1026,8 @@ async def autopilot_stop(run_id: str) -> dict:
 
 
 @app.post("/autopilot/{run_id}/steer")
-async def autopilot_steer(run_id: str, body: SteerIn) -> dict:
+async def autopilot_steer(run_id: str, body: SteerIn,
+                       _auth: None = Depends(exigir_token)) -> dict:
     """Mete una instrucción en un run que ya está corriendo.
 
     Se aplica en el **siguiente** paso, no en mitad del actual: el paso en marcha
@@ -1070,7 +1111,20 @@ def _autopilot_desde_disco(run_id: str) -> AutopilotStatus:
 
 # -- canal bidireccional (WebSocket) -------------------------------------------
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket) -> None:
+async def ws_endpoint(ws: WebSocket, token: str = Query(default="")) -> None:
+    """Canal bidireccional. **Autenticado antes de aceptar.**
+
+    ## Por qué el token va por query y no en cabecera
+    La API de WebSocket del navegador **no puede poner cabeceras** en el
+    handshake. Un `WebSocketChannel` de Dart tampoco las expone. El handshake
+    solo lleva la URL, así que el token viaja en la query — con lo que eso
+    significa: queda en el log de acceso y en el historial. Es el precio de poder
+    cerrar la puerta, y es un precio que se puede pagar. Lo que no se puede es
+    dejar la puerta abierta: este socket es el que empuja la traza de los runs a
+    la pantalla, y sin comprobar, cualquiera en la tailnet se suscribe a la
+    ejecución de Aegis.
+    """
+    await _ws_exigir_token(ws, token)
     await ws.accept()
     log.info("cliente WS conectado")
     try:

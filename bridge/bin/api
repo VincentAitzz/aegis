@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Una llamada al bridge **con la llave puesta**.
+#
+# ## Por qué existe
+# Desde 2026-10-04 toda ruta que cambia algo pide `X-Aegis-Token`. Añadir esa
+# cabecera a los ejemplos de `curl` uno por uno es una forma segura de que dentro
+# de seis meses la documentación esté mintiendo: trece ejemplos correctos hasta
+# que alguien añade el catorceteenth y lo copia sin la cabecera.
+#
+# ## Qué no hace
+# No imprime el valor de la llave, ni lo acepta por argumento (en un `ps` de esta
+# máquina se vería). La lee de `bridge/.env` y la manda en la cabecera.
+#
+# ## Uso
+#   bin/api POST autopilot '{"prompt":"lista los proyectos","max_steps":4}'
+#   bin/api GET  runs
+#   bin/api GET  health
+#
+# Los GET también pasan por aquí, aunque no la necesiten: así el mismo comando
+# sirve para leer y para actuar, y no hay dos formas de llamar al bridge.
+set -euo pipefail
+
+VERBO="${1:?falta el verbo: GET, POST, PATCH o DELETE}"
+RUTA="${2:?falta la ruta}"
+# Sin barra inicial, `curl` lee `127.0.0.1:8000runs` como un puerto y falla con
+# un error que no tiene nada que ver con la causa.
+RUTA="/${RUTA#/}"
+CUERPO="${3:-}"
+PUERTO="${BRIDGE_PORT:-8000}"
+
+RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${AEGIS_ENV:-${RAIZ}/.env}"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "api: no encuentro ${ENV_FILE}" >&2
+  exit 1
+fi
+
+# Longitud del valor, nunca el valor: si la clave no está puesta, esto lo dice.
+# `cut -d= -f2-` a propósito: la clave puede llevar un `=` dentro.
+TOKEN="$(grep -m1 '^AEGIS_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r"'"'" || true)"
+
+if [[ -z "$TOKEN" ]]; then
+  echo "api: AEGIS_API_KEY vacía en ${ENV_FILE}. Sin ella el bridge deja las" >&2
+  echo "     rutas que cambian cosas abiertas a propósito, y eso conviene que" >&2
+  echo "     sea una decisión y no un olvido." >&2
+fi
+
+ARGS=(-sS -X "$VERBO" "http://127.0.0.1:${PUERTO}${RUTA}"
+      -H "X-Aegis-Token: ${TOKEN}")
+
+if [[ -n "$CUERPO" ]]; then
+  ARGS+=(-H 'Content-Type: application/json' -d "$CUERPO")
+fi
+
+curl "${ARGS[@]}"

@@ -90,30 +90,35 @@ de final. Con la memoria envenenada no hay nada que medir.
 
 ### Desde la consola
 
+Toda ruta que **cambia algo** pide `X-Aegis-Token` desde 2026-10-04. No lo pongas
+a mano en los ejemplos: `bridge/bin/api` lo lee de `bridge/.env`, no lo imprime,
+y existe para que la documentación no se quede mintiendo.
+
 ```bash
-curl -s -X POST http://127.0.0.1:8000/autopilot \
-  -H 'Content-Type: application/json' \
-  -d '{"project":"portafolio","max_steps":16,"instructions":"<reglas>","prompt":"<tarea>"}'
+cd bridge
+bin/api POST autopilot '{"project":"portafolio","max_steps":16,"instructions":"<reglas>","prompt":"<tarea>"}'
 ```
+
+Las lecturas también pasan por ahí (`bin/api GET runs`) aunque no lo necesiten:
+si el mismo comando sirve para leer y para actuar, no hay dos formas de llamar al
+bridge y una de ellas se queda sin llave.
 
 Síncrono: devuelve `answer`, `steps`, `trace` y `fin` (por qué terminó). Es lo
 que usa el resto del operarlo y los scripts.
 
 ### Cuando Aegis necesita tu OK
 
-`app/autonomy.py` reparte las 18 tools en tres niveles. Si un run.topa una tool
+`app/autonomy.py` reparte las 21 tools en tres niveles. Si un run topa una tool
 de nivel 3 (`db_migrate`, `neon_branch`, `install_apk`, `build_apk`,
 `project_create`, `adb_connect`, `deploy_smoke`), **no ejecuta**: deja una
 petición y termina con `fin: "esperando_ok"`.
 
 ```bash
-curl -s localhost:8000/aprobaciones                # lo que espera tu OK
-curl -s -X POST localhost:8000/aprobaciones/<id> \
-  -H 'Content-Type: application/json' -d '{"decision":"aprobar"}'   # -> token
+cd bridge
+bin/api GET aprobaciones                # lo que espera tu OK
+bin/api POST aprobaciones/<id> '{"decision":"aprobar"}'   # -> token
 # relanzas con ese token:
-curl -s -X POST localhost:8000/autopilot/start \
-  -H 'Content-Type: application/json' \
-  -d '{"project":"aegis","prompt":"<lo mismo>","token":"<token>"}'
+bin/api POST autopilot/start '{"project":"aegis","prompt":"<lo mismo>","token":"<token>"}'
 ```
 
 **Denegar con motivo** es lo que hace crecer la confianza: el motivo se inyecta
@@ -149,22 +154,25 @@ porque un permiso que nadie recuerda aprobar es ruido.
   vuelve a preguntar: es lo correcto, y ahora sin quemar el permiso.
 - Si el token se gastara y el run volviera a pedir lo mismo, vuelve a preguntar.
 
-### Fases: pensar antes de construir
+### Enfoques: pensar antes de construir
 
-Una **fase** son las instrucciones que solo valen mientras se piensa. Viven en
-`bridge/fases/{nombre}.md` y se inyectan en el system prompt **solo** en los runs
-que la piden (`"fase": "idea"` o `"arquitectura"`); `GET /fases` dice cuáles hay.
+Un **enfoque** son las instrucciones que solo valen mientras se piensa. Vive en
+`bridge/enfoques/{nombre}.md` con su entrada en `_indice.json`, y se inyecta en el
+system prompt **solo** en los runs que lo piden (`"enfoque": "arquitectura"`);
+`GET /enfoques` dice cuáles hay.
 
 No van en `metodo.md` a propósito: A-016 midió que el 7B deja de emitir
-`tool_calls` cuando el prompt crece, y el prompt es el presupuesto. Una fase
-inyectada a todo el mundo se paga en los runs de operación, que son los que más
+`tool_calls` cuando el prompt crece, y el prompt es el presupuesto. Un enfoque
+inyectado a todo el mundo se paga en los runs de operación, que son los que más
 necesitan llamar tools.
 
-- `idea`: aterriza el problema, las alternativas y lo que se descarta. No escribe
-  código —la puerta se lo negaría, porque la ficha está vacía.
 - `arquitectura`: requisitos no funcionales antes de nombrar tecnología, dos o
   tres opciones con su coste de cambio, y qué habría que falsar para estar
   equivocado.
+
+Hubo también `idea`, y se borró: aterrizar una idea hasta poder escribir su ficha
+ya lo hace `method_context()`, que va en todos los runs. Pagar lo mismo dos veces
+no es un enfoque, es texto.
 
 Añadir una fase es escribir un fichero. Sin código, sin enum, sin compilar.
 
@@ -194,15 +202,14 @@ dejar al usuario mirando un spinner, están `POST /autopilot/start` (devuelve ya
 un `run_id`) y `GET /autopilot/{run_id}` (la traza crece paso a paso).
 
 ```bash
-RID=$(curl -s -X POST http://127.0.0.1:8000/autopilot/start \
-  -H 'Content-Type: application/json' \
-  -d '{"project":"aegis","prompt":"lista los proyectos"}' | jq -r .run_id)
-curl -s http://127.0.0.1:8000/autopilot/$RID | jq '{status,steps,fin}'
+RID=$(cd bridge && bin/api POST autopilot/start \
+  '{"project":"aegis","prompt":"lista los proyectos"}' | jq -r .run_id)
+(cd bridge && bin/api GET autopilot/$RID) | jq '{status,steps,fin}'
 ```
 
 - `project` es lo que carga `bridge/lessons/{project}.md` y el `recall`.
 - `instructions` van en el system prompt; el `prompt` es la tarea.
-- `fase` es opcional y es lo único que enciende `bridge/fases/{fase}.md`.
+- `enfoque` es opcional y es lo único que enciende `bridge/enfoques/{enfoque}.md`.
 - Las rutas del proyecto van con prefijo de alias: `portafolio/src/lib/db.ts`.
 - `repo_verify(what='check'|'test'|'build')` es la única tool de verificación, a
   propósito: un 7B rinde peor con muchas tools que con una.
@@ -219,7 +226,7 @@ retroceso, aunque haya un bug de fondo:
 
 | Guardarraíl | Qué evita |
 |---|---|
-| Whitelist multi-raíz (`ROOTS`) | que el agente escriba fuera de los proyectos declarados |
+| Whitelist multi-raíz (`PROJECTS`) | que el agente escriba fuera de los proyectos declarados |
 | Denylist (`.git`, `node_modules`, `dist`, `build`, `.venv`…) | editar áreas generadas o versionadas a mano |
 | Escaneo de secretos (escritura y lectura) | que una key acabe en un archivo o en un log |
 | **Rollback de sintaxis** | un archivo roto llega al repo: si `dart format`/esbuild no parsean, se revierte |
@@ -343,8 +350,9 @@ qué comprobar que el trabajo quedó bien. Y lo que sale de tu disco te lo pregu
 siempre, con el motivo escrito.
 
 ```bash
-curl -s localhost:8000/autonomy            # modo, proyectos marcados, pendientes
-curl -s -X POST localhost:8000/autonomy/modo -d '{"modo":"solo"}'   # solo|permiso|pleno
+cd bridge
+bin/api GET autonomy                      # modo, proyectos marcados, pendientes
+bin/api POST autonomy/modo '{"modo":"solo"}'    # solo|permiso|pleno
 ```
 
 `pleno` **no** significa "sin preguntar": el nivel 3 pregunta en los tres modos.
@@ -352,8 +360,10 @@ No existe un modo que dispense de la cola (A-036).
 
 ## 8. Proyectos que opera el agente
 
-`ROOTS` en `bridge/app/mcp_ops.py` declara alias → ruta, y `VERIFY` el verificador de
-cada una. Cada proyecto necesita las dos cosas y un `bridge/lessons/{alias}.md`.
+`PROJECTS` en `bridge/app/projects.py` declara alias → raíz, raíz y verificador de
+cada una. No hay una lista en `mcp_ops.py`: la whitelist se deriva en runtime de
+ahí y del registro `bridge/registro/*.json`, para que un proyecto nuevo sea un
+fichero y no un cambio de código. Cada proyecto necesita las dos cosas y un `bridge/lessons/{alias}.md`.
 Un archivo de lecciones que no existe se carga vacío; no es un error.
 
 | Alias | Ruta | `check` | `test` |

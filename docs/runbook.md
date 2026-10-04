@@ -84,12 +84,12 @@ jq -r 'select(.event=="tool.completed") | "\(.payload.tool) ok=\(.payload.ok) pa
     bridge/data/logs/runs/<run_id>.jsonl
 
 # La lista de runs, con qué herramienta usaron y cómo acabaron
-TOKEN=$(grep '^AEGIS_API_KEY=' bridge/.env | cut -d= -f2-)   # no se imprime
-curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/runs | jq '.runs[] | {run_id, proyecto, estado, pasos, herramientas, error}'
+cd bridge
+bin/api GET runs | jq '.runs[] | {run_id, proyecto, estado, pasos, herramientas, error}'
 
 # Un run entero, con su respuesta y por qué terminó
-curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/runs/<run_id> | jq '.run'
-curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/runs/<run_id> \
+bin/api GET runs/<run_id> | jq '.run'
+bin/api GET runs/<run_id> \
     | jq '.eventos[] | select(.event=="task.done") | .payload'
 
 # Qué está haciendo ahora mismo (lo que ve la cabecera del móvil)
@@ -301,12 +301,16 @@ el modelo decide QUÉ tool usar y el bridge la EJECUTA con lista blanca y traza
 auditable. Endpoint:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/autopilot -H 'Content-Type: application/json' -d '{
+cd bridge
+bin/api POST autopilot '{
   "prompt": "pon el tono en verde, compila e instala en el teléfono",
   "max_steps": 12
 }'
 # -> {"answer": "...", "steps": N, "trace": [{"tool": "...", "arguments": {...}, "ok": true}]}
 ```
+
+`bin/api` pone la cabecera `X-Aegis-Token` que **toda ruta que cambia algo pide
+desde 2026-10-04**. Sin ella, `/autopilot` y `/autopilot/start` devuelven 401.
 
 Garantías de `aegis-ops` (sin importar quién la llame):
 
@@ -320,23 +324,19 @@ Garantías de `aegis-ops` (sin importar quién la llame):
 ### 4.3 Aprobaciones: qué te está preguntando
 
 ```bash
-TOKEN=$(grep '^AEGIS_API_KEY=' bridge/.env | cut -d= -f2-)
-curl -s -H "X-Aegis-Token: $TOKEN" localhost:8000/aprobaciones | jq
+cd bridge
+bin/api GET aprobaciones | jq
 # {"pendientes": [...], "aprobadas": [...]}
 
 # aprobar (devuelve el token de un solo uso)
-curl -s -X POST localhost:8000/aprobaciones/<id> \
-  -H 'Content-Type: application/json' -H "X-Aegis-Token: $TOKEN" \
-  -d '{"decision":"aprobar"}' | jq -r .token
+bin/api POST aprobaciones/<id> '{"decision":"aprobar"}' | jq -r .token
 
 # ejecutar lo aprobado, con sus argumentos, sin modelo en medio
-curl -s -X POST localhost:8000/aprobaciones/<id>/ejecutar \
-  -H "X-Aegis-Token: $TOKEN" | jq '{ok, tool, error}'
+bin/api POST aprobaciones/<id>/ejecutar | jq '{ok, tool, error}'
 
 # denegar con motivo: el motivo se le inyecta al siguiente run
-curl -s -X POST localhost:8000/aprobaciones/<id>/motivo \
-  -H 'Content-Type: application/json' -H "X-Aegis-Token: $TOKEN" \
-  -d '{"contenido":"ahora no, esta base todavía no"}' | jq -r .motivo
+bin/api POST aprobaciones/<id>/motivo \
+  '{"contenido":"ahora no, esta base todavía no"}' | jq -r .motivo
 ```
 
 **Ejecutar o relanzar**: aprobar no es aprobar un run, es aprobar **una llamada con
@@ -381,15 +381,16 @@ lecciones(alias='aegis', numeros='A-055,A-061')
 
 ### 4.4 Fases de trabajo
 
-Una fase son las instrucciones que solo valen mientras se piensa. Cada una es un
-fichero en `bridge/fases/`, y solo se inyecta en el prompt de los runs que la
-piden:
+Un enfoque son las instrucciones que solo valen mientras se piensa. Cada uno es un
+fichero en `bridge/enfoques/` con su entrada en `_indice.json`, y solo se inyecta
+en el prompt de los runs que lo piden:
 
 ```bash
-curl -s localhost:8000/fases          # ["arquitectura", "idea"]
+cd bridge
+bin/api GET enfoques          # ["arquitectura"]
 
-curl -s -X POST localhost:8000/autopilot/start -H 'Content-Type: application/json' -d '{
-  "project": "acme", "fase": "arquitectura", "max_steps": 10,
+bin/api POST autopilot/start '{
+  "project": "acme", "enfoque": "arquitectura", "max_steps": 10,
   "prompt": "requisitos no funcionales y tres opciones de almacenamiento, con coste de cambio"
 }'
 ```
@@ -425,9 +426,10 @@ Funcionales (host):
 cd bridge && .venv/bin/python tests/e2e_ws.py
 
 # Contrato de control
-curl -X POST http://127.0.0.1:8000/tasks -d '{"agent":"worker","prompt":"hola"}'
-curl -X POST http://127.0.0.1:8000/tasks/$RUN/steer -d '{"text":"cancela"}'
-curl -X POST http://127.0.0.1:8000/tasks/$RUN/stop
+cd bridge
+bin/api POST tasks '{"agent":"worker","prompt":"hola"}'
+bin/api POST tasks/$RUN/steer '{"text":"cancela"}'
+bin/api POST tasks/$RUN/stop
 ```
 
 App:
