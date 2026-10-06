@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dónde puede leer el instalador el APK que la app descarga.
+
+  ## Por qué un `FileProvider` y no un `file://`
+  Android 7 (API 24) cerró los `file://` que salen de una app hacia fuera:
+  sale `FileUriExposedException`, y el crash aparece **solo** cuando el usuario
+  toca «instalar», no al descargar. Es de los fallos más caros de encontrar,
+  porque todo lo demás parece correcto.
+
+  ## Por qué `external-files-path` y no `external-path`
+  `external-files-path` es el directorio **de la propia app** en el almacén
+  externo: no hace falta ningún permiso de almacenamiento, y no expone nada del
+  usuario. `external-path` es la raíz del almacenamiento compartido, y `root-path`
+  es el disco entero; para instalar un APK no hace falta ninguno de los dos.
+
+  El `path` **no** lleva el fichero, solo el directorio. Con el fichero en la
+  ruta, cambiar de nombre obliga a cambiar este XML y delata el descuido el día
+  que se renombra.
+-->
+<paths>
+    <external-files-path name="apk" path="apk/" />
+</paths>

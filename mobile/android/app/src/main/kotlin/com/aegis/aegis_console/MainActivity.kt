@@ -75,6 +75,54 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // El canal de instalar. Va **aparte** del de las notificaciones porque
+        // son permisos distintos: uno es «¿me avisas?» y este «¿puedes
+        // reemplazar mi binario?». En un solo canal, una app que hablara con las
+        // notificaciones podría además instalar, y el motivo de cada permiso
+        // dejaría de estar a la vista.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, Instalador.CANAL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // El `versionCode` propio. Dart lo compara con el que anuncia
+                    // el bridge para decidir si hay versión nueva, y con eso
+                    // evita descargar 50 MB para descubrir que no hacía falta.
+                    "versionCode" -> result.success(Instalador.versionCodeDe(this))
+
+                    // Si se tiene el permiso de «instalar apps desconocidas».
+                    // Va aparte de `abrirPermiso` porque la app necesita **saber**
+                    // para no ofrecer un botón que va a fallar.
+                    "puedeInstalar" -> result.success(Instalador.puedeInstalar(this))
+
+                    // Abre Ajustes. El permiso se concede a mano: es un viaje de
+                    // la persona al sistema y no hay forma de automatizarlo.
+                    "abrirPermiso" -> {
+                        Instalador.abrirPermiso(this)
+                        result.success(null)
+                    }
+
+                    // Pasa el APK al instalador. Devuelve `null` si el intent se
+                    // lanzó, y un **motivo** si no. Que se lanzara no quiere decir
+                    // que se haya instalado: el desenlace está en un diálogo que
+                    // controla el sistema y esta app no puede ver.
+                    "instalar" -> {
+                        val ruta = call.argument<String>("ruta")
+                        if (ruta.isNullOrEmpty()) {
+                            result.error("sin_ruta", "no me dijiste qué fichero instalar", null)
+                        } else {
+                            result.success(Instalador.instalar(this, ruta))
+                        }
+                    }
+
+                    // Dónde dejar el APK. Lo calcula el nativo para que el
+                    // directorio externo y el `FileProvider` no puedan
+                    // desincronizarse: si Dart eligiera la ruta, un cambio de
+                    // versión del provider dejaría la descarga inencontrable.
+                    "destino" -> result.success(Instalador.destino(this).absolutePath)
+
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     override fun onRequestPermissionsResult(
