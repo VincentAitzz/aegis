@@ -2165,3 +2165,320 @@ blanco, deformados y con resolución mala.
   realizable con las tools que hay**. Un modelo que no encuentra la lección A-089 no
   está fallando: le pediste algo que no se puede leer. Y un guardarraíl que no puede
   leerse a sí mismo deja al agente sin explicación cuando le detiene.
+
+## A-093 — El guardarraíl que bloqueaba el trabajo no fallaba cerrado: fallaba hacia otro lado
+
+- **A-092 ya lo decía y sigue abierto.** Decía, textualmente, que `_no_secrets`
+  rechaza el contenido de `app/mcp_ops.py`. Seguía sin arreglarse, y mientras,
+  el coste real fue otro: no era «el agente no puede leer un fichero», era que
+  **escribiendo tampoco puede**, porque el mismo escaneo está en la escritura.
+- **Medido el 2026-10-04**: `aegis_read_file` denegaba 6 de los 49 ficheros de
+  `app/`, `tests/` y `bin/` —`mcp_ops.py`, `main.py`, `autopilot.py`, `autonomy.py`,
+  `deploy.py` y cuatro de `tests/`. Los culpables no eran credenciales:
+  `token: str` (7 veces), `token = ""`, `token=token,`, `neon_api_key: str`. El
+  patrón era `token\s*[=:]\s*\S+`, y **`\S+` significa cualquier cosa**.
+- **Y el escaneo es de contenido ENTERO**, no de línea: un solo `token: str` en
+  una línea de mil quinientas vuelve el fichero entero ilegible. Por eso un test
+  por patrón no lo habría visto nunca.
+- **Lo que cuesta de verdad — lo medido, no lo supuse**: un run gastó **7 pasos
+  sin escribir nada**. Leyó una ficha, una lección, corrió `repo_verify` tres
+  veces y, cuando le pedí un fichero que no podía abrir, **se inventó un
+  `deploy_smoke`**: arrancar la app en el emulador. No lo ejecutó —la cola de
+  nivel 3 lo paró— pero dejó la petición ahí. Un guardarraíl que bloquea trabajo
+  legítimo no se limita a bloquear: **empuja al modelo a la acción que sí puede
+  hacer**, y esa acción es la que hay que revisar. Fallar cerrado aquí habría sido
+  fallar en otra dirección.
+- **El arreglo no fue desactivar, fue afinar**: el patrón genérico
+  `nombre = valor` se separó del de forma propia (`sk-`, `ghp_`, `AKIA`, JWT,
+  `postgresql://`, `NEON_API_KEY`, `Authorization: Bearer`, que no se tocaron) y
+  pasó a exigir **tres cosas del valor**: 12+ caracteres, un dígito en algún
+  sitio y ningún `(`, `.` ni `{`. Esas tres no son intuición: la del dígito es
+  porque `api_key="clave-de-prueba"` es la cadena de pruebas más común que hay,
+  y la de los paréntesis es porque `token=uuid.uuid4().hex[:16]` es cómo se
+  escribe un token en Python. Medido después: **18 de 18** credenciales de
+  ejemplo siguen saltando, **46 de 49** ficheros del repo se pueden abrir. Los
+  tres que siguen cerrados llevan fixtures que ** tienen que parecer
+  credenciales**, y ahora están listados uno a uno en `test_guardrails`.
+- **El test que lo ata se ha visto rojo.** `test_el_codigo_del_repositorio_es_legible`
+  abre el código real del repo y falla si un solo fichero vuelve a quedar
+  ilegible; lo comprobé saboteando el patrón viejo y viéndolo fallar. Sin eso, un
+  filtro que se afinó a ojo se vuelve a inflar solo con la siguiente variable que
+  se le ocurra a alguien.
+- **Un aviso sobre el fichero del filtro**: **un docstring que describe el filtro
+  tiene que pasar el filtro**. Escribir `NEON_API_KEY=` en un comentario es una
+  credencial según el patrón, y entonces el fichero donde vive el filtro se
+  vuelve a cerrar. Por eso los ejemplos de ahí van sin valor.
+- **Regla**: cuando un guardarraíl bloquee algo legítimo, mira primero **a dónde
+  empuja al agente**, no solo a qué le quita. Y un patrón que busca «algo igual a
+  un secreto» tiene que llevar la condición de la forma **en el valor**, no en el
+  nombre de la variable: `token` es un sustantivo increíblemente común.
+
+## A-094 — Un token de un solo uso no existe si quien lo acuña es el mismo que lo gasta
+
+- **Lo que se tenía y lo que falta**: la cola de aprobaciones vive en
+  `bridge/data/aegis/autonomia.sqlite3` (`autonomy.py:210`), y el token se valida
+  **leyendo esa base** (`autonomy.py:660`). Ese fichero está dentro de la raíz del
+  proyecto `aegis`, o sea dentro de la zona que el propio agente puede escribir.
+- **Y `.sqlite3` no estaba en `_BIN_SUFFIXES`** (`mcp_ops.py:101`: apk, imágenes,
+  `.so`, `.idx`, `.pack`, `.zip`, keystores), así que el veto de binarios no lo
+  cubría. Con escritura en `aegis`, escribir esa base es **acuñar su propio
+  permiso de nivel 3**.
+- **La otra mitad, y es la que de verdad lo rompe**: el comando del verificador
+  vive en `app/projects.py`, que también es escribible, y `repo_verify` está en
+  `LIBRES` (`autonomy.py:75`), o sea **no pide permiso**. Con `subprocess.run`
+  heredando el entorno (`verifier.py:160`). Traducido: **escritura de nivel 2 +
+  `repo_verify` de nivel 1 = ejecución arbitraria con tus permisos**, en tres
+  pasos legales.
+- **Por qué importa ordenarlo así**: por eso el arreglo de A-093 importa el doble.
+  Con el escaneo afinado, el guardarraíl dejó de bloquear y se volvió
+  posible delegar; **y delegar sin cerrar esto abre la cadena entera**. Cerrar el núcleo
+  va antes que darle escritura al repo `aegis`, no después.
+- **Regla**: un permiso que valida contra un fichero que el mismo puede editar no es
+  un permiso, es una sugerencia. Y un ejecutor de nivel 1 no puede leer su comando de
+  la zona de escritura del ejecutado.
+
+
+## A-095 — Un invariante que nadie ejecuta no es un invariante
+
+> Aplica cuando: cuando escribas una regla, un guardarraíl o una puerta, y
+> comprueba después **quién la está ejecutando de verdad**, no quién la podría
+> ejecutar.
+
+- **Lo que se tenía**: `AGENTS.md` afirmaba, con toda la razón, *"el veredicto sale
+  de la traza, nunca de `final_text`"* (A-016). La regla era correcta y estaba
+  medida. Donde vivía, `app/hooks.py`, calculaba el outcome leyendo la traza de
+  Hermes (`payload.data.tool`).
+- **Y nada la ejecutaba**: `hooks.on_terminal_event` solo lo llamaba
+  `relay._reader`, que solo leía el stream SSE de un run de Hermes, y **nadie
+  creaba runs de Hermes desde el 2026-10-03** (commit `2f1fccb`, "un solo motor").
+  El autopilot —el único motor vivo— escribía su traza con `payload.tool`. O sea:
+  aunque el hook se hubiera reconectado, habría contado **cero tools en los 133
+  runs** y ningún episodio habría subido como `success`.
+- **La invariante estaba escrita, probada y aplicada a nada.** Es lo peor que
+  puede pasar con un invariante: da la seguridad de la regla sin el trabajo de
+  cumplirla. Comparte raíz con `hooks.py` en A-016, y con el `lifespan_guard` que
+  cancelaba tareas por un `name=` que nadie pasaba (`relay.py:82` creaba la task
+  sin nombre) — el guard no guardaba.
+- **El coste no medido**: sin veredicto fiable, el `fin` era la única etiqueta, y
+  `fin` no distingue "terminé" de "me rendí". Reetiquetado el histórico con la
+  regla correcta (`bin/medir-runs`): de 133 runs, **0** con un `fin` de
+  "completado" frente a **60 (45,1 %)** que sí lo habían terminado. Los 38 runs
+  con `fin: sin_tools` que habían ejecutado su tool y contestado bien contaban
+  como fracasos.
+- **Regla**: cuando escribas una invariante, escribe también la frase **quién la
+  ejecuta**. Si la respuesta es un módulo al que nadie llama, no tienes un
+  invariante: tienes una intención con formato de regla. Y el test que lo
+  comprueba mira el **cuerpo** del código (`ast`), no su fuente entera: un
+  `assertNotIn` sobre el texto pasa por un comentario, y obliga a que la prosa y
+  el código no diverjan.
+
+## A-096 — Seis `return` son seis copias de la regla
+
+> Aplica cuando: cuando una función tenga varios caminos de salida y todos
+> necesiten el mismo dato nuevo (un veredicto, una duración, una métrica).
+
+- **El bucle a secas tenía seis `return`**: `parado`, `modelo_caido`,
+  `esperando_ok`, el tope de autonomía, la puerta roja y el cierre normal. Añadir
+  el veredicto a cada uno eran seis copias de la misma regla, y seis copias es
+  exactamente el número a partir del cual una está mal y nadie lo nota hasta que
+  dos números no cuadran.
+- **El arreglo es un envoltorio, no seis parches**: `run_autopilot` llama a
+  `_bucle` y le pone el veredicto encima. Una sola línea que aplica la regla, y
+  además cubre el caso que ningún `return` cubre: un run que revienta **fuera** de
+  `_bucle` y lo trata `main._run_autopilot_once`.
+- **Y el envoltorio repite la firma entera en vez de `**kwargs`**, porque dos
+  tests comprueban que `parar` y `extra` son parámetros con ese nombre. Eso no es
+  estilo: `**kwargs` esconde justo los parámetros que esos tests existen para
+  vigilar.
+- **Lo que casi se cuela con esto**: el veredicto tiene que calcularse con la
+  traza **entera**, no con la que se escribe. El JSONL recorta el `answer` a
+  1.000 chars, así que recalcularlo sobre lo escrito da un número distinto del
+  que tuvo el run. Por eso `main._escribir_jsonl_de_autopilot` **copia** el
+  veredicto si viene y solo lo calcula si falta —ausente no es "fracaso".
+- **Regla**: cuando una regla nueva tenga que aplicarse en varios sitios y exista
+  un camino que ya devuelve, mete el envoltorio. Y decide explícitamente qué pasa
+  cuando el dato no está: heredarlo es correcto para un run en vivo, y adivinarlo
+  es incorrecto para un fichero de disco.
+
+## A-097 — `subprocess.run` dentro de una corrutina congela el bridge
+
+> Aplica cuando: cuando llames a un proceso, a un `sleep` largo o a cualquier
+> cosa bloqueante **desde dentro de una corrutina**, aunque el nombre de la
+> función no lleve la palabra "await".
+
+- **`verifier.gate` es `async def` y llamaba a `ejecutar(...)` directo**
+  (`verifier.py`, la línea que el bucle repite). `ejecutar` es
+  `subprocess.run` con `timeout=900`, y el comando declarado de `portafolio` es
+  `tsc --noEmit` / `vitest run`: **minutos**. En el event loop eso congela el
+  bridge entero: `/health`, `/actividad`, el poll del móvil y el propio
+  `POST /autopilot/{run_id}/stop` no se atendían hasta acabar la verificación.
+  Es decir: **parar un run durante su propia verificación era imposible**, y no
+  por una decisión de diseño sino por una línea sin envolver.
+- **El razonamiento ya estaba escrito, doscientas líneas más arriba.** En
+  `autopilot._bucle` hay un comentario largo que explica por qué las tools van en
+  un hilo, y menciona este mismo caso. La idea no se inventa: se aplica en un
+  sitio y se olvida en el otro. Por eso el comentario no basta como
+  prevención — lo que protege es el **test**, y solo el que mira **dónde** se llama
+  la función de bloqueo (`ast`), no si el otro test pasó por suerte.
+- **Y por qué el test de temporización no servía**: el primero que escribí
+  comprobaba que el loop "respondió antes de tiempo", y pasaba **con el bug
+  puesto** — porque aunque el loop esté congelado, las marcas salen en el mismo
+  orden. Un test de congelamiento tiene que mirar si el canario **pudió correr
+  durante** el bloqueo. Se resuelve con un `threading.Event` que el verificador
+  lee desde su hilo.
+- **Regla**: `async def` no significa asíncrono. Mira lo que hay **dentro**. Y si
+  el arreglo es "esto ya lo hacíamos en otro sitio", el test tiene que poder
+  fallar reintroduciendo el bug: si no puede, no está probando el bug.
+
+## A-098 — Antes de añadir un enfoque: ¿no está ya en `metodo.md`?
+
+> Aplica cuando: cuando vayas a escribir algo que va a ir en el prompt de todos
+> los runs, y antes de añadir un mecanismo que se parezca a lo que ya existe.
+
+- **El golpe**: el repo tenía un test que se llamaba `test_arquitectura_es_el_unico_enfoque`
+  y que documentaba por qué `idea` se había borrado — *"aterrizar una idea hasta
+  poder escribir su ficha ya lo hace `metodo.md`, en todos los runs"*. Añadí un
+  enfoque `producto` que empezaba con "qué problema resuelve, para qué se usa,
+  quién lo usa, cómo se sabrá que funcionó"… y `metodo.md` §"Antes de construir"
+  ya tenía **las seis**, enumeradas, desde siempre.
+- **Lo que lo impedía verlo**: `metodo.md` se inyecta en todos los runs, así que
+  leer un enfoque nuevo no hace pensar en `metodo.md` — parecen sitios distintos
+  para cosas distintas. No lo son: **los dos acaban en el mismo prompt**.
+- **La aritmética que lo hace caro**: el prompt se paga en **cada paso de cada
+  run**. Medido: 37.057 chars por paso, hasta 16 pasos. Un bloque redundante de
+  1.000 chars son ~16.000 chars por run de más, siempre, y no se nota porque no
+  es un error: es dinero que se gasta en repetir.
+- **Qué quedó**: `producto.md` reescrito a 1.984 chars con **las tres que
+  `metodo.md` no pregunta** (¿es tu problema o de la herramienta? ¿cuándo lo
+  dejarías de usar? ¿hay algo más pequeño?) y el gate de escritura. El test pasó
+  de contar enfoques a comprobar el principio, porque un recuento congela una
+  decisión pasada y no dice nada del enfoque que venga mañana.
+- **Regla**: antes de escribir algo que va en el prompt, lista lo que ya está
+  ahí y di qué **añade**. Si la respuesta es "lo mismo con otras palabras", no
+  lo añadas. Y un mecanismo que va en todos los runs tiene que justificarse por
+  lo que cambia, no por lo que reordena.
+
+## A-099 — Un `assert` dentro de un `if` no comprueba nada
+
+> Aplica cuando: cuando escribas un test que itera y solo falla si algo está
+> mal — sobre todo cuando el bucle itera sobre una lista que ahora mismo no
+> tiene el defecto.
+
+- **El que escribí**: `if frase in bloque: assertNotIn(frase, metodo)`. Con la
+  lista de enfoques que hay hoy, ninguna frase estaba duplicada, así que el
+  `if` nunca era cierto y el test **pasaba en vacío**. Verde, y no comprobando
+  nada. Es A-088 con un paso más de SRS: no es un test que no puede fallar, es un
+  test que no puede fallar *por una razón que no se ve*.
+- **Cómo se detectó**: reintroduje el defecto a propósito (añadí
+  «1. **Qué problema resuelve**» a `enfoques/producto.md`) y el test siguió verde.
+  El que lo notó fue `producto.md` apareciendo en el `assertNotIn` del segundo
+  test, no el primero.
+- **Y una variación del mismo error, en el mismo fichero**: comparaba
+  `"1. **qué problema resuelve**"` contra `bloque(...)` **sin** `.lower()` en el
+  lado del bloque, con lo que el `assertNotIn` era siempre cierto por reasons de
+  mayúsculas. Al añadir `.lower()` a los dos lados, el test pasó a fallar con la
+  regresión y a pasar sin ella.
+- **Regla**: un test cuyo bucle puede no ejecutarse, o cuya comparación no puede
+  ser cierta, es peor que no escribirlo — porque ocupa sitio y da confianza.
+  Antes de darlo por bueno, **reintroduce el defecto y comprueba que falla**.
+  Si no falla, el test no estaba probando lo que su nombre dice.
+
+## A-100 — `re.IGNORECASE` no pliega acentos, y el español paga por ello
+
+> Aplica cuando: cuando escribas un patrón, un slug o una clave contra texto que
+> venga de una persona, de un micrófono o de un TTS.
+
+- **El bug**: el router de intents (`app/intents.py`) tenía los patrones escritos
+  **sin tilde** —`que\s+hora\s+es`— porque `re.IGNORECASE` parecía resolverlo. No
+  lo resuelve: `re.I` convierte a mayúsculas, **no quita diacríticos**. Así que
+  `qué hora es` no casaba con su propio patrón.
+- **Lo que lo escondió**: `dime la hora` —que no lleva tilde— **sí** casaba. Un
+  módulo en el que un camino funciona y otro no parece un módulo que funciona en
+  los dos. Cinco de seis intents estaban rotos y el sexto los tapaba.
+- **La lección de fondo**: el TTS **no pone tildes** y el teclado **a veces**. O sea
+  que no es un caso límite: es el caso normal de dos de los tres clientes que van
+  a usar este router.
+- **El arreglo no es «poner la tilde en el patrón»**: es `_sin_acentos()` antes de
+  comparar, con NFD y quitando diacríticos combinantes. Es lo único que funciona
+  para `ñ`→`n` y para `é`/`í`/`ó`/`ú` a la vez. Y los patrones se quedan sin tilde,
+  porque tienen que casar con las dos formas.
+- **Regla**: normaliza **antes** de comparar, no dentro del patrón. Y cuando un
+  módulo nuevo de texto aparezca, prueba al menos una frase con tilde por cada patrón:
+  si solo pruebas la forma que tú escribes, estás probando tu forma de escribir.
+
+## A-101 — Un `response_model` es un filtro, y ningún test que llame a la función de debajo lo ve
+
+> Aplica cuando: cuando añadas un campo a lo que devuelve una función y ese
+> resultado cruce una ruta HTTP, un `BaseModel` o cualquier frontera con esquema.
+
+- **Qué pasó**: `autopilot.run_autopilot` es un envoltorio que añade `estado`,
+  `completado`, `resumen` y `duracion_s` al dict del run. Funcionaba. **En
+  proceso, el test lo veía.**
+- **Y por HTTP no llegaba**: `POST /autopilot` declara `response_model=AutopilotOut`,
+  y **Pydantic descarta lo que no está declarado**. El endpoint se comía los cuatro
+  campos en silencio. Ni error, ni warning: un `200` con un JSON más corto.
+- **Cuánto duró**: **dos sesiones**. Porque `tests/test_autopilot.py` llama a
+  `run_autopilot` **directamente**, saltándose el endpoint. El wrapper estaba
+  probado a fondo; el contrato de API, no. Un test verde y equivocado: verde sobre la
+  función, y la función no es lo que usan los clientes.
+- **Y lopilló por el camino**: `/autopilot/{id}` (el que poll-ea el móvil) tenía
+  el mismo problema en `AutopilotStatus`, y `_autopilot_desde_disco` reconstruía
+  desde el JSONL **sin leer el veredicto**. Tres sitios, un solo descuido.
+- **Regla**: si el dato tiene que **salir**, hay que declararlo en el esquema **y**
+  probarlo **por la ruta**. Y el test más barato de todos —
+  `assertIn("estado", AutopilotOut.model_fields)`— es el que falla en el segundo
+  en que alguien añade un campo al dict y olvida el modelo.
+
+## A-102 — Medir antes de afirmar: tres hipótesis de esta sesión que eran falsas
+
+> Aplica cuando: cuando vayas a escribir en un documento o un comentario por qué
+> una cosa es rápida, ligera o barata.
+
+- **«Un modelo pequeño es más rápido»** — falso, y al revés. `qwen3:4b` tarda
+  **212 s** contra los **20,6 s** del 7B, con menos parámetros. Es un modelo de
+  *thinking*: genera el razonamiento antes de responder, y en un bucle que ya
+  paga 9.000 tokens de prompt eso lo hunde. El ganador medido fue
+  `llama3.2:3b` con 16,8 s.
+- **«Por lo tanto el modelo es la palanca»** — también falso, y solo se vio al
+  medirlo. 16,8 contra 20,6 es un **18 %**. Lo que de verdad mueve la aguja es el
+  prompt: 35.835 chars → **49,1 s**; 22.847 chars → **18,5 s**. Un 36 % menos de
+  prompt, un 62 % menos de tiempo.
+- **«Los 58 s de un run»** — era el número **en frío**, con el modelo cargándose
+  desde el NVMe. En caliente son 18-21 s. El número estaba bien medido y mal
+  interpretado, que es peor que no medirlo: un dato cierto que se usa para la
+  decisión equivocada.
+- **La forma buena**: lo que salió útil no fue ninguno de los tres números, fue la
+  **tabla** que los juxtapone en la misma columna. Una afirmación suelta se
+  recuerda; una tabla con la condición al lado se lee.
+- **Regla**: escribe «medido» solo cuando haya un número y una condición, y pon la
+  condición **al lado** del número. Y cuando dos mediciones se contradigan, no
+  promedies: mira qué las separa, porque ahí está el dato.
+
+## A-103 — Un estado global que se limpia en un test y no se restaura, rompe un test de otro fichero
+
+> Aplica cuando: cuando un test parchee un global para aislarse y el fallo
+> aparezca en un fichero que no has tocado.
+
+- **Qué pasó**: los tests de alta vacían `projects._DATOS` para que el workspace
+  de prueba no dependa de lo que hay vivo en disco. Restauraban `PROJECTS` pero
+  no `_DATOS`. Resultado: `data-sending` desaparecía del registro **para todos los
+  tests que se ejecutaran después**, y el síntoma era un `medir_base` que
+  respondía «no está en el registro» —en `test_autonomy`, a tres ficheros de
+  distancia del que lo causó.
+- **Por qué costó**: el fallo se parece a un bug de producción. «El proyecto no
+  está en el registro» es exactamente lo que diría un registro mal leído, así
+  que la primera hipótesis fue `medir_base`. Pasaba el test en solitario
+  (`python -m unittest tests.test_autonomy.TestBaseMedida` → OK) y fallaba en la
+  suite completa. **Esa diferencia es la prueba**: si un test pasa aislado y
+  falla en la suite, el culpable está en el estado compartido, no en su lógica.
+- **El detalle que hizo perder tiempo**: `_DATOS` es un `set` de alias, no un
+  mapa. Guardarlo con `dict(projects._DATOS)` da `ValueError: dictionary update
+  sequence element #0 has length 17` — un error que habla de la longitud de una
+  cadena y no de un tipo mal usado.
+- **Regla**: cuando un test parchea un global, guarda **el valor entero** y
+  restáuralo entero. Si son dos estructuras que van juntas —el mapa y el set de
+  alias que lo llenan— se guardan las dos, porque limpiar una sola deja el
+  sistema en un estado que no existe en producción: en producción los dos se
+  rellenan a la vez.
+- **Y la forma de encontrarlo**: `python -m unittest <una clase> <la que falla>`
+  es el binomio que separa contaminación de bug. Vale por menos de un minuto.
