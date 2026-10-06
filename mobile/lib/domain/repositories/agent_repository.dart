@@ -3,6 +3,7 @@ library;
 
 import '../../data/models/agent_models.dart';
 import '../../data/models/asistente_models.dart';
+import '../../data/models/version_apk.dart';
 
 /// Lo que pasó al ejecutar una aprobación.
 ///
@@ -271,4 +272,26 @@ abstract interface class AgentRepository {
 
   Future<Tarea> actualizarTarea(String id, {String titulo, String notas, String para, String estado});
 
+  // -- Actualizar la propia app ---------------------------------------------
+  //
+  // ## Por qué esto está en el repositorio y no solo en la pantalla
+  // Porque descargar son 50 MB y puede tardar, y eso necesita una barra de
+  // progreso que venga de otro sitio. Si el diálogo llamara al canal y al HTTP a
+  // la vez, uno de los dos acaba con la lógica de reintentos duplicada.
+
+  /// Qué versión del APK tiene el bridge, y si es más nueva que la instalada.
+  ///
+  /// [instalado] es el `versionCode` que dice Android y [hayPermiso] si le
+  /// concedieron instalar apps desconocidas. Los dos los sabe el canal nativo,
+  /// no el bridge, así que quien pregunta los pasa.
+  Future<VersionApk> versionApk({required int instalado, required bool hayPermiso});
+
+  /// Baja el APK a [destino] y devuelve la ruta.
+  ///
+  /// [onProgreso] recibe lo recibido y el total, para la barra. El total puede
+  /// venir a `-1` si el servidor no lo dice, y la barra tiene que aguantarlo.
+  Future<String> descargarApk({
+    required String destino,
+    void Function(int recibidos, int total)? onProgreso,
+  });
 }

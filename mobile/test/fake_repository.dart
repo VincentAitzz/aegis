@@ -5,6 +5,7 @@
 // sin puente, el otro sigue esperando un bridge sano y falla sin decir por qué.
 import 'package:aegis_console/data/models/agent_models.dart';
 import 'package:aegis_console/data/models/asistente_models.dart';
+import 'package:aegis_console/data/models/version_apk.dart';
 import 'package:aegis_console/domain/repositories/agent_repository.dart';
 
 class FakeAgentRepository implements AgentRepository {
@@ -477,4 +478,64 @@ class FakeAgentRepository implements AgentRepository {
         orElse: () => Tarea(id: id, titulo: titulo ?? ''));
   }
 
+  // -- La actualización de la app ---------------------------------------------
+  //
+  // ## Por qué está en el falso y no se deja abstracto
+  // Porque toda la suite usa este falso, y añadir un método abstracto obliga a
+  // tocarlo para que los tests que no hablan de actualizaciones| que
+  // inventen una implementación. Aquí se pone la que casi siempre sirve: la app
+  // está al día.
+
+  /// Lo que el bridge «dice» que tiene. Los tests que hablan de actualizaciones
+  /// lo mueven antes de preguntar, en vez de construir un falso nuevo.
+  ///
+  /// ## Por qué el falso pasa por [VersionApk.evaluado]
+  /// Porque es lo que hace el repositorio real. Si devolviera este objeto tal
+  /// cual, [VersionApk.disponible] se quedaría en `false` siempre y **ningún
+  /// test vería el botón de bajar**: todos pasarían probando la pantalla
+  /// equivocada, y un falso que hace pasar tests sin probar nada es peor que no
+  /// tenerlo. Lo que se guarda es lo que el bridge contesta; la comparación con
+  /// lo instalado la hace la misma regla de producción.
+  VersionApk versionApkDelBridge = const VersionApk(versionCode: 0);
+
+  /// Si la descarga «funciona». Para probar el camino de error del diálogo.
+  bool fallaDescarga = false;
+
+  /// Cuántos reportes de progreso manda la descarga falsa.
+  ///
+  /// ## Por qué existe
+  /// A `0` por defecto porque una descarga que termina en el acto no deja que la
+  /// barra se pinte **nunca**: el `await` se resuelve antes de que el framework
+  /// tenga un opportunity de dibujar. Un test de la barra escrito contra un falso
+  /// instantáneo pasa por probarlo todo menos la barra.
+  ///
+  /// El diálogo se ve de verdad en cuanto este número es >0: entre un `pump` y
+  /// otro hay un frame, y en ese frame la barra existe.
+  int pasosDeProgreso = 0;
+
+  @override
+  Future<VersionApk> versionApk({required int instalado, required bool hayPermiso}) async =>
+      VersionApk.evaluado(
+        instalado: instalado,
+        hayPermiso: hayPermiso,
+        delBridge: versionApkDelBridge,
+      );
+
+  @override
+  Future<String> descargarApk({
+    required String destino,
+    void Function(int recibidos, int total)? onProgreso,
+  }) async {
+    if (fallaDescarga) throw StateError('no se pudo descargar');
+    final total = 100 * 1024 * 1024; // 100 MB, como un APK de verdad
+    for (var i = 1; i <= pasosDeProgreso; i++) {
+      onProgreso?.call(total ~/ pasosDeProgreso * i, total);
+      // Sin este `delay`, los reportes salen en el mismo microtask y el widget
+      // los ve todos de golpe: hay progreso en los datos pero ninguno en la
+      // pantalla.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    onProgreso?.call(total, total);
+    return destino;
+  }
 }

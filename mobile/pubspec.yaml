@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # actualizar una app si el `versionCode` nuevo es mayor o igual que el instalado.
 # Es lo que lee el bridge con `aapt` para saber si hay versión nueva, y lo que
 # lee la app sobre sí misma para decirselo. Subirlo es parte de publicar.
-version: 1.0.1+2
+version: 1.0.3+4
 
 environment:
   sdk: ^3.13.4
@@ -44,6 +44,18 @@ dependencies:
   # `pub get`.
   dio: ^5.11.1
   flutter_riverpod: ^3.4.3
+  # Resolver el bridge por mDNS, para no depender de que la IP de la casa no
+  # cambie. Viene del propio Flutter (`flutter/core-packages`), no es un
+  # paquete de terceros: eso importa porque lo que entra aquí va a leer la red
+  # de la casa y a decirnos dónde está el bridge.
+  #
+  # ## Por qué una dependencia y no el announcement de Android
+  # El `NsdManager` del sistema está atado a un `Context` y a callbacks del
+  # sistema, y en un proceso de Flutter hay que montar los dos y traducirlos.
+  # Además devuelve los servicios **ya filtrados** por tipo, lo que quita
+  # justamente el paso que hace falta: comprobar que la respuesta es del
+  # bridge y no de otra cosa que se anuncie en la red.
+  multicast_dns: ^0.3.3
 
 dev_dependencies:
   flutter_test:

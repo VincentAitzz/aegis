@@ -198,6 +198,48 @@ class TestElEndpointSiSirve(_Cliente):
             r = self.c.get("/apk/telefono", headers=self.headers)
         self.assertEqual("42a4d6d48e2e40f5", r.headers.get("x-aegis-sello"))
 
+    def test_head_pregunta_la_version_sin_bajar_50_mb(self) -> None:
+        """La app pregunta con `HEAD` antes de bajarse nada.
+
+        Sin esto tendría que **empezar** la descarga para descubrir que ya tiene
+        esa versión, y en una línea de datos son 50 MB por una respuesta que
+        cabía en tres cabeceras.
+        """
+        self._con_apk()
+        r = self.c.head("/apk/telefono", headers=self.headers)
+        self.assertEqual(200, r.status_code, r.text)
+        self.assertEqual(b"", r.content, msg="un HEAD no puede traer el fichero")
+        self.assertTrue(r.headers.get("x-aegis-version"))
+
+    def test_head_rechaza_lo_mismo_que_get(self) -> None:
+        """Las **mismas** reglas, y esta es la parte que no puede romperse.
+
+        Si el `HEAD` colgar de otro sitio, o se olvidara de una comprobación,
+        devolvería «hay versión» sobre un APK que el `GET` luego rechaza. La app
+        enseñaría «descargar» y la descarga fallaría, sin explicación.
+        """
+        from app import deploy as deploy_mod
+
+        apk = self._con_apk()
+        with mock.patch.object(deploy_mod, "apk_desactualizado", return_value="el código cambió"), \
+             mock.patch.object(deploy_mod, "apk_sin_verificar", return_value="analyze: 1 error"):
+            # Las dosguards a la vez: el `HEAD` tiene que parar en la primera,
+            # y eso da el mismo 409 que el `GET`.
+            r = self.c.head("/apk/telefono", headers=self.headers)
+        self.assertEqual(409, r.status_code)
+
+    def test_head_sin_apk_es_404_igual_que_get(self) -> None:
+        """Sin APK no hay nada que preguntar, y el motivo tiene que salir igual.
+
+        El `409` del desactualizado y el `404` del inexistente son dos
+        situaciones distintas para quien lee: uno se arregla recompilando, el
+        otro compilando primero.
+        """
+        from app import dispositivos as disp
+        import tempfile
+        with mock.patch.object(disp, "apk_para", return_value=Path(tempfile.mkdtemp()) / "nada.apk"):
+            self.assertEqual(404, self.c.head("/apk/telefono", headers=self.headers).status_code)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

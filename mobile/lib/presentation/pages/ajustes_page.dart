@@ -17,8 +17,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/aegis_palette.dart';
 import '../../core/widgets/hud_panel.dart';
 import '../../core/widgets/status_led.dart';
+import '../../core/network/instalador_nativo.dart';
 import '../../data/models/agent_models.dart';
+import '../../domain/repositories/agent_repository.dart';
 import '../providers/agent_providers.dart';
+import '../widgets/dialogo_actualizar.dart';
 import 'connectivity_page.dart';
 
 class AjustesPage extends ConsumerWidget {
@@ -39,6 +42,8 @@ class AjustesPage extends ConsumerWidget {
         _Despliegues(),
         const SizedBox(height: 14),
         _MarcaInfo(),
+        const SizedBox(height: 14),
+        _Actualizacion(repo: ref.watch(agentRepositoryProvider)),
         const SizedBox(height: 14),
         OutlinedButton.icon(
           onPressed: () => Navigator.of(context).push(
@@ -382,6 +387,56 @@ class _DesplieguesState extends ConsumerState<_Despliegues> {
               ),
             ],
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// La entrada de «actualizar la app».
+///
+/// ## Por qué un botón y no una comprobación al arrancar
+/// Comprobar en cada arranque significa que la app pregunta por su versión sin
+/// que nadie lo haya pedido, y eso se nota: una app que al arrancar dice «hay
+/// versión nueva» interrumpe a quien solo quería mirar sus proyectos. Aquí se
+/// entra a propósito, y el diálogo dice qué hay y qué se puede hacer con ello.
+class _Actualizacion extends StatelessWidget {
+  const _Actualizacion({required this.repo});
+
+  final AgentRepository repo;
+
+  @override
+  Widget build(BuildContext context) {
+    return HudPanel(
+      title: 'ACTUALIZACIÓN',
+      trailing: const StatusLed(color: AegisPalette.fgFaint, size: 7),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Baja el APK del bridge y te deja instalarlo. Android te lo '
+            'confirmará siempre: no hay forma de instalarlo en silencio.',
+            style: TextStyle(
+                fontFamily: AegisPalette.mono,
+                fontSize: 10.5,
+                height: 1.6,
+                color: AegisPalette.fgDim),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => showDialog<void>(
+              context: context,
+              // Sin esto el diálogo puede tener más alto que la pantalla y sus
+              // botones quedan fuera de alcance en un móvil pequeño.
+              barrierDismissible: false,
+              builder: (_) => DialogoActualizar(
+                repo: repo,
+                nativo: const InstaladorPorCanal(),
+              ),
+            ),
+            icon: const Icon(Icons.system_update_alt, size: 15),
+            label: const Text('Buscar actualización'),
+          ),
         ],
       ),
     );

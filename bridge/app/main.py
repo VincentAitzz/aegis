@@ -321,10 +321,22 @@ PRIVADA_MAX = 20_000
 _ALIAS_PRIVADO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,48}$")
 
 
-@app.get("/apk/{base}")
+@app.api_route("/apk/{base}", methods=["GET", "HEAD"])
 async def apk_descargar(base: str,
                         _auth: None = Depends(exigir_token)) -> FileResponse:
     """El APK compilado, para que el móvil lo instale sin `adb`.
+
+    ## Por qué también `HEAD`
+    Porque la app necesita saber la versión **antes** de bajarse 50 MB. Con `GET`
+    tendría que empezar la descarga para descubrir que ya tiene esa versión, y eso
+    en una línea de datos es un coste que no existe: lo que hace falta son tres
+    cabeceras.
+
+    `HEAD` responde con las mismas cabeceras y el mismo código de error —un `404`
+    si no hay APK, un `409` si no pasó la puerta— sin el fichero. Y por eso no es
+    una ruta aparte con reglas propias: son las **mismas** dos comprobaciones. Una
+    ruta `HEAD` colgando de otro sitio se desincronizaría de la que baja, y
+    volvería a ofrecer una versión que el `GET` luego rechaza.
 
     ## Por qué esto **no** es una puerta atrás a la instalación
     Bajar un fichero no es ejecutarlo. Aquí solo se sirve el binario; lo que lo
