@@ -13,17 +13,70 @@
     "cuesta frente a los otros), expone (tools extra solo durante el encargo).",
     "Ninguno es decoration: `restringe` lo hace cumplir decide(), no el prompt."
   ],
-
   "enfoques": [
+    {
+      "nombre": "producto",
+      "titulo": "Si esto sirve para algo",
+      "resumen": "Para una decisión de sistema donde la pregunta sin responder es '¿qué problema tuyo resuelve?'. Es la anterior a la de elección de tecnología: casi todas las decisiones técnicas no fallan por malas, fallan por innecesarias.",
+      "cuando": [
+        "sirve para algo",
+        "vale la pena",
+        "para que sirve esto",
+        "es necesario",
+        "que problema resuelve",
+        "para que resuelve",
+        "lo quiero para",
+        "que quiero conseguir",
+        "que objetivo",
+        "para que quiero",
+        "que quiero que sea",
+        "que sabe hacer aegis",
+        "aegis puede hacer",
+        "me pregunto si",
+        "que es mejor",
+        "que problema es",
+        "esto hace falta",
+        "sustituye a",
+        "deberia poder hacer"
+      ],
+      "restringe": [
+        "aegis_write_file",
+        "aegis_patch_file",
+        "project_create"
+      ],
+      "_por_que_restringe": [
+        "El bloque empieza preguntando si esto resuelve algo, y la respuesta cambia la",
+        "decisión entera. Escribir código antes de saber qué problema resuelve es",
+        "construir sin saber qué se construye: es exactamente lo que este enfoque",
+        "prohíbe, así que la puerta lo impide en vez de confiar en que el modelo se",
+        "acuerde. Mismo criterio que `arquitectura.md`, y por el mismo motivo:",
+        "nombrar la solución antes que el problema es la forma más rápida de",
+        "construir lo que nadie pidió."
+      ],
+      "presupuesto": 2150,
+      "bloque": "producto.md",
+      "_nota_disparadores": "El primer disparador es el titulo del enfoque. No es obvio: `derivar()` solo mira estas frases, asi que un enfoque cuyo titulo no esta aqui es un enfoque que el bridge nunca va a proponer solo. Se probo con 'esto sirve para algo?' y devolvia None."
+    },
     {
       "nombre": "arquitectura",
       "titulo": "Cómo se va a construir",
       "resumen": "Para una decisión de diseño que hay que defender: por qué esta opción y no las otras. Cuando el encargo es «qué usamos para…», «cómo lo montaríamos», o hay más de una forma razonable de hacerlo.",
       "cuando": [
-        "arquitectura", "cómo lo montamos", "cómo se construye", "diseño", "diseñamos",
-        "qué usamos para", "con qué lo hacemos", "qué tecnología", "qué stack",
-        "qué motor de base de datos", "qué framework", "postgres o", "sqlite o",
-        "microservicio o monolito", "antes de escribir código"
+        "arquitectura",
+        "cómo lo montamos",
+        "cómo se construye",
+        "diseño",
+        "diseñamos",
+        "qué usamos para",
+        "con qué lo hacemos",
+        "qué tecnología",
+        "qué stack",
+        "qué motor de base de datos",
+        "qué framework",
+        "postgres o",
+        "sqlite o",
+        "microservicio o monolito",
+        "antes de escribir código"
       ],
       "restringe": [
         "aegis_write_file",

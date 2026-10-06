@@ -4,51 +4,64 @@
 
 Uno de los requisitos duros del proyecto es que **el móvil no tenga ni una sola
 dependencia de Internet**: el backend vive en la máquina local y el acceso se hace
-vía una red de malla privada (Tailscale). El bridge convierte el API de Hermes en
-un contrato simple REST+WS, y hace de **cola/proxy** de eventos.
+vía una red de malla privada (Tailscale). El bridge expone un contrato REST y es
+el **único** que ejecuta tools.
 
 ```
-[ Aegis Console ]  ──REST──►  POST /tasks {agent, prompt}
-        │                 ◄──      {run_id, status}
-        │                    WS connect /ws
-        │                    {"type":"subscribe","run_id":...}
+[ Aegis Console ]  ──REST──►  POST /autopilot/start {prompt, project}
+        │                 ◄──      {run_id}                (y ya)
+        │                    GET /autopilot/{run_id}      (la traza crece)
         ▼
-[ Bridge :8000 ]  ──► Hermes  POST /v1/runs   (202)   → run_id
-         │            ▲      GET  /v1/runs/{id}/events  (SSE, con API key)
-         │            └────── bucle lector SSE por run (buffer de replay)
-         │
-         ▼  WS frames normalizados: text.delta, tool.*, approval.*, task.*, ws.status
-[ Aegis Console ]
+[ Bridge :8000 ]  ──►  bucle modelo→tool propio (autopilot.py)
+                        │  el modelo elige QUÉ tool; el bridge la EJECUTA
+                        │  whitelist + rollback de sintaxis + cola de aprobación
+                        ▼
+                   [ Ollama :11434 ]  ──►  el modelo local
+                        │
+                        ▼
+              traza por paso ──► data/logs/runs/<run_id>.jsonl
 ```
+
+> **Este diagrama cambió en la Fase 1 (2026-10-04).** Antes tenía dos motores:
+> `POST /tasks` creaba runs en Hermes (`:8642`) empujados por un WebSocket, y
+> `POST /autopilot` ejecutaba tools. Los dos con capacidad de actuar. Se borró
+> el de Hermes: `docs/motores.md` §6 — *"dos motores con tools son dos sitios
+> donde puede vivir un guardarraíl"* — y el hecho de que nada lo iniciara desde
+> el 2026-10-03. Este documento describía las dos rutas como API viva en quince
+> sitios, que es lo que hace que un documento desactualizado sea peor que
+> ninguno: da la seguridad de que el otro se leyó.
 
 ## 2. Componentes
 
 ### 2.1 Bridge (`bridge/app/`)
 
-- `main.py` — API REST (`/health`, `/models`, `/tasks`, `/tasks/{id}`, `.../approval`,
-  `.../steer`, `.../stop`) y WebSocket `/ws`. Al crear una tarea arranca **ya** el
-  lector SSE del run (`relay.ensure_reader`): el móvil, que se suscribe 2-8 s más
-  tarde (RTT de malla), recibe el historial completo.
-- `relay.py` — multiplexa runs en ejecución: normaliza nombres de evento SSE de
-  Hermes a tipos amigables y mantiene un **buffer de replay** (máx. 2000 eventos/run)
-  para suscriptores tardíos y reconexiones. Enviar a un socket fallido lo remueve.
-- `hermes_client.py` — cliente HTTP hacia el API server (`Authorization: Bearer
-  <key>`). Métodos: crear run, estado, aprobar/refusar, steer, stop y stream SSE.
-  Nota: `httpx.Timeout` debe recibir los 4 parámetros (`connect/read/write/pool`).
-- `models.py` — contrato Pydantic REST+WS (validación estricta).
-- `llm.py` — warm-up/no-bloqueante de modelo Ollama, listado y **embeddings**
-  locales (`/api/embed`) para la memoria.
-- `telemetry.py` — observabilidad: eventos JSON estructurados en
-  `data/logs/bridge.jsonl` y por run en `data/logs/runs/<run_id>.jsonl` (cada
-  evento con su duración; en `task.failed` queda error + traza de pila).
-- `memory/` — 'cerebro' del proyecto: `sqlite_graph.py` (grafo conceptual
-  persistente, backend por defecto), `episodic.py` (ChromaDB embebido +
-  embeddings Ollama), `graphiti.py` (backend avanzado opt-in), fachada
-  `ProjectMemory` (remember/recall/render).
-- `hooks.py` — reacción a eventos terminales: construye el episodio (éxito o
-  pitfall con error) y lo persiste en memoria + telemetría.
-- `mcp_memory.py` — fase 2: servidor MCP (stdio) para que el agente consulte la
-  memoria a demanda.
+- `main.py` — API REST y **nada más**: 33 rutas, todas detrás de `exigir_token`
+  salvo las seis de lectura de `LECTURAS_ABIERTAS`. El WebSocket `/ws` y las cuatro
+  rutas `/tasks*` se quitaron en la Fase 1 (ver §1).
+- `hermes_client.py` — **solo el health check** de la gateway. Alcanzable desde
+  `GET /health`, que es lo que consulta el watchdog de `infra/stack.sh`. No crea
+  runs ni los gobierna: `create_run`, `approve`, `steer`, `stop` y el consumidor
+  SSE se fueron con el motor.
+- `autopilot.py` — el bucle modelo→tool. `run_autopilot` es un envoltorio que
+  llama a `_bucle` y le pone el veredicto (`app/veredicto.py`); el bucle a secas
+  tiene seis `return`, y calcular el veredicto en cada uno eran seis copias de la
+  misma regla.
+- `veredicto.py` — qué pasó en un run, con un dato: `completado`,
+  `esperando_ok`, `incompleto`, `parado`, `roto`, `rechazado`. Se calcula desde
+  la **traza**, nunca desde `final_text` (A-016).
+- `llm.py` — listado de modelos y **embeddings** locales (`/api/embed`). Con tope
+  de 60 s: se awaita al empezar y al terminar cada run, y sin tope un `/api/embed`
+  colgado colgaba el run sin límite.
+- `telemetry.py` — observabilidad: eventos JSON en `data/logs/bridge.jsonl` y por
+  run en `data/logs/runs/<run_id>.jsonl`.
+- `memory/` — 'cerebro' del proyecto: `episodic.py` (ChromaDB + embeddings de
+  Ollama) y `sqlite_graph.py` (grafo conceptual), con `ProjectMemory` como
+  fachada. El backend `graphiti` se borró en la Fase 1: sus requisitos estaban
+  comentados en `requirements.txt` y el módulo se declaraba a sí mismo "sin
+  verificar, nunca ejecutado".
+- `verifier.py` — la puerta: convierte "el modelo dijo que lo hizo" en "lo
+  comprobamos". El `gate` ejecuta el comando del proyecto **en un hilo**; llamado
+  en el event loop congelaba el bridge entero durante `tsc`/`vitest`.
 
 ### 2.2 App (`mobile/lib/`)
 
@@ -169,56 +182,72 @@ persistencia fue A-034 hasta que `_run_autopilot_once` los escribió.
 
 ### 3.1 REST
 
-| Método | Ruta                       | Body                                   | Respuesta                     |
-|--------|----------------------------|----------------------------------------|-------------------------------|
-| GET    | `/health`                  | —                                      | estado bridge+hermes+ollama   |
-| GET    | `/models`                  | —                                      | `available`, `loaded`         |
-| POST   | `/tasks`                   | `{agent, prompt, instructions?}`       | `{run_id, agent, status}`     |
-| GET    | `/tasks/{run_id}`          | —                                      | `{run_id, status}`            |
-| POST   | `/tasks/{run_id}/approval` | `{decision: approve\|deny, comment?}`  | `{status, accepted}`          |
-| POST   | `/tasks/{run_id}/steer`    | `{text}`                               | `{run_id, accepted}`          |
-| POST   | `/tasks/{run_id}/stop`     | —                                      | `{run_id, status: stopping}`  |
-| POST   | `/autopilot`               | AutopilotIn                            | `{model, answer, steps, trace, fin}` (síncrono) |
-| POST   | `/autopilot/start`         | AutopilotIn                            | `{run_id, status}` (devuelve ya) |
-| GET    | `/autopilot/{run_id}`      | —                                      | `{run_id, status, steps, trace, answer, fin, error}` |
+Las 33 rutas de API. Las de lectura sin token son las seis de `LECTURAS_ABIERTAS`
+(`/health`, `/models`, `/enfoques`, `/actividad`, `/origen`, `/proyectos`); todo lo
+demás pide `X-Aegis-Token`.
 
-Aegis tiene **un solo agente**: `agent = "worker"`. Antes también aceptaba
-`orchestrator`, pero ambos valores terminaban en el mismo modelo (Hermes usaba su
-default), así que era configuración muerta que solo sugería un equipo inexistente.
-El bridge normaliza el alias legacy a `worker` para no romper apps viejas.
+**Correr un run**
 
-Se elige **motor**, no rol:
+| Método | Ruta                       | Body                | Respuesta |
+|--------|----------------------------|---------------------|-----------|
+| POST   | `/autopilot`               | AutopilotIn         | `{model, answer, steps, trace, fin, estado, duracion_s}` (síncrono) |
+| POST   | `/autopilot/start`         | AutopilotIn         | `{run_id}` (devuelve ya) |
+| GET    | `/autopilot/{run_id}`      | —                   | traza por paso, `fin`, `estado` |
+| POST   | `/autopilot/{run_id}/steer`| `{text}`            | — (entra como turno más) |
+| POST   | `/autopilot/{run_id}/stop` | —                   | — (corte entre pasos) |
 
-| Motor | Ruta | Para qué | Cómo se ve el avance |
-|---|---|---|---|
-| Hermes | `POST /tasks` | razonar, recordar, resumir | streaming por WS (`text.delta`) |
-| Autopilot | `POST /autopilot/start` | **ejecutar tools** | `GET /autopilot/{run_id}`, traza por paso |
+**La puerta de aprobación**
 
-Autopilot es el que ejecuta: el modelo elige QUÉ tool usar y el bridge la corre
-con lista blanca, dejando traza. Es la única vía cuyo resultado se puede citar
-como evidencia.
+| Método | Ruta                              | Para qué |
+|--------|-----------------------------------|----------|
+| GET    | `/aprobaciones`                   | pendientes + aprobadas sin gastar |
+| POST   | `/aprobaciones/{id}`              | aprobar/denegar → token de un solo uso |
+| POST   | `/aprobaciones/{id}/motivo`       | el motivo de una denegación (se inyecta al run siguiente) |
+| POST   | `/aprobaciones/{id}/ejecutar`     | cobrar la llamada aprobada **sin modelo de por medio** |
 
-### 3.2 WebSocket `/ws`
+**Autonomía, ficha, historial, notas, despliegue**
 
-Mensajes del cliente:
+`GET /autonomy` · `POST /autonomy/modo` · `POST|DELETE /autonomy/{alias}` ·
+`GET|POST /fichas/{alias}` · `GET /memoria` · `GET /runs` · `GET /runs/{run_id}` ·
+`GET|POST /notas` · `DELETE /notas/{id}` · `GET|POST /tareas` · `PATCH /tareas/{id}` ·
+`GET /deploys` · `POST /deploys/{id}` · `POST /deploys/{id}/instalar` ·
+`GET /actividad` · `GET /origen` · `GET /proyectos` · `GET /enfoques` ·
+`GET /models` · `GET /health`.
 
-```json
-{"type":"subscribe","run_id":"..."}
-{"type":"approve","run_id":"...","decision":"approve","text":"ok"}
-{"type":"steer","run_id":"...","text":"ahora otra cosa"}
-{"type":"stop","run_id":"..."}
-```
+**Una sola puerta, y es `exigir_token`.** No hay segunda superficie. Antes había
+tres caminos —HTTP, WebSocket y Hermes— y cada uno necesitaba su propia
+comprobación: el WS tenía su propia porque la API de WebSocket del navegador no
+puede poner cabeceras en el handshake. Un canal más es un guardarraíl más que
+nadie recuerda. `tests/test_puerta_http.py` lo verifica contando rutas, no
+confiando en la lista.
 
-Eventos del servidor (frame JSON `EventOut`):
+### 3.2 El `fin` de un run, y el estado que va con él
 
-```json
-{ "type": "text.delta", "task_id": "...", "agent": "worker", "at": "…",
-  "payload": { "event": "message.delta", "data": {"event":"message.delta","run_id":"…","delta":"Hola"} } }
-```
+`fin` dice **por qué paró**; `estado` dice **si terminó**. Son preguntas distintas
+y hasta la Fase 1 solo había una, lo que hacía que 38 de los 59 runs con
+`fin: sin_tools` del histórico —que habían ejecutado su tool y contestado bien—
+contaran como fracasos.
 
-Tipos de `type`: `task.created`, `status.changed`, `reasoning`, `text.delta`,
-`tool.started`, `tool.completed`, `approval.request`, `approval.resolved`,
-`task.done`/`task.failed`/`task.stopped` (terminales), `raw.progress`, `ws.status`.
+`estado` sale de `app/veredicto.py` y tiene seis valores, no dos:
+
+| estado | significa |
+|---|---|
+| `completado` | el modelo paró solo, hubo tool en verde, y respondió |
+| `esperando_ok` | esperando a una persona (no es un fallo) |
+| `incompleto` | se paró sin responder, o sin ninguna tool verde |
+| `parado` | lo paró quien lo lanzó |
+| `roto` | el modelo no respondió, o el run reventó |
+| `rechazado` | la puerta o la autonomía lo frenaron |
+
+`completado` **no** significa "el trabajo estaba bien hecho": significa que el
+agente cree que terminó y hay una tool que lo sostiene. La calidad la pone
+`verifier.py`. Y `bin/medir-runs` aplica **la misma regla** a los ficheros del
+histórico, que es lo que hace comparables el antes y el después.
+
+### 3.3 WebSocket
+
+No hay. Se quitó en la Fase 1 con el motor de Hermes. La traza se lee por
+`GET /autopilot/{run_id}`, que ya devuelve los pasos según ocurren.
 
 ## 4. Malla (Tailscale)
 
@@ -234,58 +263,87 @@ Tipos de `type`: `task.created`, `status.changed`, `reasoning`, `text.delta`,
 2. **Procesos robustos**: lanzar con `setsid nohup … & disown` (o subshell `( … &)`)
    para que sobrevivan al cierre de la sesión.
 3. **`httpx.Timeout`**: necesita los 4 parámetros, o lanza `ValueError` en runtime.
-4. **Suscriptor tardío**: el lector SSE debe iniciar en la **creación** del run, y el
-   relay debe conservar historial; si solo se lee tras el `subscribe`, el móvil
-   pierde tool-calls y deltas previos.
-5. **Dedupe con prefijo truncado**: al truncar el payload, la clave cae dentro del
-   `run_id` (constante) y elimina todos los deltas salvo el primero.
-6. **Google Android auto-retos**: pasar `--dart-define` en `flutter build` y en `run`.
-7. **`/tasks` es asíncrono**: devuelve `{"status":"started"}`. Si esperas el
-   resultado con un `sleep` corto, lees una traza que aún no existe y mides **0/8**
-   sin que nada esté roto. Un 0 sin verificar el instrumento no es un dato.
-8. **La memoria puede ser la causa, no el efecto**: un `success` sin evidencia se
+4. **Google Android auto-retos**: pasar `--dart-define` en `flutter build` y en `run`.
+5. **La memoria puede ser la causa, no el efecto**: un `success` sin evidencia se
    reinyecta al prompt como "episodio similar resuelto" y el modelo copia el
-   patrón. Medido: 3 episodios falsos ⇒ 0/8 tool calls; sin ellos, 7/8. Por eso
-   `hooks.py` exige tool ejecutada en la traza y el `recall` solo inyecta
+   patrón. Medido: 3 episodios falsos ⇒ 0/8 tool calls; sin ellos, 7/8. Por eso el
+   veredicto exige tool ejecutada en la traza y el `recall` solo inyecta
    `success` (lección A-016).
-9. **Un prompt grande no es el problema por ser grande**: recortar 10 kB a 2 kB no
+6. **Un prompt grande no es el problema por ser grande**: recortar 10 kB a 2 kB no
    cambió nada, porque el bloque tóxico eran 788 chars de recall. Ablar por capas
    antes de parchear la primera que se ve.
+7. **`fin` no dice si el run terminó** (Fase 1). 38 de los 59 runs con
+   `fin: sin_tools` del histórico habían ejecutado su tool y contestado bien;
+   el `fin` los enterraba como fracasos y el sistema no tenía forma de distinguir
+   "terminé" de "me rendí". La etiqueta se calculaba en `hooks.py`, cableado a un
+   motor que llevaba 24 h sin iniciar un solo run. Lo grave no es que faltara el
+   dato: es que la invariante estaba **escrita y sin aplicarse**.
+8. **Un `subprocess.run` en una corrutina congela el bridge entero** (Fase 1).
+   `verifier.gate` es `async def` y llamaba a `ejecutar()` —`tsc`, `vitest`, minutos—
+   directamente. `/health`, el poll del móvil y el propio
+   `POST /autopilot/{run_id}/stop` no se atendían hasta terminar la verificación:
+   **parar un run durante su propia verificación era imposible**. El mismo
+   razonamiento ya estaba escrito en `autopilot._bucle` para las tools; aquí no
+   se aplicó.
+9. **Un timeout `read=None` en la memoria cuelga los runs** (Fase 1).
+   `embed_texts` se awaita al empezar **y al terminar** cada run. Un
+   `/api/embed` que acepta la conexión y no contesta dejaba el run colgado sin
+   límite ni `fin` que lo explicara. La memoria es degradable en todas partes, y
+   ese timeout era la excepción que la hacía capaz de tumbar lo que no debía.
+10. **Un instrument que no corre se disfraza de instrumento** (A-090, y el
+    `graphiti` borrado en la Fase 1): un backend de grafo con los requisitos
+    comentados en `requirements.txt` y cuyo módulo decía "nunca ejecutado". Una
+    rama que nadie ha ejecutado no es una opción, es una suposición con `import`
+    debajo.
 
-## 6. Ruta futura a 14b
+## 6. Ruta futura
 
-- Opciones: 2 GPUs / más VRAM, o modelo 8b `Q4_K_M`+ `num_ctx` bajo (Hermes exige
-  64k mínimo). Documentar el presupuesto KV ~12 GB @64k no permite 14b en 6 GB VRAM.
-- En ese escenario: un solo agente, sin overrides por rol, y re-run del smoke.
-  Nota: hoy Hermes **sí** ejecuta tools (20/20) con `qwen2.5:7b` una vez purgada
-  la memoria; el límite de 6 GB era el del sandbox por contenedor, ya retirado.
+La ruta de modelos la fija `docs/motores.md` (clases de latencia T0/T1/T2,
+flota con turnos, tabla de asignación derivada de perfiles medidos). Aquí solo lo
+que este documento necesita:
+
+- **T0 no pasa por el modelo**: alarma, nota, listar y leer son deterministas. Hoy
+  existen como REST (`POST /notas`, `POST /tareas`) pero **no están en el schema del
+  agente**, así que un encargo de ese tipo sí paga un run completo. Es el
+  camino corto que falta.
+- **Presupuesto de latencia**: `run_duration_s` valía `0.0` **hardcodeado** y ahora
+  se mide en `autopilot.py`, con `ms` por paso en la traza. Sin ese número no hay
+  clase de latencia posible, y por eso el orden de las fases de `motores.md`
+  empieza midiendo.
+- **Más VRAM**: 6 GB no dan para convivencia de modelos; por eso el diseño es de
+  turnos y no de flags.
 
 ## 7. Capas críticas de ejecución
 
-El entorno de ejecución se estructura en tres capas: **aislamiento**,
-**observabilidad** y **memoria**. Dibujo del flujo completo:
+Tres capas: **aislamiento**, **observabilidad** y **memoria**. Un solo motor:
 
 ```
-[Móvil] → REST/WS → [Bridge :8000]
-                        ├─ HERMES:  POST /tasks ─► stream WS (razonar)
-                        │      ├─ recall(prompt) ──► memoria: SOLO episodios success
-                        │      └─ instructions + contexto previo
-                        │            ▼
-                        │         [Hermes API :8642] ──► conversación (sin tools desde 2026-10-04)
-                        │            ├─ whitelist + rollback de sintaxis
-                        │            └─ trazas → data/logs/runs/<id>.jsonl
-                        │            ▼
-                        │         events SSE → relay ──► telemetry
-                        │
-                        └─ AUTOPILOT: POST /autopilot/start ─► bucle propio
-                                 (el modelo elige QUÉ tool; el bridge la EJECUTA)
-                                      ▼
-                                   traza por paso → GET /autopilot/{run_id}
+[Bridge :8000]
+      │
+      ├─ POST /autopilot/start
+      │     ├─ build_system_prompt: metodo + quien eres + ficha + enfoque
+      │     │                     + índice de lecciones + recall + denegaciones
+      │     ├─ Ollama :11434 ──► el modelo elige QUÉ tool
+      │     ├─ autonomy.decide() ANTES de ejecutar  (niveles: libre / con permiso / requiere OK)
+      │     ├─ _execute en un hilo  ──► mcp_ops: whitelist, denylist,
+      │     │                              escaneo de secretos, rollback de sintaxis
+      │     ├─ verifier.gate en un hilo ──► el comando del proyecto (tsc, vitest…)
+      │     └─ traza por paso ──► data/logs/runs/<run_id>.jsonl
+      │
+      └─ al terminar: _registrar_run ──► memoria (SOLO success con tools)
+                          + veredicto (app/veredicto.py) + duracion_s
 
-   Veredicto de un run (ambos motores):  traza  ──► ¿hubo tool con ok?
-     sí → outcome=success  ·  no → outcome=sin_evidencia   ← nunca desde final_text
-   Memoria: solo se inyecta al prompt un `success` con tools nombradas.
+   Veredicto: traza ──► ¿hubo tool en verde? ¿respondió?   ← nunca desde final_text
+   Memoria:   al prompt solo sube un `success` con tools nombradas.
 ```
+
+Las dos reglas que hacen que esto no se rompa, y las dos son de la Fase 1:
+
+- **El veredicto se calcula en un solo sitio.** `autopilot._bucle` tiene seis
+  `return`; el veredicto se añade en el envoltorio, no en cada uno.
+- **El veredicto sale de la traza, y la traza se escribe entera.** El JSONL recorta
+  el `answer` a 1.000 chars, así que un veredicto recalculado sobre lo escrito daría
+  un número distinto del que tuvo el run.
 
 ### 7.0 Dónde se prueba la app (y por qué no en tu teléfono)
 
@@ -356,13 +414,14 @@ máquina es x86_64.
 > `aegis_read_file` costaría 1 500 caracteres de schema en cada paso de cada run
 > por no tener que escribir el nombre de un fichero (A-082).
 
-> Ese camino se retiró el 2026-10-04: el agente que Hermes lanza desde
-> `POST /tasks` corre con `platform_toolsets.api_server: []`, es decir **sin
-> toolsets**, así que los MCP `aegis-ops` y `aegis-memory` no los veía nadie. Y el
-> repo ya había medido que un 7B dentro de Hermes no emite `tool_calls` fiables:
-> el autopilot existe por eso. `app/mcp_ops.py` **sigue existiendo** —el
-> autopilot lo usa como librería—; lo que se quitó fue la exposición MCP y el
-> punto de entrada `mcp.run()`.
+> Ese camino se retiró el 2026-10-04 y el módulo se borró del todo en la Fase 1:
+> el agente que Hermes lanzaba desde `POST /tasks` corría con
+> `platform_toolsets.api_server: []`, es decir **sin toolsets**, así que los MCP
+> `aegis-ops` y `aegis-memory` no los veía nadie. Y el repo ya había medido que un
+> 7B dentro de Hermes no emite `tool_calls` fiables: el autopilot existe por eso.
+> `app/mcp_ops.py` **sigue existiendo** —el autopilot lo usa como librería, que es
+> de donde salen las 22 tools del schema—; lo que se quitó fue la exposición MCP
+> (`mcp.run()`) y, en la Fase 1, `app/mcp_memory.py`.
 
 ### 7.1 Aislamiento (guardarraíles, no contenedor)
 
@@ -382,51 +441,52 @@ máquina es x86_64.
 - `bridge/app/telemetry.py` emite JSONL en dos planos:
   - `data/logs/bridge.jsonl` — eventos globales (recall de memoria, episodios
     guardados, fallos con traza).
-  - `data/logs/runs/<run_id>.jsonl` — la secuencia completa del run: cada evento
-    normalizado con `event_exec_ms`, y `run.failed.detail` con **línea y traza de
-    pila** del fallo. Es el artefacto que el flujo de memoria usa como episodio
-    negativo.
+  - `data/logs/runs/<run_id>.jsonl` — la secuencia completa del run. Lo escribe
+    `main._escribir_jsonl_de_autopilot`: `task.created`, un `tool.completed` por
+    paso, `run_duration_s` y el terminal (`task.done`/`task.failed`/
+    `task.stopped`) con `fin`, `estado`, `completado`, `resumen` y `error`.
+- **`run_duration_s` se mide de verdad** (Fase 1). Valía `0.0` hardcodeado con la
+  forma del métrico ya lista: un dato falso con forma de dato, que es la clase de
+  hueco más difícil de ver porque produce números. Además, `autopilot` anota `ms`
+  por paso en la traza, que es lo que hace falta para un presupuesto de latencia.
 - `GET /health` incluye `memory` (estado de los almacenes) y la telemetría se
   configura en `lifespan` desde `LOG_DIR` (`.env`).
-- Extra (documentado): `hermes monitoring` exporta métricas OTLP si se desea.
+- `bin/medir-runs` reetiqueta el histórico con la regla actual y da el reparto de
+  estados. Es el instrumento de la línea base: un número que solo existe en una
+  conversación no es una línea base.
 
 ### 7.3 Memoria ('cerebro' del proyecto)
 
-Tres niveles, cada uno con su rol:
+**Dos** niveles, cada uno con su rol (ver §7.1 para el porqué de que sean dos y no
+tres):
 
 | Nivel | Almacén | Backend | Rol |
 |-------|---------|---------|-----|
-| (c) Nativa | Hermes memory graph (`hermes journey`) | incl. Hermes | autobiografía del agente (se llena con el uso) |
-| (b) Conceptual | grafo de conceptos, episodios ligados | `sqlite` (por defecto) o `graphiti` (opt-in) | enlaces entre conceptos descubiertos juntos |
-| (a) Episódica | embeddings + índice vectorial | ChromaDB embebido + Ollama (`nomic-embed-text`) | recuperación semántica "¿ya resolvimos algo así?" |
+| (b) Conceptual | grafo de conceptos, episodios ligados | `sqlite` (el único) | enlaces entre conceptos descubiertos juntos |
+| (a) Episódica | embeddings + índice vectorial | ChromaDB embebido + Ollama (`nomic-embed-text`) | "¿ya resolvimos algo así?" |
 
 Ciclo de vida (automatizado en el bridge):
 
-1. **Recordar** — `hooks.on_terminal_event` en `relay._reader`: al terminar un
-   run, construye el episodio (prompt, resumen, código extraído de bloques
-   fenced, error si falló) y llama a `ProjectMemory.remember()`:
-   - guarda el episodio en el grafo (SQLite o Graphiti) con sus conceptos,
-   - lo indexa por embedding (Chroma + Ollama) cuando está disponible.
-   - **el veredicto lo decide la traza, no el texto**: `hooks.tools_executed()`
-     lee `data/logs/runs/<id>.jsonl` y, si no hay ninguna tool ejecutada sin
-     error, el episodio se graba como `sin_evidencia` (no `success`) y con el
-     texto del modelo descartado. La razón: un falso éxito reinyectado como
-     "episodio similar resuelto" hace que el modelo responda sin llamar a nada
-     (A-016, medido 0/8 → 7/8 al quitarlo).
-2. **Recordar antes de crear** — `POST /tasks` (y WS `create_task`) calcula
-   `recall(prompt)` y, si hay contexto, lo inyecta como `instructions` extra
-   bajo `## Contexto de experiencia previa`. El modelo (64k de contexto) lo
-   asimila sin coste.
-   - **el filtro es en `render_context`**: `recall` devuelve lo semánticamente
-     más cercano sin mirar el `outcome`, así que el filtrado a `success` ocurre
-     justo en la frontera de inyección. Un `failed` presentado bajo "resueltos
-     antes" es instrucción contraria, y el 7B la copia.
-3. **Consultar a demanda (fase 2)** — `app/mcp_memory.py` expone
-   `memory_search`/`memory_status` como tools MCP sobre stdio, para que el
-   propio agente consulte dentro del run.
+1. **Recordar** — `main._registrar_run`, al terminar un run de autopilot:
+   `ProjectMemory.remember()` guarda el episodio en el grafo SQLite con sus
+   conceptos y lo indexa por embedding cuando Chroma está disponible.
+   **El veredicto lo decide la traza, no el texto**: `app/veredicto.py`. Sin una
+   tool en verde, el episodio no se graba como `success` (A-016, medido 0/8 → 7/8
+   al quitar el veneno).
+2. **Recordar antes de crear** — `POST /autopilot` y `/autopilot/start` llaman
+   `recall(prompt)` y lo inyectan como bloque `EXPERIENCIA PASADA RELEVANTE`.
+   **El filtro está en `render_context`**: `recall` devuelve lo más cercano
+   semánticamente sin mirar el `outcome`, así que el filtrado a `success` ocurre en
+   la frontera de inyección. Un `failed` bajo el rótulo de "resueltos antes" es
+   instrucción contraria, y el 7B la copia.
+3. **Consultar a demanda** — `lecciones(alias, tema)` para las lecciones. El
+   servidor MCP de memoria (`app/mcp_memory.py`) se borró en la Fase 1 con el
+   resto de la exposición MCP: era un segundo camino de entrada a la memoria y no
+   lo usaba nadie.
 
 Config (`.env`): `MEMORY_ENABLED`, `MEMORY_DIR`, `MEMORY_RECALL_K`,
-`MEMORY_GRAPH_BACKEND` (`sqlite`|`graphiti`|`off`), `EMBED_MODEL`.
+`MEMORY_GRAPH_BACKEND` (`sqlite`|`off`; `graphiti` se retiró en la Fase 1),
+`EMBED_MODEL`.
 
 Degradación intencionada: sin `chromadb`/Ollama la memoria **no rompe el
 bridge** — la episódica se desactiva sola y el grafo (SQLite, sin deps)

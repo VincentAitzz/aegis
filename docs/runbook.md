@@ -434,14 +434,26 @@ cd bridge && bash bin/probe-toolcall.sh qwen2.5:7b
 Funcionales (host):
 
 ```bash
-# E2E REST+WS (subscribe tardío → replay completo, verifica buffer)
-cd bridge && .venv/bin/python tests/e2e_ws.py
-
-# Contrato de control
+# Un run de verdad, y su veredicto
 cd bridge
-bin/api POST tasks '{"agent":"worker","prompt":"hola"}'
-bin/api POST tasks/$RUN/steer '{"text":"cancela"}'
-bin/api POST tasks/$RUN/stop
+RID=$(bin/api POST autopilot/start '{"project":"aegis","prompt":"lista los proyectos"}' | jq -r .run_id)
+bin/api GET autopilot/$RID | jq '{status, steps, fin, estado, duracion_s}'
+
+# Contrato de control del run en marcha
+bin/api POST autopilot/$RID/steer '{"text":"ahora resume"}'
+bin/api POST autopilot/$RID/stop
+```
+
+> `tests/e2e_ws.py` y las rutas `POST /tasks*` se quitaron en la Fase 1 con el
+> motor de Hermes y el WebSocket. `GET /autopilot/{run_id}` hace lo que hacía el
+> `subscribe` con replay: la traza crece paso a paso y sobrevive a reiniciar el
+> bridge, porque se escribe en `data/logs/runs/<run_id>.jsonl`.
+
+Y el reparto de estados del histórico, que es la línea base de cualquier cambio
+en el bucle:
+
+```bash
+cd bridge && .venv/bin/python bin/medir-runs
 ```
 
 App:
@@ -465,8 +477,10 @@ curl -H "Authorization: Bearer $API_SERVER_KEY" http://127.0.0.1:8642/health
 |----------------------------------------|---------------------------------------------------------------------|
 | `httpx.Timeout must either include…`   | falta un parámetro del Timeout; ver `hermes_client.py`              |
 | bridge 000 pero proceso arriba         | matado por cierre de sesión: relanzar con `setsid nohup`/subshell   |
-| App: sin `text.delta` aunque completó  | dedupe truncado (bug viejo) o suscripción tardía sin replay; compilar con el código actual |
-| App no conecta; chip "connecting" fijo | WS no llega: verifica MagicDNS `aegis.tailXXXXXX.ts.net` e IP 100.x |
+| Un run devuelve `fin: incompleto`    | paró sin responder o sin ninguna tool en verde. El `resumen` dice cuál; `bin/medir-runs` compara contra la línea base |
+| `estado: roto` en un run largo        | `fin: modelo_caido` o `reventado`: el modelo no respondió, o el bridge reventó. El `error` va en su propio campo |
+| Un verificador rojo deja el bridge colgado | ya no: `verifier.gate` corre el comando en un hilo. Si vuelve a pasar, `tests/test_verificador_no_bloquea.py` lo detecta |
+| La app no conecta                     | verifica MagicDNS `aegis.tailXXXXXX.ts.net` e IP 100.x, y que `GET /health` responde (va sin token) |
 | `pkill uvicorn` mata la propia shell   | usar patrón `[u]vicorn` (evita auto-match)                          |
 | Ollama OOM a 64k                       | RAM libre ~5 GB es justo; evitar construir contexto +44k sin cache_read |
 | Tailscale "Logged out" tras reboot     | `sudo tailscale up --hostname aegis` y completar login (URL impresa)|

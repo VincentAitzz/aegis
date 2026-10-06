@@ -10,7 +10,7 @@
 Consola de operación del negocio freelance, local-first:
 
 ```
-[App Flutter] ──REST/WS──► [Bridge FastAPI :8000] ──► [Hermes gateway :8642] ──► [Ollama :11434]
+[App Flutter] ──REST──► [Bridge FastAPI :8000] ──► [Ollama :11434]
                                   │                          └──► autopilot: ejecuta las tools
                                   ├── autopilot: bucle modelo→tool, ejecución determinista
                                   ├── memoria episódica (Chroma + SQLiteGraph)
@@ -30,14 +30,42 @@ Consola de operación del negocio freelance, local-first:
   junto a `probe-toolcall.sh` y `check-imports.py`, que sí lo son.
 - `docs/` — arquitectura y runbook. **Actualízalos cuando cambie el operarlo.**
 
-**Invariante que no se negocia:** *Aegis nunca es punto único de falla.* Si la
-laptop se apaga, el negocio sigue. La autoridad vive en el Worker/Postgres del
-portafolio, no aquí.
+## 1.1 Hacia dónde va esto
 
-**El bridge es de un solo proceso.** El estado de control de un run en marcha
-(parar, dirigir) vive en memoria del proceso; con dos workers, un `stop` que llegara
-al otro daría un 404 que miente. `run.sh` rechaza `BRIDGE_WORKERS != 1` en vez de
-dejarlo pasar: escalar por encima requiere persistir ese estado primero.
+El objetivo de Aegis es ser **tu asistente ambiental**: que te oiga sin que pulses
+nada, entienda lo que dices, actúe sobre tus herramientas, recuerde lo que importa
+de ti, y te avise de los problemas que encuentra. Está en `docs/vision.md`, con
+las fases, los números y el orden. La autoridad de cada decisión está en
+`docs/decisiones/`.
+
+Hoy Aegis es otra cosa —un agente que escribe código y deja rastro—, y por eso
+las invariantes de abajo son de *trazabilidad*. **Cambaron de forma el
+2026-10-05** (`docs/decisiones/001`): el objetivo sigue siendo el mismo, pero ya
+no es «Aegis no hace nada por su cuenta», es «**Aegis no hace nada irreversible
+por su cuenta, y siempre se puede saber qué hizo y por qué**». Lo que queda
+intacto es lo importante: ninguna acción con consecuencia sin que se pueda
+auditar.
+
+**Antes de construir cualquier cosa**, lee `docs/vision.md` §2. Casi todo lo que
+se ha construido aquí salió de un caso concreto, y el caso concreto es
+lo único que decide si algo vale la pena.
+
+**Invariantes vigentes (2026-10-05).** Las de esta tabla, no las de abajo, que
+quedaron sustituidas:
+
+| Invariante | Qué obliga |
+|---|---|
+| **Nada irreversible sin OK** | Toda acción con consecuencia pasa por aprobación de un solo uso. **Ningún pago es automático**, ni con permiso de antemano. |
+| **Se apaga bien** | Todo dispositivo tiene timeout y estado seguro por defecto. Si Aegis muere, nada queda en un estado raro. |
+| **Lo íntimo no sale** | Audio, fotogramas y rostros no van a terceros sin permiso explícito y medible. |
+| **Se puede auditar** | Traza y veredicto de todo, incluidos los sentidos: quién vio qué, cuándo. |
+| **La memoria es tuya** | Se puede ver, editar y borrar lo que Aegis sabe de ti. |
+
+**El bridge es de un solo proceso** — esto no cambió, y sí aplica a móvil y reloj
+como clientes. El estado de control de un run en marcha (parar, dirigir) vive en
+memoria del proceso; con dos workers, un `stop` que llegara al otro daría un 404
+que miente. `run.sh` rechaza `BRIDGE_WORKERS != 1` en vez de dejarlo pasar:
+escalar por encima requiere persistir ese estado primero.
 
 ## 2. El rol de opencode aquí: consultor y corrector
 
@@ -61,7 +89,8 @@ El orden es siempre el mismo:
 | Necesito | Camino |
 |---|---|
 | Que una tool se ejecute de forma fiable | **`/autopilot`** (determinista, con traza) |
-| Razonar, recordar, resumir, redactar | run de Hermes vía `/tasks` (usa memoria) |
+| Razonar, resumir, redactar | **`/autopilot`** también. Es el único camino que queda |
+| Una alarma o una nota, sin modelo | `POST /tareas` o `POST /notas`, directo |
 | Cambiar el diseño, la arquitectura o los invariantes | **opencode, directamente** |
 
 Motivo técnico: los modelos de 6 GB disponibles (`qwen2.5:7b`) **no emiten
@@ -69,9 +98,8 @@ Motivo técnico: los modelos de 6 GB disponibles (`qwen2.5:7b`) **no emiten
 el texto. El autopilot lo resuelve parseando la intención y ejecutándola. Si
 necesitas tools, va por autopilot.
 
-### Lo que se midió, y cambia la regla
+### Lo que se midió, y sigue valiendo
 
-`/tasks` **sí** ejecuta tools de forma fiable una vez limpio el resto:
 **20/20 runs** con tool realmente ejecutada y 0 falsos éxitos, en tres rondas.
 No era el modelo: era la memoria.
 
@@ -86,15 +114,40 @@ El bucle que lo rompía (lección A-016):
 Ablación medida (n=8): con 3 episodios falsos, **0/8** tool calls; sin el
 bloque de memoria, **7/8**. Tres episodios falsos bastaban.
 
-Por eso Hermes se queda, pero con dos reglas que no son opcionales:
+Y el orden importa: **purgar la memoria es parte del arreglo**, no una limpieza
+de final. Con la memoria envenenada no hay nada que medir.
 
-- **El veredicto sale de la traza, nunca de `final_text`.** Sin tool ejecutada
-  el resultado es `sin_evidencia`, y así se graba.
+Las dos reglas que salieron de eso siguen siendo la regla:
+
+- **El veredicto sale de la traza, nunca de `final_text`.** Vive en
+  `app/veredicto.py`, y lo calcula `run_autopilot` en un envoltorio —el bucle a
+  secas tiene seis `return` y en cada uno eran seis copias de la misma regla.
 - **Al prompt solo suben episodios `success` con tools nombradas.** Un fallo
   inyectado como solución es instrucción contraria.
 
-Y el orden importa: **purgar la memoria es parte del arreglo**, no una limpieza
-de final. Con la memoria envenenada no hay nada que medir.
+### El `fin` no dice si el run terminó
+
+Hasta la Fase 1 (2026-10-04) un run terminaba con un `fin`, y el `fin` no
+distinguía "terminé" de "me rendí". `sin_tools` con una tool ejecutada y una
+respuesta buena **es** un run terminado: el modelo llamó, leyó y contestó. Como
+el `fin` no lo decía, **38 de los 59 runs con `fin: sin_tools`** del histórico
+contabilizaban como fracasos.
+
+Reetiquetados los 133 runs con la regla actual (`bin/medir-runs`):
+
+| estado | n | % |
+|---|---|---|
+| `completado` | 60 | 45,1 % |
+| `esperando_ok` | 37 | 27,8 % |
+| `incompleto` | 30 | 22,6 % |
+| `roto` | 4 | 3,0 % |
+| `rechazado` | 1 | 0,8 % |
+| `parado` | 1 | 0,8 % |
+
+Lo grave no era que faltara el dato —la traza lo tenía todo—, sino que la
+invariante de A-016 estaba **escrita y sin aplicarse**: `hooks.py` estaba cableado
+a un motor que llevaba 24 h sin iniciar un run. Un invariante que nadie ejecuta
+no es un invariante; es una intención.
 
 ## 3. Protocolo de delegación
 
@@ -118,7 +171,7 @@ que usa el resto del operarlo y los scripts.
 
 ### Cuando Aegis necesita tu OK
 
-`app/autonomy.py` reparte las 21 tools en tres niveles. Si un run topa una tool
+`app/autonomy.py` reparte las 22 tools en tres niveles. Si un run topa una tool
 de nivel 3 (`db_migrate`, `neon_branch`, `install_apk`, `build_apk`,
 `project_create`, `adb_connect`, `deploy_smoke`), **no ejecuta**: deja una
 petición y termina con `fin: "esperando_ok"`.
@@ -139,17 +192,22 @@ El token valida **la llamada, no el run**, y es de un solo uso (A-033).
 
 ### Un solo motor: el autopilot
 
-El autopilot es lo único que ejecuta tools. Hermes quedó como **motor de
-conversación**, sin tools: `platform_toolsets.api_server: []` deja al agente que
-lanza `POST /tasks` sin toolsets, así que los MCP `aegis-ops` y `aegis-memory`
-registrados en `~/.hermes/config.yaml` no los veía nadie. Se retiraron (con copia
-de la config), y con ellos `app/mcp_memory.py` y el punto de entrada `mcp.run()`
-de `app/mcp_ops.py` — **el módulo se queda**, porque el autopilot lo usa como
-librería.
+El autopilot es lo único que ejecuta tools, y desde la **Fase 1** (2026-10-04) es
+lo único que ejecuta nada.
 
-Dos motores son dos sitios donde puede vivir un guardarraíl. Un run de Hermes se
-graba en memoria como `conversacion` (no como `sin_evidencia`: no es un fallo, es
-que ese motor no tenía tools por diseño).
+Hermes pasó a ser motor de conversación (`platform_toolsets.api_server: []` lo
+deja sin toolsets), y luego se borró entero: `POST /tasks`, el WebSocket `/ws`,
+`relay.py`, `hooks.py` y `graphiti.py`. No quedaban llamadores —los `run_*.jsonl`
+de Hermes paran el 2026-10-03 y los `autopilot-*.jsonl` siguen—, y `docs/
+architecture.md` seguía documentándolos como API viva en quince sitios.
+
+Lo que **queda de Hermes** es una sonda: `GET /health` pregunta a la gateway si
+está en pie, que es lo que consulta el watchdog de `infra/stack.sh`. Un semáforo
+no es un motor.
+
+Dos motores son dos sitios donde puede vivir un guardarraíl, y por eso el diseño
+es: **quedarse con uno**. Un invariante que depende de un componente que ya no se
+usa no es un invariante, es una intención (ver el caso de `hooks.py` en A-016).
 
 Un permiso aprobado y no gastado **no se pierde**: `GET /aprobaciones` devuelve
 también `aprobadas`, con su token, y el móvil tiene un botón **Ejecutar** para
@@ -345,11 +403,19 @@ No afirmes que algo funciona sin ejecutarlo:
 
 ```bash
 # El bridge (rápido, siempre)
-cd bridge && .venv/bin/python -m unittest discover -s tests -q
+cd bridge && .venv/bin/python -m unittest discover -s tests -q   # 554 tests
+cd bridge && .venv/bin/python bin/check-imports.py               # el verificador de `aegis`
+cd bridge && .venv/bin/python bin/medir-runs                     # reparto de estados del histórico
 cd bridge && bash bin/probe-toolcall.sh qwen2.5:7b    # capacidad de tool-calling
 # El proyecto que toca el agente
 node scripts/check-syntax.mjs <archivos>               # solo sintaxis
 ```
+
+`bin/medir-runs` es el que **no** puede faltar cuando se toca `app/veredicto.py`
+o el bucle: sin él no hay forma de saber si un cambio mejoró o empeoró el
+comportamiento, porque la etiqueta `fin` por sí sola cuenta los runs que
+terminaron como fracasos. Es el mismo criterio que aplica a los ficheros, que es
+lo que hace comparables el antes y el después.
 
 ## 7.1 La autonomía, en una frase
 
