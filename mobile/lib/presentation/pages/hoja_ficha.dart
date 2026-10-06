@@ -29,6 +29,7 @@ import '../../core/network/errores.dart';
 import '../../core/theme/aegis_palette.dart';
 import '../../data/models/asistente_models.dart';
 import '../providers/agent_providers.dart';
+import '../shell/aegis_section.dart';
 import '../widgets/acordeon_secciones.dart';
 
 /// La ayuda de cada sección, escrita para ti y no para el bridge.
@@ -153,6 +154,12 @@ class HojaFichaState extends ConsumerState<HojaFicha> {
   String _markdown = '';
 
   bool _guardando = false;
+
+  /// El botón del scaffold está ocupado. Distinto de [_guardando] porque son dos
+  /// acciones y pueden llegar a la vez: se está guardando una sección mientras
+  /// corre el run del scaffold.
+  bool _lanzando = false;
+
   String? _aviso;
 
   @override
@@ -488,8 +495,125 @@ class HojaFichaState extends ConsumerState<HojaFicha> {
                   fontSize: 11,
                   color: AegisPalette.danger)),
         ],
+        if (_pestana == _pestanaFicha) ...[
+          const SizedBox(height: 16),
+          _BotonScaffold(
+            completa: _fichaCompleta,
+            ocupado: _lanzando,
+            onLanzar: _queAegisLoCree,
+          ),
+        ],
       ],
     );
+  }
+
+  /// Si la ficha tiene todo lo que la puerta exige.
+  ///
+  /// Se calcula con la lista de secciones del bridge, no con `faltan`: tras un
+  /// guardado el bridge ya no manda `faltan`, y quedarse con el valor viejo
+  /// dejaría el botón apagado con la ficha ya completa.
+  bool get _fichaCompleta {
+    final secciones = _seccionesDe(_pestanaFicha);
+    if (secciones.isEmpty) return false;
+    return _siguientePendienteEn(_pestanaFicha) == null;
+  }
+
+  String? _siguientePendienteEn(int pestana) {
+    for (final s in _seccionesDe(pestana)) {
+      final c = pestana == _pestanaFicha ? _camposPublica[s] : _camposPrivada[s];
+      if ((c?.text ?? '').trim().isEmpty) return s;
+    }
+    return null;
+  }
+
+  /// Lanza el run del scaffold.
+  ///
+  /// ## Lo que este botón NO hace, y por qué está escrito aquí
+  /// No esquiva ninguna puerta. Lo que se lanza es un **run**, y lo que el run
+  /// haga dentro sigue pasando por `autonomy.decide()`: escribir en el proyecto
+  /// exige que esté marcado (`con_permiso`), y `project_create` es nivel 3 en los
+  /// tres modos. O sea: Aegis va a parar pidiendo tu OK en cuanto toque algo que
+  /// importe, y ese OK lo apruebas en «Ahora» con el motivo a la vista.
+  ///
+  /// Lo único que quita este botón es el paso de apretar «ejecutar». Que se lance
+  /// solo no significa que escriba solo.
+  Future<void> _queAegisLoCree() async {
+    setState(() {
+      _lanzando = true;
+      _aviso = null;
+    });
+    final repo = ref.read(agentRepositoryProvider);
+    try {
+      // El proyecto queda elegido para que la pantalla de «Ahora» lo traiga ya
+      // puesto, y para que el run vaya con su ficha y sus lecciones.
+      ref.read(selectedProjectProvider.notifier).select(widget.alias);
+      await repo.startAutopilot(
+        prompt: _encargoDeScaffold(),
+        project: widget.alias,
+        maxSteps: 24,
+        instructions: _instruccionesDeScaffold(),
+        // `verificar: false` a propósito en el **primer** run, y no por descuido:
+        // el proyecto está recién creado y no tiene scaffold, así que su
+        // verificador casi seguro falla y el run se cortaría en el primer paso
+        // por un motivo que no es del trabajo. A partir del segundo run ya hay
+        // código contra el que correr.
+        verify: false,
+      );
+      if (!mounted) return;
+      setState(() {
+        _lanzando = false;
+        _aviso = null;
+      });
+      Navigator.of(context).pop(true);
+      refrescarAsistente(ref);
+      // El run vive en «Ahora», que es donde se ve la traza y dónde caen las
+      // aprobaciones. Abrirla es lo útil: el run ya está corriendo y sin mirar no
+      // se ve ni su primer paso.
+      ref.read(seccionActualProvider.notifier).abrir('ahora');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _lanzando = false;
+        _aviso = 'No pude lanzar el run: ${mensajeDeError(e)}';
+      });
+    }
+  }
+
+  /// El encargo, en una frase que el modelo no puede malinterpretar.
+  ///
+  /// Se escribe aquí y no se deja que Aegis lo figure: un 7B al que se le pide
+  /// «crea la base» elige qué significa base, y el trabajo que importa es el
+  /// menos ambiguo de todos.
+  String _encargoDeScaffold() {
+    final b = StringBuffer()
+      ..writeln('Crea la base del proyecto \'${widget.alias}\'.')
+      ..writeln()
+      ..writeln('La ficha de este proyecto ya está escrita y la tienes delante. '
+          'Lo que hay que hacer es lo mínimo que hace falta para que el '
+          'proyecto exista y se pueda verificar:')
+      ..writeln()
+      ..writeln('- Un repositorio con la estructura que use el stack declarado.')
+      ..writeln('- El mínimo para que corran los comandos de verificación.')
+      ..writeln('- Un README que diga qué es y cómo se prueba.')
+      ..writeln()
+      ..writeln('No añadas funcionalidad que no esté en la ficha, y no decidas '
+          'nada comercial: el precio y las fechas no se tocan. Si la ficha no '
+          'aclara algo del stack, léete lo que haya y **pregunta**, en vez de '
+          'elegir por tu cuenta.');
+    return b.toString();
+  }
+
+  String _instruccionesDeScaffold() {
+    final verificador = _seccionesPublica()
+        .firstWhere((s) => s.titulo == 'Cómo se verifica',
+            orElse: () => const SeccionAcordeon(
+                titulo: '', abierta: false, escrita: false))
+        .escrita;
+    return verificador
+        ? 'El proyecto tiene verificador declarado en la ficha: úsalo para comprobar '
+            'tu trabajo en cada paso. Si un comando no existe todavía, créalo.'
+        : 'Este proyecto no tiene verificador declarado todavía. Escribe uno que '
+            'funcione y déjalo anotado: sin él no se puede dar permiso de escritura.';
   }
 
   Widget _campo(String titulo) {
@@ -522,6 +646,76 @@ class HojaFichaState extends ConsumerState<HojaFicha> {
       _abiertaFijada = false;
     });
     _reconstruirMarkdown();
+  }
+}
+
+/// El botón de «que Aegis lo cree».
+///
+/// ## Por qué dice lo que hace, en la propia etiqueta
+/// Porque la primera tool del run choca con `project_create`, que es nivel 3, y
+/// Aegis **para y te pregunta**. Un botón que dijera solo «crear» haría pensar
+/// que el trabajo empieza sin más; este deja claro que hay un paso por delante y
+/// que lo decides tú. El motivo está también en el código, que es donde se
+/// pregunta por qué no escribe solo.
+class _BotonScaffold extends StatelessWidget {
+  const _BotonScaffold({
+    required this.completa,
+    required this.ocupado,
+    required this.onLanzar,
+  });
+
+  final bool completa;
+  final bool ocupado;
+  final VoidCallback onLanzar;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!completa) {
+      return const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('—  ',
+              style: TextStyle(
+                  fontFamily: AegisPalette.mono,
+                  fontSize: 11,
+                  color: AegisPalette.fgFaint)),
+          Expanded(
+            child: Text(
+              'Termina la ficha para poder encargar el scaffold. La puerta del '
+              'bridge no deja trabajar en un proyecto que no sabe para qué es.',
+              style: TextStyle(
+                  fontFamily: AegisPalette.mono,
+                  fontSize: 10.5,
+                  height: 1.5,
+                  color: AegisPalette.fgFaint),
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        FilledButton(
+          onPressed: ocupado ? null : onLanzar,
+          style: FilledButton.styleFrom(
+            backgroundColor: AegisPalette.brand,
+            foregroundColor: AegisPalette.bg0,
+          ),
+          child: Text(ocupado ? 'Lanzando…' : 'Que Aegis lo cree'),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Aegis va a parar a pedirte OK antes de crear nada: esta acción no '
+          'es automática.',
+          style: TextStyle(
+              fontFamily: AegisPalette.mono,
+              fontSize: 10,
+              height: 1.5,
+              color: AegisPalette.fgFaint),
+        ),
+      ],
+    );
   }
 }
 

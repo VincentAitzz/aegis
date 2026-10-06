@@ -27,6 +27,24 @@ import 'package:aegis_console/presentation/widgets/acordeon_secciones.dart';
 
 import 'fake_repository.dart';
 
+/// Una ficha con las ocho secciones escritas: el estado en el que el botón del
+/// scaffold se enciende.
+FichaTexto _fichaCompleta() => FichaTexto(
+      alias: 'prueba',
+      kind: 'encargo',
+      estado: 'completa',
+      secciones: const {
+        'Qué problema resuelve': 'cobrar a mano',
+        'Para qué se usa': 'registrar pagos',
+        'Quién lo usa': 'Ana',
+        'Criterio de aceptación': 'el total cuadra',
+        'Alcance dentro': 'un registro',
+        'Alcance fuera': 'el banco',
+        'Alternativas consideradas': 'ninguna',
+        'Cómo se verifica': 'flutter test',
+      },
+    );
+
 void main() {
   Future<void> montar(
     WidgetTester tester, {
@@ -34,11 +52,13 @@ void main() {
     FichaTexto? ficha,
     FichaPrivada? privada,
   }) async {
-    // Superficie alta a propósito: la hoja es un `ListView`, y uno perezoso solo
-    // construye lo que está en el viewport. Con la altura por defecto de 800x600
-    // el botón de guardar ni existe en el árbol, y un `find.text` no lo encuentra
-    // aunque el widget esté en la lista.
-    tester.view.physicalSize = const Size(1080, 3200);
+    // Superficie enorme a propósito: la hoja es un `ListView`, y uno perezoso
+    // solo construye lo que está en el viewport. Con la altura por defecto de
+    // 800x600 el botón de guardar ni existe en el árbol, y un `find.text` no lo
+    // encuentra aunque el widget esté en la lista —que es una trampa de los tests
+    // de widget, no un fallo de la pantalla—. Con 9000 de alto cabe todo y los
+    // tests no dependen de cuántas pantallas haya que bajar.
+    tester.view.physicalSize = const Size(1080, 9000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -82,10 +102,10 @@ void main() {
   /// Necesario para cualquier aserción sobre lo que hay bajo el acordeón: el
   /// `ListView` es perezoso y no construye lo que no se ve. Sin esto, el botón de
   /// guardar no existe para el test aunque esté en pantalla para una persona.
+  /// Baja hasta el final. Ya no hace falta con la superficie alta, pero conviene
+  /// no depender de eso: si la hoja crece, el test avisa en vez de fallar raro.
   Future<void> alFondo(WidgetTester tester) async {
-    await tester.drag(find.byType(ListView), const Offset(0, -1200));
-    await tester.pump();
-    await tester.drag(find.byType(ListView), const Offset(0, -1200));
+    await tester.drag(find.byType(ListView), const Offset(0, -200));
     await tester.pump();
   }
 
@@ -266,6 +286,57 @@ void main() {
       final (hechas, total) = AcordeonSecciones.progreso(secciones);
       expect(hechas, 1);
       expect(total, 1);
+    });
+  });
+
+  group('el botón del scaffold', () {
+    testWidgets('con la ficha incompleta, dice por qué no se puede encargar',
+        (tester) async {
+      // Con la ficha a medias **no hay botón**, hay un motivo. Un botón apagado
+      // sin explicación deja a quien lo ve pensando que la app está rota; una
+      // frase dice qué falta y es la misma regla que aplica la puerta.
+      final repo = FakeAgentRepository();
+      await montar(tester, repo: repo);
+      await alFondo(tester);
+      expect(find.text('Que Aegis lo cree'), findsNothing);
+      expect(find.textContaining('Termina la ficha'), findsOneWidget);
+    });
+
+    testWidgets('con la ficha completa, aparece y se puede pulsar', (tester) async {
+      final repo = FakeAgentRepository();
+      await montar(tester, repo: repo, ficha: _fichaCompleta());
+      await alFondo(tester);
+      expect(find.text('Que Aegis lo cree'), findsOneWidget);
+      final b = tester.widget<FilledButton>(
+          find.widgetWithText(FilledButton, 'Que Aegis lo cree'));
+      expect(b.onPressed, isNotNull);
+    });
+
+    testWidgets('avisa de que Aegis va a parar a pedir OK', (tester) async {
+      // La etiqueta del botón no lo dice. Esto es lo que evita que «que Aegis lo
+      // cree» se lea como «Aegis va a escribir solo»: lo que se lanza es un run, y
+      // `project_create` es nivel 3 en los tres modos.
+      final repo = FakeAgentRepository();
+      await montar(tester, repo: repo, ficha: _fichaCompleta());
+      await alFondo(tester);
+      expect(find.textContaining('no es automática'), findsOneWidget);
+    });
+
+    testWidgets('al pulsarlo, el run va con el proyecto ya elegido',
+        (tester) async {
+      final repo = FakeAgentRepository();
+      await montar(tester, repo: repo, ficha: _fichaCompleta());
+      await alFondo(tester);
+      await tester.tap(find.text('Que Aegis lo cree'));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 320));
+      }
+      expect(repo.proyectosLanzados, contains('prueba'),
+          reason: 'un run sin `project` carga otra ficha y otras lecciones: sería '
+              'Aegis trabajando sobre el encargo equivocado');
+      expect(repo.promptsLanzados.first, contains('Crea la base'),
+          reason: '«crea la base» se escribe aquí y no se deja que el modelo lo '
+              'figure: un 7B decide qué significa «base»');
     });
   });
 }
