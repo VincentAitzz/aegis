@@ -36,6 +36,7 @@ import atexit
 import ipaddress
 import logging
 import socket
+import threading
 from typing import Optional
 
 log = logging.getLogger("aegis.descubrimiento")
@@ -43,7 +44,18 @@ log = logging.getLogger("aegis.descubrimiento")
 #: Tipo de servicio que se registra y se busca. Sin sufijo de dominio: el
 #: protocolo es `_tcp` y el nombre `_aegis`, que es lo que resolvería `aegis.local`.
 TIPO = "_aegis._tcp.local."
-NOMBRE = "aegis"
+#: Nombre de **instancia**, y no «aegis» a secas.
+#:
+#: Medido: con el nombre corto, `zeroconf` levanta `NonUniqueNameException` en
+#: esta máquina. La causa está en la salida de `ps`: hay un `avahi-daemon`
+#: publicando `Aegis.local`, porque el hostname **es** `Aegis`. Los nombres DNS-SD
+#: no distinguen mayúsculas, así que reclamar `aegis.local` es propriety con lo
+#: que avahi ya tiene, y el anuncio no se registra.
+#:
+#: No es una expiración rara: este repositorio vive en un portátil cuyo hostname
+#: es el nombre de la cosa que publica. Chocar con el propio nombre del host es
+#: el caso normal aquí, no el raro.
+NOMBRE = "aegis-bridge"
 
 #: Puerto del bridge. Se lee de los settings al registrar, no se fija aquí: si
 #: alguien mueve el puerto, un valor fijo anunciaría uno que no escucha y el móvil
@@ -51,6 +63,42 @@ NOMBRE = "aegis"
 _puerto: Optional[int] = None
 _zeroconf = None
 _registrado = False
+
+
+#: Cuánto se espera al anuncio antes de seguir sin él. Corto a propósito: el
+#: descubrimiento es una comodidad y el puente tiene que estar arriba ya. Con 5 s
+#: hay margen de sobra en una LAN y, si algo va mal, se pierde poco.
+SEGUNDOS_ANUNCIO = 5
+
+
+def _registrar_aqui(puerto: int, version: str):
+    """Registra el servicio. **Se ejecuta en un hilo sin loop de asyncio.**
+
+    El `except` es ancho a propósito, y no por descuido: `zeroconf` lanza de todo
+    —`TimeoutError`, `socket.error`, `NonUniqueNameException`,
+    `AttributeError` si la versión cambia la firma de `ServiceInfo`— y el motivo de
+    capturarlos todos es una invariante:
+
+      **el descubrimiento nunca puede retrasar ni tumbar el arranque.**
+
+    Se comprobó por dos lados: `register_service` puede tardar 90 s y lanzar
+    `TimeoutError` sin red, y un test del lifespan pasó de 4 s a 94 s con un
+    anuncio que no hacía falta.
+    """
+    from zeroconf import ServiceInfo, Zeroconf
+
+    zc = Zeroconf()
+    zc.register_service(ServiceInfo(
+        TIPO,
+        f"{NOMBRE}.{TIPO}",
+        addresses=[ipaddress.IPv4Address(ip).packed for ip in interfaces_de_red()],
+        port=puerto,
+        properties=texto_de_anuncio(version),
+        # El nombre que sale en el discoverer del móvil. Sin esto aparece como
+        # un nombre largo con el dominio dentro.
+        server=f"{NOMBRE}.local.",
+    ))
+    return zc
 
 
 def interfaces_de_red() -> list[str]:
@@ -154,42 +202,38 @@ def registrar(puerto: int, version: str = "0.1.0") -> str:
     global _zeroconf, _registrado, _puerto
     if _registrado:
         return f"ya anunciado en {_puerto}"
+    # El registro va en un hilo propio, y no inline. Medido: `Zeroconf()` creado
+    # con un loop de asyncio corriendo lanza `EventLoopBlocked` al instante —
+    #es el `lifespan` de uvicorn— y por eso el bridge se levantado con «NO
+    # ANUNCIO» sin que nada pareciera roto. Un hilo sin loop es el sitio donde
+    # `zeroconf` quiere vivir, y además es lo que permite poner un timeout
+    # alrededor: `join()` con plazo, que el loop no pone por sí solo.
+    registro: dict[str, object] = {}
+
+    def _en_hilo() -> None:
+        try:
+            registro["zc"] = _registrar_aqui(puerto, version)
+        except Exception as exc:  # noqa: BLE001 — ver la invariante de abajo
+            registro["exc"] = exc
+
+    hilo = threading.Thread(target=_en_hilo, name="aegis-mdns", daemon=True)
+    hilo.start()
+    hilo.join(SEGUNDOS_ANUNCIO)
+    if hilo.is_alive():
+        return f"NO ANUNCIO: el anuncio no respondió en {SEGUNDOS_ANUNCIO}s"
+    if "exc" in registro:
+        exc = registro["exc"]
+        log.warning("descubrimiento: no pude anunciarme: %s", exc)
+        return f"NO ANUNCIO: {type(exc).__name__}: {exc}"
+    zc = registro.get("zc")
+    if zc is None:
+        return "NO ANUNCIO: el hilo terminó sin registrar nada"
+    _zeroconf, _registrado, _puerto = zc, True, puerto
     try:
         from zeroconf import ServiceInfo, Zeroconf
     except ImportError as exc:
         return f"NO ANUNCIO: falta zeroconf en el venv ({exc})"
 
-    # El `except` es ancho a propósito, y no por descuido: `zeroconf` lanza de
-    # todo —`TimeoutError` esperando la respuesta del otro extremo, `socket.error`
-    # al abrir el socket, `AttributeError` si la versión cambia la firma de
-    # `ServiceInfo`— y el motivo de capturarlos todos es una invariante, no una
-    # comodidad:
-    #
-    #   **el descubrimiento nunca puede retrasar ni tumbar el arranque.**
-    #
-    # Se comprobó: `register_service` puede tardar 90 s y lanzar `TimeoutError`
-    # en un entorno sin red, y un test del lifespan pasó de 4 s a 94 s con un
-    # anuncio que no hacía falta. Un puente que tarda un minuto y medio en
-    # arrancar porque un servicio de comodidad no respondió es un puente roto,
-    # no uno lento.
-    try:
-        zc = Zeroconf()
-        info = ServiceInfo(
-            TIPO,
-            f"{NOMBRE}.{TIPO}",
-            addresses=[ipaddress.IPv4Address(ip).packed for ip in interfaces_de_red()],
-            port=puerto,
-            properties=texto_de_anuncio(version),
-            # El nombre que sale en el discoverer del móvil. Sin esto aparece
-            # como un nombre largo con el dominio dentro.
-            server=f"{NOMBRE}.local.",
-        )
-        zc.register_service(info)
-    except Exception as exc:  # noqa: BLE001 — ver la invariante de arriba
-        log.warning("descubrimiento: no pude anunciarme: %s", exc)
-        return f"NO ANUNCIO: {type(exc).__name__}: {exc}"
-
-    _zeroconf, _registrado, _puerto = zc, True, puerto
     atexit.register(retirar)
     ip = ", ".join(interfaces_de_red()) or "sin IPv4 de red local"
     log.info("descubrimiento: anunciado como %s en %s:%s (vía %s)", NOMBRE, ip, puerto, TIPO)

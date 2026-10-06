@@ -114,10 +114,27 @@ class TestElAnuncioNoFiltra(unittest.TestCase):
         """
         self.assertEqual(desc.texto_de_anuncio("0.1.0"), {"version": "0.1.0"})
 
-    def test_el_nombre_no_lleva_el_dominio_dentro(self) -> None:
-        """Es lo que aparece en el discoverer del móvil."""
-        self.assertEqual(desc.NOMBRE, "aegis")
+    def test_el_tipo_es_el_que_se_busca(self) -> None:
         self.assertEqual(desc.TIPO, "_aegis._tcp.local.")
+
+    def test_el_nombre_no_choca_con_el_hostname(self) -> None:
+        """El bug real, medido.
+
+        Con el nombre corto, `zeroconf` levanta `NonUniqueNameException` y el
+        anuncio no se registra. La causa está en `ps`: hay un `avahi-daemon`
+        publicando `Aegis.local`, porque el hostname de esta máquina **es**
+        `Aegis`, y los nombres DNS-SD no distinguen mayúsculas.
+
+        No es una expiración rara: este repo vive en un portátil cuyo hostname es
+        el nombre de lo que publica. Chocar con el nombre del host es el caso
+        normal aquí, no el raro.
+        """
+        self.assertNotEqual(desc.NOMBRE, "aegis")
+        import socket
+        self.assertNotEqual(
+            desc.NOMBRE.lower(), socket.gethostname().lower(),
+            "el nombre de instancia coincide con el hostname, que es lo que "
+            "avahi ya publica en esta máquina")
 
 
 class TestUnFalloNoRompeElArranque(unittest.TestCase):
@@ -152,6 +169,37 @@ class TestUnFalloNoRompeElArranque(unittest.TestCase):
     def test_falta_zeroconf_no_lanza(self) -> None:
         with mock.patch.dict(sys.modules, {"zeroconf": None}):
             self.assertIn("NO ANUNCIO", desc.registrar(8000))
+        self.assertFalse(desc.announcing())
+
+    def test_registrarse_dentro_de_un_loop_asyncio_no_lanza(self) -> None:
+        """El otro bug real, y el que hizo que el bridge arrancara sin anunciar.
+
+        `Zeroconf()` creado con un loop de asyncio corriendo lanza
+        `EventLoopBlocked` al instante —es el `lifespan` de uvicorn—, así que el
+        registro va en un hilo propio. Sin esto el bridge se levanta con «NO
+        ANUNCIO» y **nada parece roto**: el puente funciona, solo no se encuentra.
+        """
+        import asyncio
+
+        async def dentro_de_loop():
+            with _con_interfaces({"wlan0": ["192.168.0.51"]}):
+                with mock.patch("zeroconf.Zeroconf") as zc:
+                    zc.return_value.register_service.side_effect = TimeoutError("90 s")
+                    resultado = desc.registrar(8000)
+            return resultado
+
+        self.assertIn("NO ANUNCIO", asyncio.run(dentro_de_loop()))
+        self.assertFalse(desc.announcing())
+
+    def test_el_hilo_no_puede_dejar_medio_anunciar(self) -> None:
+        """Si el hilo no termina a tiempo, no puede quedar `announcing()` diciendo
+        que sí: el bridge seguiría vivo sin anuncio y nadie lo sabría."""
+        with mock.patch.object(desc.threading, "Thread") as hilo:
+            instancia = mock.Mock()
+            instancia.is_alive.return_value = True
+            hilo.return_value = instancia
+            resultado = desc.registrar(8000)
+        self.assertIn("no respondió", resultado)
         self.assertFalse(desc.announcing())
 
     def test_retirar_es_idempotente(self) -> None:
