@@ -441,6 +441,62 @@ def apk_para(base: str, perfil: str = "release") -> Path:
         f"build/app/outputs/flutter-apk/app-{perfil}-{base}.apk")
 
 
+def _aapt() -> Path | None:
+    """El `aapt` del build-tools más nuevo que haya.
+
+    ## Por qué el más nuevo
+    Porque es el único que sabe leer un APK compilado por el Flutter actual. Con
+    uno viejo, `dump badging` no reconoce el manifiesto y devuelve una cadena
+    vacía, que es el peor resultado: `int("")` revienta y parece un bug del APK.
+    """
+    raiz = Path(SDK) / "build-tools"
+    if not raiz.is_dir():
+        return None
+    # Orden inverso de texto: `36.0.0` > `35.0.1` porque compara como número.
+    for version in sorted((v.name for v in raiz.iterdir() if v.is_dir()),
+                          reverse=True):
+        for nombre in ("aapt", "aapt2"):
+            candidato = raiz / version / nombre
+            if candidato.is_file():
+                return candidato
+    return None
+
+
+def version_de(apk: Path) -> tuple[int, str]:
+    """`(versionCode, versionName)` de un APK, leídos del propio binario.
+
+    ## Por qué leerlos del APK y no de `pubspec.yaml`
+    Porque el APK es **lo que se va a instalar**, y es su `versionCode` el que
+    Android compara. Leer el manifiesto del APK es la única forma de que el
+    número que el bridge enseña y el número que el móvil tiene no puedan
+    discrepar: si salieran del mismo fichero no habría nada que comparar.
+
+    ## Y por qué importa
+    Android **rechaza** una actualización cuyo `versionCode` sea menor, y no lo
+    explica de forma utilizable. Sin este dato, la app no puede ni ofrecer ni
+    negarse a una actualización: tendría que probarlo y descubrirlo installando.
+
+    Devuelve `(0, "")` si no se puede leer, para que el que pregunte decida qué
+    hacer con un dato ausente. Lanza `RuntimeError` solo si el binario no existe,
+    que sí es un fallo del bridge.
+    """
+    if not apk.is_file():
+        raise RuntimeError(f"no existe el APK {apk}")
+    tool = _aapt()
+    if tool is None:
+        return 0, ""
+    try:
+        proc = subprocess.run(
+            [str(tool), "dump", "badging", str(apk)],
+            capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0, ""
+    salida = proc.stdout or ""
+    code = re.search(r"versionCode='(\d+)'", salida)
+    name = re.search(r"versionName='([^']*)'", salida)
+    return (int(code.group(1)) if code else 0, name.group(1) if name else "")
+
+
 def apk_legacy(perfil: str = "debug") -> Path:
     """El nombre que Flutter deja por defecto. Solo para diagnóstico."""
     return apk_para("x", perfil).with_name(f"app-{perfil}.apk")

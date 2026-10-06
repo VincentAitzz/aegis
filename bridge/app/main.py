@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 from pydantic import BaseModel, Field
@@ -318,6 +319,88 @@ PRIVADA_MAX = 20_000
 #: alguien puede escribir la ficha de un proyecto que ya existe sin haber pasado
 #: por allí nunca.
 _ALIAS_PRIVADO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,48}$")
+
+
+@app.get("/apk/{base}")
+async def apk_descargar(base: str,
+                        _auth: None = Depends(exigir_token)) -> FileResponse:
+    """El APK compilado, para que el móvil lo instale sin `adb`.
+
+    ## Por qué esto **no** es una puerta atrás a la instalación
+    Bajar un fichero no es ejecutarlo. Aquí solo se sirve el binario; lo que lo
+    instala es el diálogo del sistema de Android, y lo que autoriza esa
+    instalación es la cola de aprobaciones de siempre. La separación es
+    deliberada: si el endpoint instalara, la invariante «nada irreversible sin
+    OK» se podría saltar con una descarga.
+
+    Lo que sí exige este endpoint es que el binario **haya pasado la puerta** —
+    analyze, tests y humo en el emulador—, porque por la red un binario sin
+    comprobar es un binario sin comprobar pero además distribuido.
+
+    ## Por qué pide token, y por qué no está en `LECTURAS_ABIERTAS`
+    Servir un APK firmado es lo de más consecuencia que hace el bridge: quien lo
+    descarga tiene un binario que Android va a aceptar como Aegis. Abierto, eso
+    es «cualquiera en la LAN se baja algo firmado de Aegis». El token no es aquí
+    una formality, es lo que separa el binario de un atacante.
+
+    ## Por qué `no-store`
+    Un APK cacheado por el Wi-Fi es **instalar código viejo**, que es el peor
+    desenlace posible de una actualización. Y no es un riesgo teórico: los
+    intermediarios de malla cachean por defecto.
+
+    ## Y `X-Aegis-Version`
+    El `versionCode` leído del propio APK, que es el número que Android compara.
+    Con eso la app decide si hay versión nueva **antes** de descargar 50 MB, y sin
+    que el dato pueda discrepar del binario: sale del fichero, no de otro sitio.
+    """
+    from .deploy import _huella_binario, apk_desactualizado, apk_sin_verificar
+    from .deploy import sello_de
+    from .dispositivos import TARGETS, apk_para, version_de
+    from .deploy import PERFIL
+
+    if base not in TARGETS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"destino desconocido: {base!r}. Los destinos son: "
+                   f"{', '.join(sorted(TARGETS))}.")
+    apk = apk_para(base, PERFIL)
+    if not apk.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"no hay APK de '{base}' ({apk.name}). Compílalo antes: "
+                   f"build_apk(target='{base}').")
+    # Las dos comprobaciones que heredan de la puerta, en el mismo orden en que
+    # las usa `instalar_pendiente`: primero de dónde salió el binario, después si
+    # pasó las pruebas. Un APK desactualizado puede estar perfectamente
+    # verificado —lo que se verificó fue *ese* fichero— y aun así no servir.
+    if (motivo := apk_desactualizado(apk)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"el APK de '{base}' no representa el código de ahora: {motivo}. "
+                   f"Recompílalo.")
+    if (motivo := apk_sin_verificar(apk)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"el APK de '{base}' no ha pasado la puerta: {motivo}")
+    code, nombre = version_de(apk)
+    desde = sello_de(apk)
+    respuesta = FileResponse(
+        apk,
+        media_type="application/vnd.android.package-archive",
+        headers={
+            # Los dos van juntos: `no-store` evita que un caché de malla sirva un
+            # binario viejo, y el `ETag` permite a la app saber que lo que tiene
+            # ya es esto mismo sin volver a bajarlo.
+            "Cache-Control": "no-store, must-revalidate",
+            "ETag": f'"{_huella_binario(apk)}"',
+            "X-Aegis-Version": str(code),
+            "X-Aegis-Version-Name": nombre,
+        },
+    )
+    if desde.is_file():
+        respuesta.headers["X-Aegis-Sello"] = desde.read_text(
+            encoding="utf-8").strip()[:40]
+    return respuesta
 
 
 @app.get("/fichas/plantillas")

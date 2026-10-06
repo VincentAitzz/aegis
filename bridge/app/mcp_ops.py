@@ -1131,7 +1131,8 @@ def build_apk(target: str = "emulador", force: bool = False,
     su propio uso no siempre lo quiere. Con `humo=True` el APK queda sellado
     como verificado y se puede proponer instalar al momento.
     """
-    from .dispositivos import DeviceError, api_host_para, apk_para, TARGETS
+    from .dispositivos import (DeviceError, api_host_para, apk_legacy, apk_para,
+                               TARGETS)
     base = target.split(":")[0]
     if base not in TARGETS:
         return f"target inválido: {target!r}. Usa {TARGETS}."
@@ -1181,15 +1182,26 @@ def build_apk(target: str = "emulador", force: bool = False,
     except subprocess.TimeoutExpired:
         return "build_apk agotó el tiempo (600s). Todo el gradle quedó caliente; reinténtalo."
     tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-12:])
-    # Flutter deja el APK en app-debug.apk siempre. Se mueve al nombre del
+    # Flutter deja el APK en `app-<perfil>.apk`, **según el perfil**: en debug es
+    # `app-debug.apk` y en release `app-release.apk`. Se mueve al nombre del
     # destino para que instalar en el teléfono no pueda tomar el binario que
     # apunta a localhost, ni el humo tomar el que apunta a la tailnet.
-    destino = apk_para(base)
+    #
+    # ## Por qué el perfil va aquí y no en `APK`
+    # Porque `APK` estaba fijado a `app-debug.apk`, y en release ese fichero no
+    # existe: el `if APK.exists()` era falso, `movido` se quedaba en `False`, y
+    # **todo lo que va después se saltaba** —incluido anotar el token, que es lo
+    # que la puerta exige después—. El síntoma era desconcertante y del todo
+    # culposo del sitio equivocado: la puerta se cerraba diciendo «este APK se
+    # compiló sin anotar token», y lo que había pasado es que el build sí lo
+    # anotaba, pero a un fichero que nunca se llegó a mover.
+    destino = apk_para(base, perfil)
+    legacy = apk_legacy(perfil)
     movido = False
-    if proc.returncode == 0 and APK.exists():
+    if proc.returncode == 0 and legacy.exists():
         destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.write_bytes(APK.read_bytes())
-        APK.unlink()
+        destino.write_bytes(legacy.read_bytes())
+        legacy.unlink()
         movido = destino.exists()
         # Anota con qué token se compiló. Sin esto el humo no puede distinguir
         # "abrió" de "funciona": un APK sin token abre, dibuja y habla con el
