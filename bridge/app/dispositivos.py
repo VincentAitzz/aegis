@@ -414,8 +414,16 @@ def telefono_alcanza(host: str, puerto: int = 8000, timeout: int = 6) -> tuple[b
                    "portátil, que bloquea lo que entra.")
 
 
-def apk_para(base: str) -> Path:
+def apk_para(base: str, perfil: str = "release") -> Path:
     """El APK de un destino, con nombre propio.
+
+    ## Por qué el perfil va en el nombre
+    Un APK de release dentro de un fichero llamado `app-debug-` rompe la promesa
+    del nombre, que es justo la que evita tener que acordarse de qué se compiló
+    la última vez. Y aquí no es cosmético: los dos perfiles **coexisten** en el
+    directorio de build, así que un nombre que no distingue cuál es cuál acaba
+    sirviendo el binario equivocado —y por el camino equivocado, que es el fallo
+    más caro porque la app abre y no ve nada.
 
     ## Por qué un fichero por destino
     Los dos binarios son distintos: el del emulador lleva `API_HOST=localhost`, y
@@ -427,13 +435,15 @@ def apk_para(base: str) -> Path:
     `build_apk` mueve la salida a este nombre, así que el nombre dice a quién
     pertenece y no hay que acordarse de qué se compiló la última vez.
     """
+    if perfil not in ("debug", "release"):
+        raise ValueError(f"perfil inválido: {perfil!r}. Usa debug o release.")
     return Path(os.path.expanduser("~/Workspace/aegis/mobile")) / (
-        f"build/app/outputs/flutter-apk/app-debug-{base}.apk")
+        f"build/app/outputs/flutter-apk/app-{perfil}-{base}.apk")
 
 
-def apk_legacy() -> Path:
+def apk_legacy(perfil: str = "debug") -> Path:
     """El nombre que Flutter deja por defecto. Solo para diagnóstico."""
-    return apk_para("x").with_name("app-debug.apk")
+    return apk_para("x", perfil).with_name(f"app-{perfil}.apk")
 
 
 def estado_humano() -> str:

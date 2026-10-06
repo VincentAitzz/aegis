@@ -1083,8 +1083,23 @@ def aegis_patch_file(path: str, old: str, new: str, replace_all: bool = False) -
 
 @mcp.tool()
 def build_apk(target: str = "emulador", force: bool = False,
-              humo: bool = False) -> str:
-    """Compila el APK debug para un destino.
+              humo: bool = False, release: bool = True) -> str:
+    """Compila el APK para un destino. En **release** por defecto.
+
+    ## Por qué release y no debug
+    Porque el APK baja por la red, y el peso se nota: el de debug ronda los 50 MB
+    y el de release baja de la mitad. En una malla privada la diferencia no es
+    solo tiempo: es lo que cuesta cada actualización.
+
+    Y no rompe nada, porque **la firma es la misma**: `build.gradle.kts` firma
+    `release` con `signingConfigs.debug`, o sea con `~/.android/debug.keystore`.
+    Android solo compara firmas al actualizar, así que un release sustituye a un
+    debug sin desinstalar nada.
+
+    ## `versionCode` tiene que subir
+    Android rechaza una actualización cuyo `versionCode` sea menor. No lo avisa
+    con un error utilizable: instala «algo» o falla sin decir por qué. Por eso
+    `pubspec.yaml` lleva el `+N` y hay que subirlo al publicar.
 
     ## target
 
@@ -1142,8 +1157,9 @@ def build_apk(target: str = "emulador", force: bool = False,
         )
     if not MOBILE.exists():
         return f"No existe el proyecto en {MOBILE}"
+    perfil = "release" if release else "debug"
     cmd = [
-        str(FLUTTER + "/flutter"), "build", "apk", "--debug",
+        str(FLUTTER + "/flutter"), "build", "apk", f"--{perfil}",
         f"--dart-define=API_HOST={api_host}",
         f"--dart-define=AEGIS_ORIGIN={base}",
     ]

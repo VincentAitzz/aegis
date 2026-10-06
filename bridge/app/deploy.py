@@ -62,6 +62,10 @@ MOBILE = Path(os.path.expanduser("~/Workspace/aegis/mobile"))
 #: IP de la tailnet en vez de localhost, y vive en `APK_TELEFONO`.
 APK = disp.apk_para("emulador")
 APK_TELEFONO = disp.apk_para("telefono")
+#: Perfil de los dos binarios. Release por defecto porque el APK baja por la red y
+#: el de debug pesa casi cuatro veces más; la firma es la misma, así que uno
+#: sustituye al otro sin desinstalar.
+PERFIL = "release"
 FLUTTER = disp.FLUTTER
 PAQUETE = "com.aegis.aegis_console"
 ORIGEN_HEADER = "X-Aegis-Origen"

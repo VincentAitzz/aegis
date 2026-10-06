@@ -184,8 +184,33 @@ class TestResolverNoEligeElTelefono(unittest.TestCase):
         emu = disp.apk_para("emulador")
         tel = disp.apk_para("telefono")
         self.assertNotEqual(emu, tel)
-        self.assertIn("app-debug-emulador.apk", emu.name)
-        self.assertIn("app-debug-telefono.apk", tel.name)
+        self.assertIn("emulador.apk", emu.name)
+        self.assertIn("telefono.apk", tel.name)
+
+    def test_el_perfil_va_en_el_nombre(self) -> None:
+        """Un release dentro de un `app-debug-` rompe la promesa del nombre.
+
+        Los dos perfiles **coexisten** en el directorio de build, así que un
+        nombre que no los distingue acaba sirviendo el binario equivocado —y por
+        el camino equivocado, que es el fallo más caro porque la app abre y no ve
+        nada.
+        """
+        self.assertEqual(
+            disp.apk_para("telefono", "release"),
+            disp.apk_para("telefono", "release"))
+        self.assertNotEqual(
+            disp.apk_para("telefono", "release"),
+            disp.apk_para("telefono", "debug"))
+        self.assertIn("release", disp.apk_para("telefono").name)
+        # Y el destino sigue mandando: release del emulador y release del
+        # teléfono son binarios distintos.
+        self.assertNotEqual(
+            disp.apk_para("emulador", "release"),
+            disp.apk_para("telefono", "release"))
+
+    def test_un_perfil_invalido_no_se_traga(self) -> None:
+        with self.assertRaises(ValueError):
+            disp.apk_para("telefono", "inventado")
 
     def test_deduplica_el_telefono_registrado_dos_veces(self) -> None:
         """adb anuncia el mismo teléfono por mDNS dos veces y marca una `(2)`.

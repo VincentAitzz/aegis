@@ -16,7 +16,11 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+# El `+N` es el `versionCode`, y **no es decorativo**: Android solo acepta
+# actualizar una app si el `versionCode` nuevo es mayor o igual que el instalado.
+# Es lo que lee el bridge con `aapt` para saber si hay versión nueva, y lo que
+# lee la app sobre sí misma para decirselo. Subirlo es parte de publicar.
+version: 1.0.1+2
 
 environment:
   sdk: ^3.13.4
