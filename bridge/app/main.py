@@ -1,22 +1,29 @@
-"""Bridge Aegis — puerta única para el móvil hacia Hermes (REST + WebSocket)."""
+"""Bridge Aegis: la puerta unica por la que el movil habla con el agente.
+
+## Que hay dentro y que no
+Un motor, un bucle y una cola de aprobaciones. `POST /autopilot` es lo que
+**ejecuta tools**; `POST /tareas` y `/notas` son agenda y no pasan por el modelo.
+El WebSocket y las cuatro rutas `/tasks*` que quedan en el historial se
+quitaron en la Fase 1 (`docs/motores.md` §6): eran el segundo motor, y nada los
+llamaba.
+"""
 
 import asyncio
 import contextlib
 import json
 import logging
+import re
 import socket
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import (FastAPI, Header, HTTPException, Query, Request, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 from pydantic import BaseModel, Field
 
-from . import hooks
 from . import autonomy as autonomy_modulo
 from .autonomy import (MODOS, AutonomiaError, almacen as autonomy,
                        init_autonomia, medir_base)
@@ -27,11 +34,8 @@ from .hermes_client import hermes
 from .llm import ollama
 from .memory import get_memory, init_memory
 from .method import method_context
-from .models import ApprovalIn, EventOut, SteerIn, TaskIn, TaskOut, TaskStatus, WsMessageIn
 from .notas import init_agenda
 from .notas import agenda as notas
-from . import relay as relay_mod
-from .relay import relay
 from .telemetry import configure as configure_telemetry
 from .telemetry import stopwatch, telemetry
 
@@ -44,24 +48,25 @@ settings = get_settings()
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_telemetry(settings.log_dir)
-    init_memory(settings)                       # 'cerebro' del proyecto (capa 3)
+    init_memory(settings)                       # 'cerebro' del proyecto (capas 1-2)
     init_autonomia()                            # qué puede hacer sin preguntar
     init_agenda()                               # notas, tareas y recordatorios
-    relay.on_terminal = hooks.on_terminal_event  # episodios + telemetría al terminar
     log.info("bridge arriba (bind %s:%s -> hermes %s)",
              settings.bridge_bind, settings.bridge_port, settings.hermes_base_url)
-    # El apagado lo hace `relay.lifespan_guard()`, que estaba escrita desde hace
-    # meses y a la que **nadie llamaba**: el lifespan repetía a mano las dos líneas
-    # que ella hace (cerrar hermes y cancelar los lectores SSE), y los lectores
-    # seguían vivos después de apagar.
+    # Que el lifespan se ejecute en los tests HTTP es lo que permite usar
+    # `with TestClient(app)`, y con eso testear `init_memory`, `init_autonomia` e
+    # `init_agenda`. Por eso el cierre del cliente es explícito y reversible
+    # (`hermes_client.HermesClient._client` rehace el cliente si estaba cerrado):
+    # si fuese irreversible, el mismo apagón que en producción es inocuo dejaba
+    # el lifespan sin ejecutar en todos los tests.
     #
-    # Que ahora se llame tiene un efecto que va más allá de los lectores: como
-    # `HermesClient` se puede reabrir (`hermes_client.HermesClient._client`), cerrar
-    # ya no es un tiro al cuello, y los tests pueden usar `with TestClient(app)`.
-    # Eso significa que **el lifespan se ejecuta en los tests HTTP**, que es lo que
-    # faltaba para poder testear `init_memory`, `init_autonomia` y `hooks.py`.
-    async with relay_mod.lifespan_guard():
+    # Antes este bloque lo hacía `relay.lifespan_guard()`, que además cancelaba
+    # los lectores SSE de Hermes. Esos lectores se fueron con el segundo motor
+    # (Fase 1): nada los creaba desde el commit `2f1fccb`.
+    try:
         yield
+    finally:
+        await hermes.aclose()
 
 
 app = FastAPI(title="Aegis Bridge", version="0.1.0", lifespan=lifespan)
@@ -86,26 +91,6 @@ def _token_aceptado(x_aegis_token: Optional[str]) -> bool:
     """
     esperada = settings.aegis_api_key
     return not esperada or bool(x_aegis_token) and x_aegis_token == esperada
-
-
-async def _ws_exigir_token(ws: WebSocket, token: str) -> None:
-    """Rechaza el socket si la clave no vale, **antes** de aceptar.
-
-    ## Qué ve el cliente
-    Un `websocket.close` enviado antes del `accept()` lo traduce el servidor a un
-    **HTTP 403 en el propio handshake**: el cliente nunca llega a tener un socket
-    abierto, y su `connect()` falla. No se ve un 1008, porque un 1008 solo
-    existiría sobre un socket que ya se aceptó — o sea, después de haber dejado
-    la puerta abierta un instante.
-
-    Y ese instante es el que hay que evitar: este socket es el que empuja la traza
-    de los runs a la pantalla, así que aceptar y comprobar después significa
-    publicar la ejecución de Aegis a quien llegue durante la comprobación.
-    """
-    if _token_aceptado(token):
-        return
-    log.warning("WS rechazado: token ausente o incorrecto")
-    await ws.close(code=1008, reason="esta ruta pide X-Aegis-Token y la que llega no vale")
 
 
 def exigir_token(x_aegis_token: Optional[str] = Header(default=None)) -> None:
@@ -190,42 +175,6 @@ async def _memory_context(prompt: str) -> str:
     except Exception as exc:  # noqa: BLE001 — la memoria nunca bloquea la tarea
         log.warning("recall de memoria falló: %s", exc)
         return ""
-
-
-async def _submit_task(agent: str, prompt: str,
-                       instructions: Optional[str] = None,
-                       project: Optional[str] = None) -> TaskOut:
-    """Crea un run en Hermes con el método, la ficha y la memoria inyectados."""
-    model = _agents()[agent]
-    # warm-up no bloqueante del modelo
-    await ollama.ensure_model(model)
-    # El método va siempre —con su parte de proyectos solo si hay proyecto— y la
-    # ficha solo si se sabe de qué se trata.
-    bloques = []
-    metodo = method_context(project or "")
-    if metodo:
-        bloques.append(metodo)
-    if project:
-        ficha = context_for(project)
-        if ficha:
-            bloques.append(ficha)
-    ctx = await _memory_context(prompt)
-    if ctx:
-        bloques.append(ctx)
-    if instructions:
-        bloques.append(instructions)
-    effective = "\n\n".join(b for b in bloques if b) or None
-    created = await hermes.create_run(model, prompt, effective)
-    run_id = created.get("run_id") or created.get("id")
-    if not run_id:
-        raise RuntimeError(f"Hermes no devolvió run_id: {created}")
-    # Arranca el lector SSE YA: el móvil se suscribe tarde (2-8s de malla) y
-    # recibe el historial completo vía el buffer de replay del relay.
-    relay.set_prompt(run_id, prompt)
-    await relay.ensure_reader(run_id, agent)
-    return TaskOut(run_id=run_id, agent=agent,
-                   status=created.get("status", "queued"),
-                   session_id=created.get("session_id"))
 
 
 # -- health / estado ----------------------------------------------------------
@@ -315,6 +264,160 @@ class FichaIn(BaseModel):
     contenido: str = Field(min_length=1, max_length=20_000)
 
 
+#: Tope de la ficha privada. Es más corta que la pública —es contexto comercial,
+#: no documentación— pero el mismo generoso, porque lo escribe una persona desde
+#: un móvil y cortar a mitad de frase no ayuda a nadie.
+PRIVADA_MAX = 20_000
+
+#: El mismo patrón de alias que valida el alta (`alta._ALIAS`). Se repite aquí
+#: porque la ruta privada se deriva del alias **antes** de pasar por el alta:
+#: alguien puede escribir la ficha de un proyecto que ya existe sin haber pasado
+#: por allí nunca.
+_ALIAS_PRIVADO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,48}$")
+
+
+@app.get("/fichas/plantillas")
+async def plantillas_fichas(_auth: None = Depends(exigir_token)) -> dict:
+    """Qué secciones hay que escribir, por tipo, y cuáles tiene la privada.
+
+    ## Por qué existe
+    Para que el formulario del móvil sepa qué preguntar. Las secciones viven en
+    `fichas.SECCIONES_POR_TIPO`, y copiar esa lista a Dart tiene un fallo
+    silencioso: el día que el bridge añada una sección, la app seguiría sin
+    mostrarla, la puerta la seguiría exigiendo, y el usuario vería «incompleta»
+    sin ninguna sección que la pueda completar. Un bug que no se puede
+    diagnosticar desde la pantalla.
+
+    Es el mismo criterio que los enfoques (`GET /enfoques`): el índice sale del
+    disco, y ampliarlo es escribir un fichero.
+
+    ## Y las secciones de la ficha privada
+    Se leen de la plantilla, en vez de tener su propia lista en Python. Motivo
+    medido: la plantilla privada **no tiene lista de secciones obligatorias** a
+    propósito —el modelo de cobro no tiene forma canónica—, así que sus
+    encabezados son un recordatorio. Duplicar esa lista en el código
+    guarantees que algún día el formulario pregunta por una sección que la
+    plantilla ya no tiene.
+    """
+    from . import fichas as fichas_mod
+
+    privadas: list[str] = []
+    try:
+        cruda = fichas_mod.plantilla_privada()
+        privada = fichas_mod.parse("_plantilla", cruda)
+        # Solo las que son `##` de primer nivel, y en el orden del fichero: el
+        # orden es la secuencia en la que se rellena.
+        privadas = [s for s in privada.secciones]
+    except Exception as exc:  # noqa: BLE001 — sin plantilla, se dice y se sigue
+        return {
+            "secciones": {k: list(v) for k, v in fichas_mod.SECCIONES_POR_TIPO.items()},
+            "tipos": list(fichas_mod.TIPOS),
+            "privada": [],
+            "aviso": f"no pude leer la plantilla de la ficha privada: {exc}",
+        }
+    return {
+        "secciones": {k: list(v) for k, v in fichas_mod.SECCIONES_POR_TIPO.items()},
+        "tipos": list(fichas_mod.TIPOS),
+        "privada": privadas,
+    }
+
+
+@app.get("/fichas/{alias}/privada")
+async def leer_ficha_privada(alias: str,
+                             _auth: None = Depends(exigir_token)) -> dict:
+    """La ficha comercial: quién es el cliente y a qué se te compromete.
+
+    Pide token aunque no devuelva secreto: son datos de un tercero, y la regla de
+    las lecturas abiertas es «abierto si no sale nada tuyo». Un nombre, un
+    teléfono y un banco son tuyos aunque no parezcan.
+    """
+    from . import fichas as fichas_mod
+    from .projects import PROJECTS
+
+    if alias not in PROJECTS:
+        raise HTTPException(status_code=404, detail=f"'{alias}' no es un proyecto registrado")
+    path = fichas_mod.privada_path(alias)
+    try:
+        texto = path.read_text(encoding="utf-8")
+    except OSError:
+        texto = ""
+    # Sin fichero todavía se devuelve la **plantilla parseada**, no un mapa
+    # vacío. Es lo que permite que el formulario del móvil se abra justo después
+    # del alta, que es cuando hace falta: con un `{}` la app no tendría ni las
+    # preguntas que hacer. `existe: false` sigue diciendo la verdad sobre el
+    # disco, y es lo que la app usa para no fingir que hay datos escritos.
+    parseada = fichas_mod.parse(alias, texto or fichas_mod.plantilla_privada())
+    return {
+        "alias": alias,
+        "texto": texto,
+        "existe": path.exists(),
+        "path": str(path),
+        "plantilla": str(fichas_mod.ruta_plantilla_privada()),
+        # Igual que en la pública: el mapa ya parseado, para prellenar el
+        # formulario. Y `escritas`, porque en la privada no hay puerta y la app
+        # no puede deducirlo de `existe` —una plantilla recién creada existe y
+        # no tiene nada escrito—.
+        "secciones": dict(parseada.secciones),
+        "escritas": [s for s, c in parseada.secciones.items()
+                     if fichas_mod._escrito(c)],
+    }
+
+
+@app.post("/fichas/{alias}/privada")
+async def escribir_ficha_privada(alias: str, body: FichaIn,
+                                _auth: None = Depends(exigir_token)) -> dict:
+    """Guarda la ficha comercial, sin pasar por el modelo.
+
+    Misma decisión que `POST /fichas/{alias}`, y por el mismo motivo: la
+    persona escribe el precio y la fecha en el móvil y lo manda tal cual. Un 7B
+    al que se le pide copiar ese texto se come los `---` y deja la ficha rota.
+
+    ## Lo que NO se comprueba aquí
+    Que esté completa. No hay puerta sobre la ficha privada a propósito: el
+    modelo de cobro no tiene forma canónica —precio cerrado, por hitos, por
+    horas, a partes, o nada— y exigir un esquema fijo obligaría al usuario a
+    rellenar campos que en su encargo no existen. Lo que Aegis no sepa, lo
+    preguntará.
+    """
+    from . import fichas as fichas_mod
+    from .mcp_ops import _no_secrets, _write_guarded
+    from .projects import PROJECTS
+
+    if alias not in PROJECTS:
+        raise HTTPException(status_code=404, detail=f"'{alias}' no es un proyecto registrado")
+    if len(body.contenido) > PRIVADA_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"la ficha privada admite hasta {PRIVADA_MAX} caracteres "
+                   f"(van {len(body.contenido)})")
+
+    # La ruta sale de `privada_path(alias)`, que **deriva** el nombre del alias
+    # y no lo recibe. `_safe_resolve` se usaba aquí antes, pero resuelve contra
+    # la raíz del repo y no contra `PRIVADAS_DIR`: en los tests escribía en el
+    # directorio real, y en producción habría ignorado cualquier cambio de
+    # esa ubicación. Aquí la ruta y la que lee `context_for` son la misma, que
+    # es lo que hace falta para que lo que escribas llegue al prompt.
+    if not _ALIAS_PRIVADO.match(alias):
+        raise HTTPException(status_code=400, detail=f"alias inválido: {alias!r}")
+    target = fichas_mod.privada_path(alias)
+    if target.parent.resolve() != fichas_mod.PRIVADAS_DIR.resolve():
+        # Cinturón y tirantes: aunque el patrón cuaje, el resultado tiene que
+        # seguir dentro del directorio de las fichas privadas.
+        raise HTTPException(status_code=400,
+                            detail="la ruta derivada se sale del directorio privado")
+
+    try:
+        _no_secrets(body.contenido)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"contenido denegado: {exc}") from exc
+    target.parent.mkdir(parents=True, exist_ok=True)
+    before = target.read_text() if target.exists() else None
+    ok, mensaje = _write_guarded(target, body.contenido, before)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"escritura RECHAZADA: {mensaje}")
+    return {"alias": alias, "escrito": True, "path": str(target)}
+
+
 @app.get("/fichas/{alias}")
 async def leer_ficha(alias: str,
                   _auth: None = Depends(exigir_token)) -> dict:
@@ -341,6 +444,15 @@ async def leer_ficha(alias: str,
         "kind": ficha.kind,
         "estado": "completa" if ficha.completa else ("incompleta" if ficha.existe else "sin_ficha"),
         "faltan": list(ficha.faltan()),
+        # El mapa de secciones ya parseado, para que el formulario del móvil
+        # pueda **prellenar** los campos. Sin esto habría que parsear markdown
+        # en Dart, y `fichas._escrito` tiene reglas que no son triviales:
+        # comentarios multilínea, `###` que no rellena el `##` que lo contiene,
+        # y marcadores de «pendiente». Duplicarlas en Dart es la forma
+        # fiable de que las dos copias acaben diciendo cosas distintas —y que
+        # la puerta diga «incompleta» sobre una ficha que sí lo está.
+        "secciones": dict(ficha.secciones),
+        "escritas": [s for s, c in ficha.secciones.items() if fichas_mod._escrito(c)],
     }
 
 
@@ -576,14 +688,16 @@ async def origen() -> dict:
     return {"ultimo": _ULTIMO_ORIGEN, "ahora": time.time()}
 
 
-def _hubo_llamada_de(origen: str, desde: float) -> bool:
-    """¿El bridge recibió una llamada marcada como de este origen desde `desde`?
-
-    Lo usa el humo del emulador: instalar y arrancar no prueba nada si la app no
-    habla con el bridge. Y no vale con mirar el access log, porque ahí el
-    emulador y el teléfono son el mismo `127.0.0.1`.
-    """
-    return _ULTIMO_ORIGEN.get(origen, 0.0) >= desde
+# `_hubo_llamada_de` se borro de aqui en la Fase 1. Estaba sin un solo llamador y
+# con una copia **viva** en `deploy.py:134`, que hace lo mismo consultando `/origen`
+# por HTTP en vez de leyendo `_ULTIMO_ORIGEN` en memoria (el motivo esta en su
+# docstring: el MCP corre como proceso aparte).
+#
+# Lo que mas caro sale no es la duplicacion, es la **docstring que mentia**: la de
+# aqui decia "lo usa el humo del emulador", y el humo usaba la de `deploy.py`. Un
+# nombre en dos ficheros con dos cuerpos es un bug esperando —el proximo que lea
+# uno y lo toque creera que toca el otro— y su docstring desde el otro lado
+# garantiza que no se note hasta que las dos cosas den resultados distintos.
 
 
 @app.get("/proyectos")
@@ -623,6 +737,91 @@ async def proyectos() -> dict:
     return {"proyectos": [p.model_dump() for p in out]}
 
 
+class ProyectoAltaIn(BaseModel):
+    """Lo mínimo para dar de alta un proyecto desde el móvil.
+
+    El campo `verificar` es texto a propósito y no dos listas: el verificador
+    del registro es una lista de comandos, pero en un proyecto recién abierto lo
+    primero es una **nota** de cómo se comprueba, y forcing formato JSON en el
+    primer alta de un encargo es una puerta que se recuerda como molesta.
+    `alta._verificar_de` distingue las dos formas por el `{` inicial.
+    """
+    alias: str = Field(min_length=1, max_length=49)
+    area: str = Field(min_length=1, max_length=32)
+    kind: str = Field(min_length=1, max_length=16)
+    nombre: str = Field(default="", max_length=200)
+    alcance: str = Field(default="", max_length=4_000)
+    verificar: str = Field(default="", max_length=4_000)
+    db: str = Field(default="", max_length=64)
+    carpeta: str = Field(default="", max_length=64)
+    ya_existe: bool = False
+
+
+class AltaOut(BaseModel):
+    """Lo que devuelve el alta: qué se creó y qué queda pendiente.
+
+    `faltan` viene de la puerta, no de la plantilla. Un alta nunca deja la ficha
+    completa —el usuario tiene que escribir lo que sabe—, y decir eso con los
+    nombres exactos de las secciones es lo que permite al móvil pintar «te faltan
+    estas tres» en vez de «se creó».
+    """
+    alias: str
+    tipo: str = ""
+    estado: str = ""
+    faltan: list[str] = []
+    mensaje: str = ""
+
+
+@app.post("/proyectos", response_model=AltaOut)
+async def proyecto_alta(body: ProyectoAltaIn,
+                        _auth: None = Depends(exigir_token)) -> AltaOut:
+    """Da de alta un proyecto: carpeta, registro, ficha pública y ficha privada.
+
+    ## Por qué hace falta esto
+    `project_create` ya existía como tool del agente, pero solo se llega desde un
+    run de autopilot, y ese camino obliga a pasar por el modelo para escribir un
+    alta que es enteramente determinista: una carpeta, un JSON y dos ficheros de
+    texto. El alta es de la persona, no del agente, y por eso va directa.
+
+    ## Por qué pide token
+    Registra un proyecto, y con eso Aegis puede escribir en un directorio nuevo
+    del workspace. Es la misma clase de acción que `POST /autonomy/{alias}`,
+    que también pide token.
+
+    Lo que **no** hace es dar permiso de escritura: eso sigue siendo
+    `POST /autonomy/{alias}`, y sigue exigiendo verificador declarado.
+    """
+    from .alta import AltaInvalida, alta
+
+    try:
+        mensaje = alta(
+            alias=body.alias,
+            area=body.area,
+            kind=body.kind,
+            nombre=body.nombre.strip(),
+            alcance=body.alcance.strip(),
+            verificar=body.verificar.strip(),
+            db=body.db.strip(),
+            carpeta=body.carpeta.strip(),
+            ya_existe=body.ya_existe,
+        )
+    except AltaInvalida as exc:
+        # 422 lo convierte el propio FastAPI, pero el motivo de `AltaInvalida`
+        # está escrito para una persona: es más útil que un error de validación
+        # genérico.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from .fichas import secciones_que_faltan
+    tipo, legible, faltan = secciones_que_faltan(body.alias)
+    return AltaOut(
+        alias=body.alias,
+        tipo=tipo,
+        estado=legible,
+        faltan=list(faltan),
+        mensaje=mensaje,
+    )
+
+
 def cfg_note_kind(alias: str) -> str:
     """Tipo declarado en `registro/` para los que aún no tienen ficha."""
     import json as _json
@@ -639,28 +838,18 @@ def PROJECTS_DATOS() -> set[str]:
     return set(_DATOS)
 
 
-# -- tareas -------------------------------------------------------------------
-@app.post("/tasks", response_model=TaskOut)
-async def create_task(task: TaskIn,
-                    _auth: None = Depends(exigir_token)) -> TaskOut:
-    return await _submit_task(task.agent, task.prompt, task.instructions, task.project)
-
-
-@app.post("/tasks/{run_id}/approval")
-async def approve(run_id: str, body: ApprovalIn,
-                _auth: None = Depends(exigir_token)) -> dict:
-    return await hermes.approve(run_id, body.decision, body.comment)
-
-
-@app.post("/tasks/{run_id}/steer")
-async def steer(run_id: str, body: SteerIn,
-              _auth: None = Depends(exigir_token)) -> dict:
-    return await hermes.steer(run_id, body.text)
-
-
-@app.post("/tasks/{run_id}/stop")
-async def stop(run_id: str, _auth: None = Depends(exigir_token)) -> dict:
-    return await hermes.stop(run_id)
+# -- por dónde se lanza un run -------------------------------------------------
+#
+# Aquí vivían cuatro rutas `/tasks*` que creaban y gobernaban runs en **Hermes**
+# (`create_run`, `approve`, `steer`, `stop` + el lector SSE de `relay.py`).
+# Se quitaron en la Fase 1: desde que el autopilot es el único motor de tools
+# (`docs/motores.md` §6, "dos motores con tools son dos sitios donde puede vivir
+# un guardarraíl"), nada las llamaba — ni la app, ni `bin/lab/medir-hermes.py`
+# — y los 84 `run_*.jsonl` del histórico pararon el 2026-10-03.
+#
+# Lo que las sustituya ya existe y está probado: `POST /autopilot` y
+# `/autopilot/start`, con `POST /autopilot/{run_id}/steer` y `/stop` para el
+# control del run en marcha. Mismo poder, un solo camino.
 
 
 class AutopilotIn(BaseModel):
@@ -709,6 +898,26 @@ class AutopilotOut(BaseModel):
     # que mide si el bucle funciona.
     fin: str = "max_steps"
 
+    # -- Veredicto (app/veredicto.py) ------------------------------------------
+    #
+    #: ## Por qué hay que declararlos aquí y no solo en el dict
+    #: Este es un `response_model`, y Pydantic **descarta** lo que no está
+    #: declarado. El envoltorio `run_autopilot` añadía `estado`, `completado`,
+    #: `resumen` y `duracion_s` al dict, y el endpoint se los comía en silencio:
+    #: en proceso el veredicto estaba, por HTTP no. El bug serafted durante dos
+    #: sesiones porque el test que lo habría visto (`test_autopilot.py`) llama
+    #: a `run_autopilot` **directamente**, saltándose el endpoint.
+    #:
+    #: La lección no es «declara los campos»: es que **la ruta serializa, y el
+    #: test no pasa por ella**. Un contrato de API necesita un test que llame a la
+    #: API, no solo a la función de debajo.
+    estado: str = "incompleto"
+    completado: bool = False
+    resumen: str = ""
+    duracion_s: float = 0.0
+    tools_ok: list[str] = []
+    tools_fallidas: list[str] = []
+
 
 class AutopilotStarted(BaseModel):
     """Un run de autopilot lanzado en segundo plano."""
@@ -725,6 +934,13 @@ class AutopilotStatus(BaseModel):
     answer: Optional[str] = None
     fin: Optional[str] = None
     error: Optional[str] = None
+    #: Los mismos campos del veredicto, por la misma razón: `/autopilot/{id}` es
+    #: lo que el móvil consulta mientras corre, y si el veredicto no viaja por
+    #: aquí el cliente ve un run terminado sin poder decir si terminó.
+    estado: str = ""
+    completado: bool = False
+    resumen: str = ""
+    duracion_s: float = 0.0
 
 
 #: Buffer **en vivo** de los runs de autopilot. Con tope: un móvil que nunca
@@ -996,7 +1212,15 @@ async def autopilot_start(body: AutopilotIn,
             run = _AUTOPILOT_RUNS.setdefault(run_id, {"run_id": run_id})
             run.update(status="completed", steps=result["steps"],
                        answer=result["answer"], fin=result["fin"],
-                       trace=result["trace"])
+                       trace=result["trace"],
+                       # El veredicto va al buffer también. Sin esto el móvil
+                       # ve el run terminado por `/autopilot/{id}` y no puede
+                       # decir si terminó — que es justo lo que el veredicto
+                       # vino a arreglar, y solo funcionaría por HTTP.
+                       estado=result.get("estado") or "",
+                       completado=bool(result.get("completado")),
+                       resumen=result.get("resumen") or "",
+                       duracion_s=float(result.get("duracion_s") or 0.0))
         except asyncio.CancelledError:
             # Parar la tarea de asyncio no es la vía de parada —el bucle corta
             # entre pasos—, pero si ocurre (apagado del bridge) el run no puede
@@ -1128,6 +1352,10 @@ async def autopilot_status(run_id: str,
         answer=run.get("answer"),
         fin=run.get("fin"),
         error=run.get("error"),
+        estado=run.get("estado") or "",
+        completado=bool(run.get("completado")),
+        resumen=run.get("resumen") or "",
+        duracion_s=float(run.get("duracion_s") or 0.0),
     )
 
 
@@ -1145,13 +1373,28 @@ def _autopilot_desde_disco(run_id: str) -> AutopilotStatus:
     # `fin: null`: se sabía que acabó pero no por qué, que es justo el dato que
     # hace falta para entender la traza.
     fin = None
+    estado = ""
+    resumen = ""
+    duracion = 0.0
     for ev in d.get("eventos") or []:
         nombre = ev.get("event") or ""
         payload = ev.get("payload") or {}
         if nombre == "run.failed.detail":
             fin = "fallo"
-        elif nombre.startswith("task.") and isinstance(payload, dict) and payload.get("fin"):
-            fin = str(payload["fin"])
+        elif nombre.startswith("task.") and isinstance(payload, dict):
+            if payload.get("fin"):
+                fin = str(payload["fin"])
+            # El veredicto viaja en el terminal del JSONL. Se **lee**, no se
+            # recalcula: recalcularlo aquí daría un número distinto del que tuvo
+            # el run, porque el `answer` del JSONL va recortado a 1.000 chars.
+            if payload.get("estado"):
+                estado = str(payload["estado"])
+                resumen = str(payload.get("resumen") or "")
+        elif nombre == "run_duration_s" and ev.get("s"):
+            try:
+                duracion = float(ev.get("s") or 0.0)
+            except (TypeError, ValueError):
+                pass
     return AutopilotStatus(
         run_id=run_id,
         status=info.get("estado") or "completed",
@@ -1159,69 +1402,12 @@ def _autopilot_desde_disco(run_id: str) -> AutopilotStatus:
         trace=[],
         fin=fin,
         error=info.get("error") or None,
+        estado=estado,
+        completado=estado == "completado",
+        resumen=resumen,
+        duracion_s=duracion,
     )
 
-
-# -- canal bidireccional (WebSocket) -------------------------------------------
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket, token: str = Query(default="")) -> None:
-    """Canal bidireccional. **Autenticado antes de aceptar.**
-
-    ## Por qué el token va por query y no en cabecera
-    La API de WebSocket del navegador **no puede poner cabeceras** en el
-    handshake. Un `WebSocketChannel` de Dart tampoco las expone. El handshake
-    solo lleva la URL, así que el token viaja en la query — con lo que eso
-    significa: queda en el log de acceso y en el historial. Es el precio de poder
-    cerrar la puerta, y es un precio que se puede pagar. Lo que no se puede es
-    dejar la puerta abierta: este socket es el que empuja la traza de los runs a
-    la pantalla, y sin comprobar, cualquiera en la tailnet se suscribe a la
-    ejecución de Aegis.
-    """
-    await _ws_exigir_token(ws, token)
-    await ws.accept()
-    log.info("cliente WS conectado")
-    try:
-        while True:
-            raw = await ws.receive_text()
-            msg = WsMessageIn.model_validate_json(raw)
-            if msg.type == "subscribe":
-                if not msg.run_id:
-                    await ws.send_text(EventOut(type="error", task_id="", agent="",
-                                                at="", payload={"error": "run_id requerido"}).model_dump_json())
-                    continue
-                agent = (relay.status(msg.run_id) or {}).get("agent", "worker")
-                await relay.subscribe(ws, msg.run_id, agent)
-                # estado actual inmediato
-                await ws.send_text(EventOut(type="status.changed", task_id=msg.run_id, agent=agent,
-                                            at="", payload={"status": "subscribed"}).model_dump_json())
-            elif msg.type == "create_task":
-                task = msg.task or TaskIn()
-                out = await _submit_task(task.agent, task.prompt, task.instructions, task.project)
-                run_id = out.run_id
-                await relay.subscribe(ws, run_id, task.agent)
-                await ws.send_text(EventOut(type="task.created", task_id=run_id, agent=task.agent,
-                                            at="", payload=out.model_dump()).model_dump_json())
-            elif msg.type == "approve" and msg.run_id and msg.decision:
-                result = await hermes.approve(msg.run_id, msg.decision, msg.text)
-                await ws.send_text(EventOut(type="approval.resolved", task_id=msg.run_id,
-                                            agent=(relay.status(msg.run_id) or {}).get("agent", ""),
-                                            at="", payload=result).model_dump_json())
-            elif msg.type == "steer" and msg.run_id and msg.text:
-                result = await hermes.steer(msg.run_id, msg.text)
-                await ws.send_text(EventOut(type="steer.sent", task_id=msg.run_id,
-                                            agent=(relay.status(msg.run_id) or {}).get("agent", ""),
-                                            at="", payload=result).model_dump_json())
-            elif msg.type == "stop" and msg.run_id:
-                result = await hermes.stop(msg.run_id)
-                await ws.send_text(EventOut(type="task.stopped", task_id=msg.run_id,
-                                            agent=(relay.status(msg.run_id) or {}).get("agent", ""),
-                                            at="", payload=result).model_dump_json())
-    except WebSocketDisconnect:
-        log.info("cliente WS desconectado")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("ws error: %s", exc)
-    finally:
-        await relay.unsubscribe(ws)
 
 # -- Lo que Aegis sabe y lo que recuerda ---------------------------------------
 #
@@ -1522,6 +1708,103 @@ def leer_run(run_id: str, max_eventos: int = 200) -> dict:
     return {"run": resumen,
             "eventos": eventos,
             "texto": "".join(texto)[-8000:]}
+
+
+# -- El camino rápido: texto que no necesita modelo ----------------------------
+#
+#
+# ## Por qué esto existe, con el número
+# Un run del agente tarda **~58 segundos** para «lista los proyectos». El motivo
+# no es el modelo: es que **todo** pasa por él, y un run paga 37.057 chars de
+# prompt antes del primer token. Pero «qué hora es» son **0,022 milisegundos** y
+# «pon una alarma» es una fila en SQLite.
+#
+# ## Por qué es un endpoint y no un cambio dentro de /autopilot
+# Porque **quien habla, escribe**. `/voces` es el camino rápido, y quien no
+# reconoce cae al modelo por su cuenta. Los dos hacen lo mismo; uno tarda
+# milisegundos y el otro, minutos. `/autopilot` sigue existiendo intacto, y una
+# petición de voz que no casa con ningún intent llega exactamente igual que
+# siempre.
+#
+# ## Y por qué el móvil también va aquí
+# Porque el objetivo no es «voz»: es «que Aegis conteste en menos de un
+# segundo», y la voz es el caso que lo expone. Escribir «pon una alarma a las 7»
+# también es instantáneo, y va por la misma puerta.
+
+class VocesIn(BaseModel):
+    texto: str = Field(min_length=1, max_length=2_000)
+    #: De dónde viene: `movil`, `portatil`, `teclado`. Va en la traza y nada más.
+    #: No decide nada: es lo que te deja ver después quién preguntó qué.
+    nodo: str = Field(default="teclado", max_length=32)
+    proyecto: str = Field(default="", max_length=64)
+
+
+@app.post("/voces")
+async def voces(body: VocesIn, _auth: None = Depends(exigir_token)) -> dict:
+    """El camino rápido. T0 si puede, T1 si no.
+
+    ## El orden de las tres líneas es el invariante
+    **preparar → decide → aplicar.** Es la puerta entre las dos primeras y la
+    tercera, y si se invirtiera el sistema preguntaría después de escribir, que
+    es exactamente lo que `AGENTS.md` llama «un informe que llega tarde».
+
+    `intents.preparar()` **no escribe** (calcular y aplicar están separados a
+    propósito), así que aquí el permiso se consulta antes de que exista efecto
+    ninguno. Es lo que la Fase 1 convierte en puerta.
+
+    ## Y qué devuelve cuando abstain
+    `clase: ""` con un 200. **No** un error: abstener es la respuesta correcta
+    para casi todo lo que alguien dice, y un 4xx haría que el cliente dijera
+    «error» cada vez que no reconoce una frase.
+    """
+    from . import intents as intents_mod
+
+    plan = intents_mod.preparar(body.texto)
+    if plan is None:
+        return {"clase": "", "respuesta": "", "sin_modelo": True,
+                "cae_a": "T1", "texto": body.texto}
+
+    if plan.escribe:
+        # Solo lo que escribe necesita veredicto. Una lectura no pide permiso
+        # para leer, pero sí se registra: `sin_modelo` en la traza es lo que
+        # sostiene el presupuesto de T0.
+        # `autonomy_modulo.decide`, no `autonomy.decide`: en este fichero
+        # `autonomy` es la **función** `almacen` (importada con alias), y `decide`
+        # es de módulo. Escribí `autonomy.decide` primero y falló en el primer
+        # test con «function almacen has no attribute decide» — que es la clase
+        # de error que solo aparece cuando alguien ejecuta de verdad.
+        veredicto = autonomy_modulo.decide(
+            tool=plan.tool or "tarea_crear",
+            args=dict(plan.args),
+            run_id=f"voces-{uuid.uuid4().hex[:8]}",
+            paso=0,
+        )
+        if not veredicto.ok:
+            # La puerta dijo que no. No se escribe, y se devuelve el motivo en vez
+            # de caer al modelo: si la petición es «pon una alarma» y eso está
+            # prohibido, mandarla al modelo solo produce otro intento de alarma.
+            return {"clase": "", "respuesta": veredicto.motivo,
+                    "sin_modelo": True, "cae_a": "", "bloqueado": True,
+                    "texto": body.texto, "tool": plan.tool}
+
+    import time as _time
+    t0 = _time.perf_counter()
+    try:
+        texto = intents_mod.aplicar(plan)
+    except Exception as exc:  # noqa: BLE001 — un intent roto no tumba la puerta
+        log.warning("voces %s: %s: %s", plan.intent.nombre, type(exc).__name__, exc)
+        return {"clase": "", "respuesta": "", "cae_a": "T1", "sin_modelo": False,
+                "texto": body.texto, "error": f"{type(exc).__name__}: {exc}"}
+
+    ms = round((_time.perf_counter() - t0) * 1000, 2)
+    log.info("voces %s · %s · %s · %.2f ms", body.nodo, plan.intent.nombre,
+             plan.intent.clase, ms)
+    return {
+        "clase": plan.intent.clase, "respuesta": str(texto),
+        "intent": plan.intent.nombre, "tool": plan.tool,
+        "args": dict(plan.args), "sin_modelo": True, "ms": ms,
+        "cae_a": "", "texto": body.texto,
+    }
 
 
 # -- Tus cosas: notas, tareas y recordatorios ---------------------------------
@@ -2009,9 +2292,15 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
                     "payload": {"tool": paso["tool"], "ok": paso.get("ok"),
                                 "step": paso.get("step")},
                 }, ensure_ascii=False) + "\n")
+            # Antes era `"s": 0.0` **hardcodeado**, con la forma de metric lista
+            # para recibir el numero. Es decir: el hueco estava excavado y
+            # plantado. `docs/motores.md` §1.3 lo senala como el hecho que
+            # bloquea los presupuestos de latencia, y era verdad — un informe de
+            # duraciones sobre estos ficheros decia "todos los runs duraron 0
+            # segundos", que es un numero, y por eso no se nota que es falso.
             fh.write(json.dumps({
                 "at": ahora, "run_id": run_id, "metric": "run_duration_s",
-                "s": 0.0,
+                "s": float(result.get("duracion_s") or 0.0),
             }, ensure_ascii=False) + "\n")
             # El evento terminal tiene que ser uno del vocabulario
             # (`task.done`/`task.failed`/`task.stopped`) y el motivo va en el
@@ -2025,6 +2314,18 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
             # `task.done`, y cualquier informe que contara runs bien terminados
             # contaba también los que se cayeron por el camino.
             fin = result.get("fin") or "sin_tools"
+            # Si el veredicto viene, se respeta; si no, se calcula. La
+            # diferencia importa: `run_autopilot` ya lo calculó con la traza
+            # entera y recalcularlo aquí daría un número distinto (la traza
+            # escrita va recortada). Pero un `result` sin veredicto —un test,
+            # o un llamador que no pasa por el bucle— no debe grabarse como
+            # `incompleto` por un campo que no ha llegado. Ausente no es
+            # "fracaso": es "que lo mire quien lo lee".
+            estado = result.get("estado")
+            if not estado:
+                from .veredicto import clasificar as _clasificar
+                estado = _clasificar(fin, result.get("trace") or [],
+                                     result.get("answer") or "")["estado"]
             if fin in ("failed", "modelo_caido", "reventado", "verificador_rojo",
                        "llamada_repetida"):
                 terminal = "task.failed"
@@ -2032,6 +2333,20 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
                 terminal = "task.stopped"
             else:
                 terminal = "task.done"
+            # El **veredicto** va en el terminal, y no se recalcula aquí: lo
+            # calculó `autopilot.run_autopilot` con la traza entera, y
+            # recalcularlo sobre lo que se acaba de escribir (tools recortadas,
+            # `answer` a 1.000 chars) daría un número distinto al del run real.
+            #
+            # Va también en el `event`, porque el que cuenta runs terminados
+            # mira ahí y no va a parsear el payload: `task.done` con
+            # `estado: incompleto` es un run que se paró sin responder, y leerlo
+            # como "terminó bien" era exactamente el error que A-091
+            # documenta en el otro sentido.
+            if estado == "completado":
+                terminal = "task.done"
+            elif estado in ("incompleto", "roto", "rechazado"):
+                terminal = "task.failed"
             fh.write(json.dumps({
                 "at": ahora, "run_id": run_id, "event": terminal,
                 "agent": "autopilot", "at_run": "",
@@ -2039,6 +2354,9 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
                 # `answer`: un run que falló tiene que poder localisation con un
                 # `jq '.payload.error'` y no leyendo prosa.
                 "payload": {"steps": result.get("steps", 0), "fin": fin,
+                            "estado": estado,
+                            "completado": bool(result.get("completado")),
+                            "resumen": (result.get("resumen") or "")[:200],
                             "error": (result.get("error") or "")[:500],
                             "answer": (result.get("answer") or "")[:1000]},
             }, ensure_ascii=False) + "\n")

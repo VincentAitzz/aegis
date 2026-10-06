@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -529,6 +530,58 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         estado_base: Optional[dict[str, Any]] = None,
                         parar: Optional[asyncio.Event] = None,
                         extra: Optional[asyncio.Queue] = None) -> dict[str, Any]:
+    """Ejecuta la tarea y **le pone el veredicto** antes de devolverla.
+
+    El bucle vive en `_bucle`. Este envoltorio existe para que el veredicto se
+    calcule en **un solo sitio**: `_bucle` tiene seis `return` distintos (parado,
+    modelo caído, esperando OK, autonomía en tope, puerta roja, y el cierre
+    normal), y poner el cálculo en cada uno eran seis copias de la misma regla —
+    que es justo como se desincronizan entre sí y nadie lo nota hasta que dos
+    números no cuadran.
+
+    ## Por qué el veredicto va aquí y no en el JSONL
+    El JSONL lo escribe `main._escribir_jsonl_de_autopilot`, con la traza ya
+    recortada a 1.000 chars. Un veredicto calculado sobre la traza recortada
+    contaría tools que se perdieron por el recorte. Este lo calcula con la traza
+    entera, y luego `main` lo copia al JSONL ya como dato.
+
+    ## Por qué la firma se repite
+    Podría ser `**kwargs`. Se escribe entera para que quien lea la llamada vea
+    qué se puede pasar, y porque dos tests comprueban que `parar` y `extra` son
+    parámetros de este nombre y no un `**kwargs` que los esconde.
+    """
+    from .veredicto import clasificar
+    t0 = time.monotonic()
+    resultado = await _bucle(
+        prompt, ollama_url=ollama_url, model=model, max_steps=max_steps,
+        instructions=instructions, project=project, memory=memory, gate=gate,
+        on_step=on_step, run_id=run_id, autonomy=autonomy, token=token,
+        enfoque=enfoque, estado_base=estado_base, parar=parar, extra=extra)
+    veredicto = clasificar(
+        resultado.get("fin", ""), resultado.get("trace") or [],
+        resultado.get("answer", ""))
+    # La duración va **en el veredicto**, no suelta: son el mismo dato sobre si
+    # este run dio lo que pedía, y separarlos invita a que uno se mida y el otro
+    # no. Además cierra el agujero de `run_duration_s: 0.0` hardcodeado que
+    # `docs/motores.md` §1.3 señalaba: sin duración real no hay presupuesto de
+    # latencia, y sin presupuesto no hay clase de latencia.
+    veredicto["duracion_s"] = round(time.monotonic() - t0, 3)
+    resultado.update(veredicto)
+    return resultado
+
+
+async def _bucle(prompt: str, *, ollama_url: str, model: str,
+                 max_steps: int = MAX_STEPS, instructions: str = "",
+                 project: str = "", memory: str = "",
+                 gate: Any = None,
+                 on_step: Any = None,
+                 run_id: str = "run_sin_id",
+                 autonomy: Any = None,
+                 token: str = "",
+                 enfoque: str = "",
+                 estado_base: Optional[dict[str, Any]] = None,
+                 parar: Optional[asyncio.Event] = None,
+                 extra: Optional[asyncio.Queue] = None) -> dict[str, Any]:
     """Ejecuta la tarea en un bucle modelo→tool, y devuelve respuesta y traza.
 
     `gate` es el corrector de una sola llamada por paso: `await gate(step, tool,
@@ -624,6 +677,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
             if steering:
                 log.info("autopilot %s: %d instrucción(es) del usuario aplicadas "
                          "antes del paso %d", run_id, steering, step)
+            t_paso = time.monotonic()
             try:
                 r = await client.post(
                     f"{ollama_url.rstrip('/')}/v1/chat/completions",
@@ -640,7 +694,8 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                 log.warning("autopilot %s: el modelo no respondió en el paso %d: %s",
                             run_id, step, detalle)
                 trace.append({"step": step, "action": "modelo_caido",
-                              "text": detalle})
+                              "text": detalle,
+                              "ms": round((time.monotonic() - t_paso) * 1000)})
                 if on_step is not None:
                     await on_step(step, trace[-1])
                 return {
@@ -828,6 +883,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         })
                         continue
 
+                t_tool = time.monotonic()
                 try:
                     # La tool corre en un hilo, nunca en el event loop.
                     #
@@ -903,6 +959,14 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                                 "fin": "llamada_repetida" if veredicto.get("repetida")
                                         else "verificador_rojo",
                             }, estado_base, trace)
+                # La duracion de la tool va en la traza. Antes no se media nada
+                # y `run_duration_s` valia 0.0 hardcodeado, asi que no habia
+                # forma de saber cuanto costaba un paso: sin ese numero no hay
+                # presupuesto de latencia posible, ni forma de justificar el
+                # reparto T0/T1/T2 de `docs/motores.md` con datos en vez de con
+                # operarios. Se mide aqui, junto a la llamada, porque es el unico
+                # sitio donde se sabe cuando empezó y cuando termino.
+                entry["ms"] = round((time.monotonic() - t_tool) * 1000)
                 trace.append(entry)
                 # El resultado vuelve **con su rol**, no como un mensaje de
                 # usuario. Con `role: user` el modelo lo lee como una peticion

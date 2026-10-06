@@ -1,74 +1,26 @@
-"""Esquemas Pydantic del API del bridge (contrato REST + WS hacia la app)."""
+"""Esquemas Pydantic del API del bridge.
 
-from typing import Any, Literal, Optional
+## Por qué este módulo ya no tiene los esquemas del API
+Hasta la Fase 1 era el contrato del WebSocket: `WsMessageIn`, `EventOut`,
+`TaskIn`, `TaskOut`, `TaskStatus`, `ApprovalIn`, `NotaIn`, `TareaIn` vivían aquí.
+El WebSocket se fue en la Fase 1 (era el segundo motor de tools; ver
+`docs/motores.md` §6 y el commit `2f1fccb`), y con él sus esquemas. Un esquema
+sin ruta detrás no es un contrato, es una pista.
 
-from pydantic import BaseModel, Field, field_validator
+Y `NotaIn`/`TareaIn` estaban **duplicados**: aquí y en `main.py`. Dos
+definiciones del mismo cuerpo de petición es una divergible esperando a
+su fecha: la app manda un campo que una acepta y la otra no, y el 422 sale en
+el móvil con un mensaje que no explica por qué.
 
-#: Roles que el bridge acepta. Aegis tiene UN agente. `orchestrator` se acepta
-#: solo por compatibilidad con apps viejas: antes ambos valores terminaban en el
-#: mismo modelo (Hermes caía a su default), así que era configuracion muerta
-#: que solo sugeria un equipo que no existia.
-_LEGACY_AGENTS = {"orchestrator"}
-_CANONICAL_AGENT = "worker"
-_KNOWN_AGENTS = {"worker"} | _LEGACY_AGENTS
+La regla que queda, y que `main.py` cumple: **el esquema vive junto a la ruta
+que lo usa**. Cuando un esquema lo usan dos rutas, se sube aquí. Hasta ahora
+ninguno lo cumple las dos, así que aquí no hay nada.
 
+`SteerIn` también tiene su sitio natural en este fichero (lo usan
+`POST /autopilot/{run_id}/steer`), pero se deja en `main.py` de momento para no
+mover más de lo necesario en esta fase.
+"""
 
-class TaskIn(BaseModel):
-    """Petición de lanzar una tarea en el agente de Aegis."""
-    agent: Literal["worker", "orchestrator"] = _CANONICAL_AGENT
-    prompt: str = Field(min_length=1, max_length=1_000_000)
-    instructions: Optional[str] = None
-    title: Optional[str] = None
-    #: Alias del proyecto del workspace. Carga su ficha y su memoria; sin esto
-    #: el agente razona sin saber de qué se trata, que es justo lo que el
-    #: método prohíbe. Ver `app/fichas.py`.
-    project: Optional[str] = None
-
-    @field_validator("agent", mode="before")
-    @classmethod
-    def _un_unico_agente(cls, value: Any) -> Any:
-        if isinstance(value, str) and value in _LEGACY_AGENTS:
-            return _CANONICAL_AGENT
-        return value
-
-
-class TaskOut(BaseModel):
-    """Respuesta de creación de tarea. run_id = id del run en Hermes."""
-    run_id: str
-    agent: str
-    status: str
-    session_id: Optional[str] = None
-
-
-class TaskStatus(BaseModel):
-    run_id: str
-    status: str
-    agent: str
-    final_text: Optional[str] = None
-    pending_approval: Optional[bool] = False
-
-
-class ApprovalIn(BaseModel):
-    decision: Literal["approve", "deny"]
-    comment: Optional[str] = None
-
-
-class SteerIn(BaseModel):
-    text: str = Field(min_length=1)
-
-
-class WsMessageIn(BaseModel):
-    type: Literal["subscribe", "create_task", "approve", "steer", "stop"]
-    run_id: Optional[str] = None
-    task: Optional[TaskIn] = None
-    decision: Optional[str] = None
-    text: Optional[str] = None
-
-
-class EventOut(BaseModel):
-    """Evento normalizado empujado al WebSocket de la app."""
-    type: str
-    task_id: str
-    agent: str
-    at: str
-    payload: dict[str, Any] = Field(default_factory=dict)
+# Este módulo se mantiene por contrato (los imports lo referencian y
+# `check-imports.py` lo verifica), pero no expone ningún esquema.
+__all__: list[str] = []

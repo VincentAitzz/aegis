@@ -359,21 +359,67 @@ class TestLoQueHayEnDisco(unittest.TestCase):
                 self.assertIn(tool, reales,
                               f"'{nombre}' cierra '{tool}', que no es una tool")
 
-    def test_arquitectura_es_el_unico_enfoque(self) -> None:
-        """`idea` se quitó a propósito, y hay que decir por qué.
+    def test_ningun_enfoque_repite_a_metodo(self) -> None:
+        """Un enfoque no puede **preguntar** lo que `metodo.md` ya pregunta.
 
-        Aterrizar una idea hasta poder escribir su ficha ya lo hace `metodo.md`,
-        en todos los runs. Tenerlo además como enfoque era pagar dos veces lo
-        mismo, y una técnica de prompt que se aplica siempre no es un enfoque: es
-        texto.
+        `idea` se quitó a propósito: aterrizar una idea hasta poder escribir su
+        ficha ya lo hace `metodo.md`, en **todos** los runs, así que tenerlo
+        además como enfoque era pagar dos veces. Y aquí pagar dos veces cuesta
+        concreto: el prompt se paga **en cada paso de cada run** (37k chars
+        medidos), así que un bloque redundante se paga docenas de veces por run.
+
+        El test pasó de contar enfoques a comprobar el principio, porque el
+        principio es lo que hay que proteger: un recuento solo congela una
+        decisión pasada, y no dice nada del enfoque que venga mañana.
+
+        ## Por qué la comprobación es afirmativa
+        La primera versión hacía `if frase in bloque: assertNotIn(...)`, y eso
+        **pasa en vacío**: si nadie repite nada, no comprueba nada. Un test que
+        no puede fallar es peor que no tener test (A-088). Ahora se afirma que
+        la frase **no** está, siempre.
         """
-        self.assertEqual(enfoques.nombres(), ["arquitectura"])
         from app.method import load_method
-        self.assertIn("Qué problema resuelve", load_method())
+        metodo = load_method().lower()
+        # Se afirma que metodo.md **sí** las tiene. Si algún día se le quitan,
+        # los enfoques dejan de poder apoyarse en él y esto hay que notar.
+        self.assertIn("qué problema resuelve", metodo,
+                      "metodo.md perdio las preguntas que los enfoques no repiten")
+        for nombre in enfoques.nombres():
+            if nombre == "producto":
+                continue      # lo declara explicito en su bloque; testeado aparte
+            bloque = enfoques.bloque(nombre).lower()
+            for frase in ("qué problema resuelve", "cómo se sabrá que funcionó",
+                          "qué alternativas se consideró"):
+                self.assertNotIn(frase, bloque,
+                                 f"el enfoque '{nombre}' repite «{frase}», que "
+                                 "metodo.md ya dice en todos los runs")
 
+    def test_producto_no_repite_las_seis_preguntas(self) -> None:
+        """El caso concreto de `producto`, escrito aparte para que se lea.
 
-if __name__ == "__main__":
-    unittest.main()
+        Las seis preguntas de "antes de construir" viven en `metodo.md`, en todos
+        los runs. Copiarlas en el enfoque es exactamente el `idea` que se borró.
+        """
+        producto = enfoques.bloque("producto").lower()
+        # Se comprueba que NO aparecen como pregunta que el enfoque hace. Nombra
+        # `metodo.md` y dice que no las repite, y eso está permitido: lo que no
+        # vale es volver a contestarlas.
+        for pregunta in ("1. **qué problema resuelve**",
+                         "2. **para qué se usa**",
+                         "3. **quién lo usa**",
+                         "6. **qué queda explícitamente fuera"):
+            self.assertNotIn(pregunta.lower(), producto,
+                             f"producto.md vuelve a preguntar lo que ya pide "
+                             f"metodo.md: {pregunta}")
+        # Y sí: las tres que metodo.md NO pregunta, están.
+        for anadida in ("¿Es un problema tuyo o un problema de la herramienta?",
+                        "¿Cuándo lo dejarías de usar?",
+                        "¿Hay algo más pequeño?"):
+            self.assertIn(anadida.lower(), producto,
+                          f"producto.md dejo de preguntar: {anadida}")
+        from app.method import load_method
+        self.assertIn("Qué problema resuelve", load_method(),
+                      "metodo.md perdio las preguntas: el enfoque las necesita")
 
 
 class TestDerivar(unittest.TestCase):
@@ -470,3 +516,7 @@ class TestTrazaDelEnfoqueDerivado(unittest.TestCase):
         # Sin `propuesto_por`: no lo puso el bridge, lo puso una persona.
         self.assertEqual(entrada, {})
         self.assertEqual(motivo, "")
+
+
+if __name__ == "__main__":
+    unittest.main()

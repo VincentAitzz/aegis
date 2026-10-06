@@ -67,7 +67,17 @@ class TestLasTresNiveles(_Piso):
     """
 
     def test_todas_las_tools_estan_clasificadas(self):
+        """Toda tool —de las dos clases— tiene nivel, y ningún nivel sobra.
+
+        Hay dos clases y por eso hay dos registros: las tools MCP (`LIBRES` /
+        `CON_PERMISO` / `REQUIERE_OK`) y las del camino rápido
+        (`NIVELES_CAMINO_RAPIDO`), que son funciones que el router llama tras
+        pasar por `decide()`. Comprobarlas por separado es lo que permite que
+        el segundo registro exista sin que este test tenga que mentir.
+        """
         from app.autopilot import allowed_tools
+        from app.intents import INTENTS
+
         reales = allowed_tools()
         clasificadas = (autonomy.LIBRES | autonomy.CON_PERMISO
                         | autonomy.REQUIERE_OK)
@@ -75,6 +85,28 @@ class TestLasTresNiveles(_Piso):
                          "tools sin nivel: nunca se sabria si preguntan")
         self.assertEqual(clasificadas - reales, set(),
                          "niveles de tools que ya no existen")
+
+    def test_las_tools_del_camino_rapido_tienen_nivel_y_existen(self) -> None:
+        """Igual que el anterior, para la otra clase.
+
+        Y además: cada tool que **escribe** un intent tiene que estar declarada.
+        Un intent de escritura con nivel por defecto sería `requiere_ok` —que
+        funciona— pero por accidente, no porque alguien lo pensara.
+        """
+        from app.intents import INTENTS
+
+        declaradas = set(autonomy.NIVELES_CAMINO_RAPIDO)
+        # Las tools que los intents declaran, sea cual sea su `escribe`.
+        usadas = {i.tool for i in INTENTS if i.tool}
+        sin_nivel = usadas - declaradas
+        # Las lecturas pueden no declarar nada (heredan `requiere_ok` y no
+        # escriben), pero las que escriben, no.
+        escritos = {i.tool for i in INTENTS if i.escribe and i.tool}
+        self.assertEqual(set(), escritos - declaradas,
+                         f"ints que escriben sin nivel declarado: {escritos - declaradas}")
+        for nombre, nivel in autonomy.NIVELES_CAMINO_RAPIDO.items():
+            self.assertIn(nivel, ("libre", "con_permiso", "requiere_ok"),
+                          f"{nombre} tiene nivel '{nivel}', que no existe")
 
     def test_ningun_nivel_se_solapa(self):
         for a, b, nombre in ((autonomy.LIBRES, autonomy.CON_PERMISO, "libres/con_permiso"),

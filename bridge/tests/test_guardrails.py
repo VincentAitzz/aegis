@@ -79,6 +79,100 @@ class TestSecretScanner(unittest.TestCase):
         self.assertNotIn("Sup3rS3cr3t", str(ctx.exception))
 
 
+class TestElFiltroNoSeComeElCodigo(unittest.TestCase):
+    """El guardarraíl de secretos no puede impedir leer el código de Aegis.
+
+    ## Lo que pasó
+    Los patrones incluían `token\\s*[=:]\\s*\\S+` y `password\\s*[=:]\\s*\\S+`,
+    para cazar una credencial asignada a una variable. En un fichero de texto
+    funciona. En **código** no: `token: str` es una anotación de tipo y
+    `token = ""` es un literal vacío, y los dos son secretos según ese patrón.
+
+    Medido el 2026-10-04: `aegis_read_file` denegaba `app/mcp_ops.py`,
+    `app/main.py`, `app/autopilot.py`, `app/autonomy.py`, `app/deploy.py` y ocho
+    ficheros de `tests/`. Un guardarraíl que no deja al agente abrir el fichero
+    donde vive el guardarraíl no protege: estorba. Y estorbando manda al modelo
+    a otra parte — en el run de ese día, 7 pasos sin escribir nada y una petición
+    de `deploy_smoke` que nadie había pedido—.
+    """
+
+    #: Ficheros que siguen denegados, y está bien: llevan fixtures que **tienen**
+    #: que parecer credenciales, porque son lo que prueba que el filtro salta.
+    #: Se listan uno a uno para que añadir uno nuevo sea una decisión y no un
+    #: olvido.
+    CON_FIXTURES = {
+        "test_guardrails.py": "las URLs de BD, el bearer, el JWT y el AKIA de este test",
+        "test_neon.py": "una connection string de Neon con contraseña real-forma",
+        "test_autopilot.py": "un `token = sk-…` que el parser de tool-calls tiene que ver",
+        "test_fichas.py": "un `API_KEY=sk-live-…` que el veto de escritura tiene que ver",
+    }
+
+    def _ficheros(self) -> list[Path]:
+        raiz = Path(__file__).resolve().parent.parent
+        return sorted(list((raiz / "app").glob("*.py"))
+                      + list((raiz / "tests").glob("*.py"))
+                      + list((raiz / "bin").glob("*.py")))
+
+    def test_el_codigo_del_repositorio_es_legible(self):
+        """El que se rompe de verdad: se aplica al contenido ENTERO.
+
+        Con el patrón viejo, un único `token: str` en cualquier línea de un
+        fichero de 1.500 líneas volvía el fichero entero ilegible. Un test por
+        línea no lo habría visto nunca.
+        """
+        denegados = {}
+        for f in self._ficheros():
+            if f.name in self.CON_FIXTURES:
+                continue      # los tiene otro test, y denies: son fixtures
+            try:
+                _no_secrets(f.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                denegados[f.name] = str(exc)
+        self.assertEqual(
+            {}, denegados,
+            "el escaneo de secretos vuelve a tapar el código: "
+            + repr(denegados))
+
+    def test_los_ficheros_con_fixtures_siguen_denegados(self):
+        """Lo contrario del anterior: para que nadie los 'arregle' quitando el filtro."""
+        for nombre, motivo in self.CON_FIXTURES.items():
+            f = Path(__file__).resolve().parent / nombre
+            with self.assertRaises(ValueError, msg=f"{nombre} debería seguir denegado"):
+                _no_secrets(f.read_text(encoding="utf-8"))
+
+    def test_una_credencial_asignada_sigue_saltando(self):
+        """Lo que el patrón genérico tiene que seguir cazando.
+
+        `nombre = valor` es una forma, no un secreto. Se afinó, no se quitó: si
+        alguien lo borra, la protección de un `.env` o de un YAML se va con él.
+        """
+        for linea in [
+            'password = "Xk39dmQa7ZpRt4"',           # corta: una contraseña real lo es
+            'api_key = "aB3dEfGh1jKlMn0pQrSt"',
+            'secret_key = "Zx91kLmQw84nRtYu"',
+            'access_token = "Qq7wErTy1234UiOpAsDf"',
+            'NEON_API_KEY=napi_5xK2mQ7pR8vT1wY4zA6bC3d',
+            'Authorization: Bearer abc.def.ghi',
+        ]:
+            with self.assertRaises(ValueError, msg=f"pasó limpio: {linea}"):
+                _no_secrets(linea)
+
+    def test_el_codigo_de_python_no_es_una_credencial(self):
+        """Las formas que llenaban un repo de `token` y `password`."""
+        for linea in [
+            "def decide(token: str, api_key: Optional[str] = None) -> None:",
+            "    token = \"\"",
+            "    token = uuid.uuid4().hex[:16]",
+            '    headers = {"X-Aegis-Token": TOKEN}',
+            '    self._c.execute("INSERT INTO aprobaciones(token=?)", (t,))',
+            "    neon_api_key: str = \"\"",
+            "    password: str",
+            "# AEGIS_API_KEY_V3 se rota por nombre versionado",
+            'api_key = "clave-de-prueba"',   # sin dígitos: es una plantilla
+        ]:
+            _no_secrets(linea)  # no debe lanzar
+
+
 class TestDeniedPaths(unittest.TestCase):
     def test_dev_vars_is_off_limits_everywhere(self):
         for alias in ("portafolio", "aegis"):

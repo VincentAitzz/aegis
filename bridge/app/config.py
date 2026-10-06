@@ -29,7 +29,65 @@ class Settings(BaseSettings):
     # Modelo que planifica las tools en /autopilot. qwen2.5:7b es el único local
     # que produce llamadas utilizables (qwen2.5-coder:7b no emite tool_calls).
     autopilot_model: str = "qwen2.5:7b"
-    autopilot_max_steps: int = 6
+    # `autopilot_max_steps` se borro en la Fase 1: ningun lector. El tope de
+    # pasos viene del cuerpo de la peticion (`main.AutopilotIn.max_steps`), y el
+    # techo duro vive en `main._run_autopilot_once`. Un default en config que
+    # no decide nada es un segundo sitio donde alguien va a cambiar el numero.
+
+    # -- Clases de latencia (docs/vision.md §5, docs/motores.md §2) ----------
+    #
+    #: **Por qué una tabla y no un `if` en el bucle.** `docs/motores.md` §6 lo
+    #: prohibe: «ninguna heurística en el bucle». Si algo decide, está en la tabla
+    #: y en la traza. Y una tabla se puede testear, revertir con una variable y
+    #: auditar sin abrir el bucle.
+    #:
+    #: **Por qué `t1_model` es otro.** Antes solo había un modelo: el 7B para
+    #: todo. Con un solo modelo, «abstenerse» significaba pagar sus 4.400 MB y su
+    #: latencia, que es exactamente lo que el camino rápido viene a evitar. Con
+    #: T1 siendo un modelo pequeño **residente**, la abstención cuesta poco.
+    #: El 7B queda para T2, por turnos.
+    #:
+    #: **Y esto es una hipótesis hasta que se mida.** Se espera que el 4B sea más
+    #: rápido por ser más pequeño; nadie lo ha cronometrado todavía. Está medido
+    #: en `docs/decisiones/002`. Si sale peor, se cambia esta línea y nada más:
+    #: el modelo ya viaja por petición (`AutopilotIn.model`).
+
+    #: Modelo de T1: corto, tool-calling, **residente**.
+    #:
+    #: ## Medido, no supuesto (2026-10-05, n=2-3 por modelo, mismo encargo)
+    #:
+    #: | modelo | mediana | ¿tool-calling? | VRAM |
+    #: |---|---|---|---|
+    #: | **`llama3.2:3b`** | **16,8 s** | sí | 1,9 GB |
+    #: | `qwen2.5:7b` | 20,6 s | sí | 4,4 GB |
+    #: | `qwen2.5-coder:7b` | 31,4 s | sí | 4,4 GB |
+    #: | `gemma3:4b` | — | **roto** | 3,3 GB |
+    #: | `qwen3:4b` | **212 s** | sí | 2,4 GB |
+    #:
+    #: **`qwen3:4b` era la suposición original y era falsa**: 10 veces más
+    #: lento. Es un modelo de *thinking* y genera el razonamiento antes de
+    #: responder; en un bucle que va a 9.000 tokens de prompt, eso lo hunde. Menos
+    #: parámetros, peor latencia.
+    #:
+    #: ## Y el margen es pequeño, y eso es el dato importante
+    #: 16,8 contra 20,6 es un 18 % — no el 10× que se esperaba. Porque **el
+    #: bottleneck no es el modelo, es el prompt**: con 35.835 chars tardaba 49,1 s
+    #: y con 22.847 tardaba 18,5 s. Un 36 % menos de prompt, un 62 % menos de
+    #: tiempo.
+    #:
+    #: Cambiar de modelo es barato y ayuda, pero **no es la palanca**. Recortar el
+    #: prompt sí lo es, y ahí van los 19.083 chars del schema de tools, que es
+    #: lo único que se paga en cada paso sin condición.
+    t1_model: str = "llama3.2:3b"
+
+    #: Tope de pasos de T1. Menor que el de T2 a propósito: una petición corta que
+    #: necesita ocho pasos ya no es una petición corta.
+    t1_max_steps: int = 4
+
+    #: Presupuesto de T0 en milisegundos. Lo declara la visión; lo comprueba
+    #: `tests/test_intents.py::TestPresupuestoDeLatencia`. Si cambia uno, cambia
+    #: el otro, y el diff lo enseña.
+    t0_presupuesto_ms: int = 300
 
     # -- Neon (topología de las bases que gestiona Aegis) --------------------
     # La connection string NO se guarda: se pide a Neon por API cuando hace falta

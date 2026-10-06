@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Reetiqueta el histórico de runs con el veredicto y dice si cambió el número.
+
+Sin esto, "45,1 % completado" es una frase mia y nadie la puede comprobar ni
+refutar mañana. Con esto es un comando.
+
+## Por qué mide sobre ficheros y no sobre una nota
+El histórico está en `data/logs/runs/`. Los runs anteriores a `app/veredicto.py`
+no tienen campo `estado`, porque el veredicto no existía. Reetiquetarlos es
+aplicarles la regla **actual** —y solo la actual— para tener un denominador
+comparable. Un número medido con una regla que ya no existe no es una línea
+base: es una anécdota con formato de tabla.
+
+Y el script avisa de esauuya condición a propósito, en vez de dar por hecho que
+todo el mundo sabe que los ficheros viejos no tienen `estado`.
+
+Uso:  `bin/medir-runs [--json] [--escribir]`
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.veredicto import resumir  # noqa: E402
+
+RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RUNS = os.path.join(RAIZ, "data", "logs", "runs")
+
+
+def cargar(patron: str):
+    for camino in sorted(glob.glob(os.path.join(RUNS, patron))):
+        with open(camino, encoding="utf-8", errors="replace") as fh:
+            yield os.path.basename(camino), fh.read().splitlines()
+
+
+def cuantos_llevan_estado(patron: str) -> tuple[int, int]:
+    """(con `estado`, total). Para poder decir en voz alta cuántos runs se
+    han reetiquetado bajo una regla y cuántos ya venían con ella."""
+    con = total = 0
+    for _, lineas in cargar(patron):
+        total += 1
+        if any('"estado"' in l for l in lineas):
+            con += 1
+    return con, total
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--patron", default="autopilot-*.jsonl",
+                    help="qué runs medir (por defecto, los de autopilot)")
+    ap.add_argument("--json", action="store_true", help="solo JSON, para tuberias")
+    ap.add_argument("--escribir", action="store_true",
+                    help="añade el veredicto a los ficheros que no lo tienen")
+    args = ap.parse_args()
+
+    from app.veredicto import clasificar, desde_jsonl
+
+    if args.escribir:
+        escritos = 0
+        for nombre, lineas in cargar(args.patron):
+            if any('"estado"' in l for l in lineas):
+                continue
+            v = desde_jsonl(lineas)
+            # Se añade **una** línea de metadatos al final y no se reescribe el
+            # terminal: el `answer` del JSONL viene recortado a 1.000 chars y
+            # reetiquetar en vivo daría un `estado` distinto del que tuvo el
+            # run. La linea lleva el motivo por el que se reetiqueta.
+            with open(os.path.join(RUNS, nombre), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "run_id": os.path.splitext(nombre)[0],
+                    "event": "veredicto.retroetiquetado",
+                    "regla": "app/veredicto.py@Fase0",
+                }, ensure_ascii=False) + "\n")
+            escritos += 1
+        if not args.json:
+            print(f"reetiquetados {escritos} ficheros")
+        return 0
+
+    resumen = resumir(cargar(args.patron))
+    con, total = cuantos_llevan_estado(args.patron)
+
+    if args.json:
+        print(json.dumps({**resumen, "con_estado": con, "sin_estado": total - con},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"{resumen['total']} runs  ({args.patron})")
+    print()
+    print("ESTADO              n     %")
+    for estado, n in sorted(resumen["estados"].items(), key=lambda x: -x[1]):
+        print(f"  {estado:<16} {n:>4}  {100.0 * n / max(resumen['total'], 1):>5.1f}%")
+    print()
+    print(f"  completado: {resumen['pct_completado']}%")
+    print()
+    print("FIN (la etiqueta cruda, sin reetiquetar)")
+    for fin, n in sorted(resumen["fins"].items(), key=lambda x: -x[1]):
+        print(f"  {fin:<16} {n:>4}")
+    print()
+    print(f"traza: {con} ficheros traen `estado`, {total - con} reetiquetados por "
+          f"este comando (no lo traian de origen: el veredicto no existia)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

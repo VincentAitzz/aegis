@@ -1,13 +1,30 @@
-"""Memoria del proyecto Aegis: 'cerebro' de tres niveles.
+"""Memoria del proyecto Aegis: 'cerebro' de dos niveles.
 
-  (a) Episódica   — ChromaDB embebido + embeddings locales (Ollama). Semántica.
-  (b) Conceptual  — grafo persistente: SQLite por defecto (stdlib), Graphiti+FalkorDB opt-in.
-  (c) Nativa      — memory graph de Hermes (~/.hermes/memories/, fuera del bridge)
+  (a) Episódica  — ChromaDB embebido + embeddings locales (Ollama). Semántica.
+  (b) Conceptual — grafo persistente en SQLite (solo stdlib).
 
 Ciclo de vida:
-  * `hooks.on_terminal_event`  →  `remember(episodio)`  (éxito o fallo con error).
-  * `POST /tasks`              →  `recall(prompt)` + `render_context()`  se inyecta
-                                  como `instructions` extra para el agente.
+  * `main._registrar_run`  →  `remember(episodio)`. Lo llama el **autopilot** al
+    terminar un run, con `outcome` derivado de la traza.
+  * `POST /autopilot` y `/autopilot/start`  →  `recall(prompt)` +
+    `render_context()`, inyectado como bloque `EXPERIENCIA PASADA RELEVANTE` en
+    el system prompt.
+
+## Lo que este docstring mentía hasta la Fase 1
+Decía `(c) Nativa — memory graph de Hermes (~/.hermes/memories/)` y citaba
+`hooks.on_terminal_event` y `POST /tasks` como ciclo de vida. Los tres eran
+de un diseño retirado: el grafo nativo de Hermes nunca lo leyó nadie desde el
+bridge, y los otros dos desaparecieron con `relay.py` y `hooks.py`. Un
+docstring que describe un flujo que ya no existe es peor que no tenerlo: el que
+lo lea creería que el sitio está cuidado.
+
+## Por qué (c) se fue con Hermes
+La memoria que queda es **local y escribible sin red**: Chroma embebido y
+SQLite. El grafo nativo de Hermes vivía en `~/.hermes/memories/`, fuera del
+bridge y fuera de la máquina si Hermes vivía en otro sitio — o sea, que Aegis
+dependía de un componente que ya no controla. El invariante del repo es que
+Aegis no es punto único de falla; una memoria que solo existe dentro del
+segundo motor lo era.
 """
 
 import logging
@@ -37,16 +54,21 @@ class ProjectMemory:
                 embed_model=settings.embed_model)
 
         # (b) grafo conceptual
+        #
+        # ## Por qué ya no hay backend `graphiti`
+        # Existía `app/memory/graphiti.py` (129 líneas) y se elegía con
+        # `MEMORY_GRAPH_BACKEND=graphiti`. Sus requisitos estaban **comentados**
+        # en `requirements.txt`, sus propias dependencias no se habían
+        # instalado, y el módulo se declaraba a sí mismo "sin verificar, nunca
+        # se ha ejecutado en esta máquina". Es decir: un instrumento que no
+        # corre, disfrazado de alternativa (A-090). Se borró en la Fase 1 en
+        # lugar de dejarlo como opción: una rama que nadie ha ejecutado no es
+        # una opción, es una suposición con `import` debajo.
         self.graph: Any = None
         backend = settings.memory_graph_backend
-        if backend == "graphiti":
-            try:
-                from .graphiti import GraphitiBrain
-                self.graph = GraphitiBrain(settings)
-            except Exception as exc:  # noqa: BLE001
-                log.error("backend graphiti no disponible (%s) → cae a SQLite", exc)
-                self.graph = None
-        if self.graph is None and backend != "off":
+        if backend == "off":
+            self.graph = None
+        else:
             self.graph = SQLiteGraph(os.path.join(settings.memory_dir, "brain.db"))
 
         if self.episodic:

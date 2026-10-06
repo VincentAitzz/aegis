@@ -78,22 +78,47 @@ class TestElLifespanSeEjecuta(unittest.TestCase):
         with TestClient(app) as c:
             self.assertEqual(200, c.get("/health").status_code)
 
-    def test_el_apagado_cancela_los_lectores(self):
-        """`lifespan_guard` hacía esto y no la llamaba nadie."""
+    def test_el_apagado_cierra_el_cliente(self) -> None:
+        """El lifespan cierra el cliente de Hermes al apagar.
+
+        Antes lo hacía `relay.lifespan_guard()`, que además cancelaba los lectores
+        SSE. Se borró en la Fase 1 con el segundo motor: nada creaba un run de
+        Hermes desde `2f1fccb`, así que no había lectores que cancelar. Y el test
+        que lo vigilaba se fue con ellos, porque un test que sigue vigilando un
+        símbolo que no existe no vigila nada: pasa por no importar.
+        """
+        import ast
         import inspect
+        import textwrap
 
-        from app import relay
-        fuente = inspect.getsource(relay.lifespan_guard)
-        self.assertIn("aegis-relay-reader", fuente,
-                      "lifespan_guard ya no cancela los lectores: mirarla otra vez")
+        from app import main
 
-    def test_main_usa_la_que_ya_existia(self):
-        """Que el lifespan llame a `lifespan_guard`, y no la repita a mano."""
+        # Se mira el **cuerpo**, no el fuente entero: el docstring y los
+        # comentarios cuentan por que se mencionen, y un test que lee la prosa
+        # para decidir si algo se llama no testea nada —mas bien lo contrario:
+        # obliga a que el comentario y el codigo no divergan, que es justo lo que
+        # un `assertNotIn` sobre el fuente obliga a ser.
+        cuerpo = ast.parse(textwrap.dedent(inspect.getsource(main.lifespan)))
+        llamadas = {n.func.attr for n in ast.walk(cuerpo)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        self.assertIn("aclose", llamadas,
+                      "el lifespan dejo de cerrar el cliente de hermes")
+        self.assertNotIn("lifespan_guard", llamadas,
+                         "vuelve a depender de relay, que se borro en la Fase 1")
+
+    def test_el_lifespan_no_toca_la_memoria_al_apagar(self) -> None:
+        """Lo que el lifespan **si** tiene que inicializar al arrancar.
+
+        Este test existe por lo que el bug de arriba tapaba: como el lifespan no
+        se ejecutaba en ningun test HTTP, `init_memory`, `init_autonomia` e
+        `init_agenda` no corrian nunca bajo test, y algunos tests podian pasar
+        sin comprobar nada. Con el lifespan en verde se nota enseguida si alguien
+        anade una inicializacion y olvida probarla.
+        """
         import inspect
 
         from app import main
         fuente = inspect.getsource(main.lifespan)
-        self.assertIn("lifespan_guard", fuente)
-        self.assertNotIn("hermes.aclose()", fuente,
-                         "el lifespan volvio a cerrar hermes a mano, duplicando "
-                         "lo que lifespan_guard ya hace")
+        for inicializador in ("init_memory", "init_autonomia", "init_agenda"):
+            self.assertIn(inicializador, fuente,
+                          f"{inicializador} no se llama al arrancar")

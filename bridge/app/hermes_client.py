@@ -1,8 +1,48 @@
-"""Cliente HTTP hacia el API server de Hermes (REST) y consumidor SSE."""
+"""El health check de la gateway de Hermes. Nada más.
 
-import json
+## Por qué este módulo es una sonda y no un cliente
+Hasta el 2026-10-04 fue un cliente completo: `create_run`, `run_status`,
+`approve`, `steer`, `stop` y el consumidor SSE. Eso era el segundo motor de
+tools, y `docs/motores.md` §6 lo prohíbe explícitamente: **dos motores con
+tools son dos sitios donde puede vivir un guardarraíl**. Cuando el autopilot
+pasó a ser el único que ejecuta tools (`2f1fccb`), nadie initió ya un run de
+Hermes: `data/logs/runs/` tiene 84 ficheros `run_*.jsonl` que paran el 3-oct y
+133 `autopilot-*.jsonl` que siguen. Las seis métodos se quedaron sin un solo
+llamador y `docs/architecture.md` las seguía documentando como API viva.
+
+Lo que **sí** queda vivo es una cosa: `GET /health` pregunta a la gateway si
+está en pie (`main.py`), y el watchdog de `infra/stack.sh` espera esa misma
+respuesta con 90 s de margen. Eso no es un motor, es un semáforo, y por eso se
+queda.
+
+## Por qué el cliente se puede reabrir
+`hermes` es un **singleton a nivel de módulo**, así que un `aclose()` lo dejaba
+muerto para el resto del proceso. En producción parece que no importa —uvicorn
+apaga y el proceso se va— pero el apagado también ocurre en los tests, y ahí la
+consecuencia era esta: al no poder usar `with TestClient(app)` (el `with`
+dispara el lifespan, que cerraba el cliente), **el lifespan no llegaba a
+ejecutarse**, así que `init_memory`, `init_autonia` e `init_agenda` no corrían en
+ningún test HTTP. La propiedad que se quiere: **cerrar no es irreversible**.
+
+## Por qué el `read` del timeout es 5 s y no `None`
+Era `read=None`, o sea "esperar lo que haga falta". En `/health` eso se traducía
+en que la respuesta tardaba lo que tardase la gateway —y como el LED de la app lo
+consulta cada 1,2 s, una gateway colgada convertía eso en una avalancha de
+conexiones abiertas contra un servicio que no iba a responder nunca. Un health
+check que no puede fallar rápido no es un health check.
+
+Cuando este módulo se redujo (Fase 1) quedaban dos `read=None` mas en el
+repo, y los dos eran riesgo de disponibilidad real, no comodidad:
+
+- `llm.embed_texts`, que se awaita al **empezar y al terminar cada run**. Con
+  `read=None`, un `/api/embed` que acepta la conexión y no contestaba colgaba el
+  run sin límite y sin motivo que lo explicara. Arreglado en `llm.py` con un tope
+  explícito.
+- `llm.ensure_model`, que además era código muerto: su único llamador era
+  `_submit_task`, que se fue con el motor de Hermes. Se borró en vez de arreglarse.
+"""
 import logging
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import httpx
 
@@ -10,9 +50,12 @@ from .config import get_settings
 
 log = logging.getLogger("aegis.bridge.hermes")
 
+#: Un health check que tarda más que esto no está vivo, está colgado.
+HEALTH_TIMEOUT_S = 5.0
+
 
 class HermesClient:
-    """Envoltorio fino del API server de Hermes."""
+    """Sonda de vida de la gateway. No crea runs, no los gobierna."""
 
     def __init__(self, base_url: str, api_key: str) -> None:
         self.base_url = base_url.rstrip("/")
@@ -22,27 +65,12 @@ class HermesClient:
 
     def _nuevo(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=None))
+            timeout=httpx.Timeout(connect=2.0, read=HEALTH_TIMEOUT_S,
+                                  write=2.0, pool=2.0))
 
     @property
     def _client(self) -> httpx.AsyncClient:
-        """El cliente de HTTP, o uno nuevo si estaba cerrado.
-
-        ## Por qué se rehace en vez de solo cerrarse
-        `hermes` es un **singleton a nivel de módulo**, así que un `aclose()` lo
-        dejaba muerto para el resto del proceso. En producción parece que no
-        importa —uvicorn apaga y el proceso se va— pero el apagado también ocurre
-        en los tests, y ahí la consecuencia era esta: al no poder usar
-        `with TestClient(app)` (el `with` dispara el lifespan, que cerraba el
-        cliente de hermes), **el lifespan no llegaba a ejecutarse**, así que
-        `init_memory`, `init_autonomia`, `init_agenda` y `relay.on_terminal` no
-        corrían en ningún test HTTP. De ahí que `hooks.py` estuviera casi sin test
-        de integración, y que algunos tests pudieran pasar sin comprobar nada.
-
-        La propiedad que se quiere: **cerrar no es irreversible**. Con esto, el
-        mismo apagón que en producción es inocuo, y los tests pueden usar el
-        gestor de contexto de verdad.
-        """
+        """El cliente de HTTP, o uno nuevo si estaba cerrado. Ver el docstring."""
         if self._cerrado:
             self._cerrado = False
             self._http = self._nuevo()
@@ -52,7 +80,6 @@ class HermesClient:
     def cerrado(self) -> bool:
         return self._cerrado
 
-    # -- control ------------------------------------------------------------
     async def aclose(self) -> None:
         if self._cerrado:
             return
@@ -60,84 +87,13 @@ class HermesClient:
         self._cerrado = True
 
     async def health(self) -> dict[str, Any]:
+        """¿Está la gateway en pie? Nunca lanza: un semáforo roto no apaga el panel."""
         try:
             r = await self._client.get(f"{self.base_url}/health")
             r.raise_for_status()
             return r.json()
         except httpx.HTTPError as exc:
             return {"ok": False, "error": str(exc)}
-
-    async def create_run(self, model: str, prompt: str,
-                         instructions: Optional[str] = None,
-                         session_id: Optional[str] = None) -> dict[str, Any]:
-        body: dict[str, Any] = {"input": prompt, "model": model}
-        if instructions:
-            body["instructions"] = instructions
-        if session_id:
-            body["session_id"] = session_id
-        r = await self._client.post(f"{self.base_url}/v1/runs",
-                                    headers=self.headers, json=body)
-        r.raise_for_status()
-        return r.json()
-
-    async def run_status(self, run_id: str) -> dict[str, Any]:
-        r = await self._client.get(f"{self.base_url}/v1/runs/{run_id}", headers=self.headers)
-        r.raise_for_status()
-        return r.json()
-
-    async def approve(self, run_id: str, decision: str, comment: Optional[str] = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"decision": decision}
-        if comment:
-            payload["comment"] = comment
-        r = await self._client.post(f"{self.base_url}/v1/runs/{run_id}/approval",
-                                    headers=self.headers, json=payload)
-        r.raise_for_status()
-        return r.json()
-
-    async def steer(self, run_id: str, text: str) -> dict[str, Any]:
-        r = await self._client.post(f"{self.base_url}/v1/runs/{run_id}/steer",
-                                    headers=self.headers, json={"text": text})
-        r.raise_for_status()
-        return r.json()
-
-    async def stop(self, run_id: str) -> dict[str, Any]:
-        r = await self._client.post(f"{self.base_url}/v1/runs/{run_id}/stop",
-                                    headers=self.headers)
-        r.raise_for_status()
-        return r.json()
-
-    # -- streaming SSE --------------------------------------------------------
-    async def run_events(self, run_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Itera sobre los eventos SSE de un run (tool.started/completed, run.* etc.).
-
-        Cada ítem: {"event": <name>, "data": <parsed-json>}. El [DONE] cierra el stream.
-        """
-        url = f"{self.base_url}/v1/runs/{run_id}/events"
-        async with self._client.stream("GET", url, headers=self.headers) as resp:
-            resp.raise_for_status()
-            event = "message"
-            data_buf: list[str] = []
-            async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith(":"):  # keepalive SSE
-                    continue
-                if line.startswith("event:"):
-                    event = line[len("event:"):].strip()
-                elif line.startswith("data:"):
-                    data_buf.append(line[len("data:"):].strip())
-                    # 'data: [DONE]' cierra el stream
-                    if data_buf and data_buf[0] == "[DONE]":
-                        break
-                # bloques terminados por línea en blanco: el parser es tolerante
-                if data_buf and (not line.startswith(("event:", "data:")) or line.endswith("}")):
-                    payload = "".join(data_buf)
-                    data_buf = []
-                    try:
-                        yield {"event": event, "data": json.loads(payload)}
-                    except json.JSONDecodeError:
-                        yield {"event": event, "data": {"raw": payload}}
 
 
 hermes = HermesClient(get_settings().hermes_base_url, get_settings().hermes_api_key)

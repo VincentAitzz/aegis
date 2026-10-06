@@ -18,6 +18,8 @@ Tres ideas:
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import os
 import re
@@ -235,7 +237,23 @@ def gate(proyecto: str, what: str = "check") -> Callable:
                     resultado: str) -> Optional[dict[str, Any]]:
         if tool not in QUE_ESCRIBEN:
             return None
-        v = ejecutar(proyecto, what)
+        # El verificador se ejecuta **en un hilo**, no en el event loop.
+        #
+        # `ejecutar` es `subprocess.run(...)` con `timeout=900`, y el comando
+        # declarado de este proyecto es `tsc --noEmit` o `vitest run`: minutos.
+        # Llamado directamente desde esta corrutina bloqueaba **el bridge
+        # entero** —`/health`, `/actividad`, el poll del móvil y el propio
+        # `POST /autopilot/{run_id}/stop`, que no se atiende hasta que la
+        # verificación acaba. Parar un run durante su propia verificación era
+        # imposible, y no por una decisión de diseño sino por una línea sin
+        # envolver.
+        #
+        # Es exactamente el mismo razonamiento que el que ya está en
+        # `autopilot._bucle` para las tools, y allí se resolvió. Aquí no se había
+        # hecho, y es el sitio donde más duele: la verificación es la parte
+        # lenta por definición.
+        loop = asyncio.get_running_loop()
+        v = await loop.run_in_executor(None, ejecutar, proyecto, what)
         d = delta(previo["v"], v)
         previo["v"] = v
         veredicto: dict[str, Any] = {
