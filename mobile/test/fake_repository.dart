@@ -138,6 +138,7 @@ class FakeAgentRepository implements AgentRepository {
     required String alias,
     required String contenido,
   }) async {
+    if (errorFicha != null) throw errorFicha!;
     contenidoFichaGuardado = contenido;
     return const ProjectInfo(alias: 'compra-unida', kind: 'encargo', estado: 'parcial');
   }
@@ -145,6 +146,15 @@ class FakeAgentRepository implements AgentRepository {
   /// Lo que se guardó en la última escritura de ficha, para comprobar que el
   /// markdown que genera el formulario llega al puente entero y con sus `---`.
   String? contenidoFichaGuardado;
+
+  /// Si está a true, la escritura de la ficha **pública** falla. Es lo que
+  /// permite probar que un guardado fallido no avanza a la siguiente sección.
+  ///
+  /// Va aparte de `errorPrivada` a propósito: si compartieran campo, no se
+  /// podría probar a la vez el fallo de una y el éxito de la otra, que es
+  /// justo el caso que importa —el usuario está en la pestaña del cliente y no
+  /// debe verse afectado por lo que pasó en la técnica—.
+  Object? errorFicha;
 
   /// Las altas que se pidieron, en orden. Sin esto, un test del formulario de
   /// alta no puede distinguir «no se envió» de «se envió mal».

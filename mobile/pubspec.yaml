@@ -34,8 +34,11 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  # `web_socket_channel` se quitó con el motor de Hermes: el WS `/ws` era de su
+  # run y ya no existe. Nadie lo importaba —`AppConfig.wsBase` sí, y eso era
+  # configuración muerta— y una dependencia sin usar paga en el APK y en cada
+  # `pub get`.
   dio: ^5.11.1
-  web_socket_channel: ^3.0.3
   flutter_riverpod: ^3.4.3
 
 dev_dependencies:

@@ -17,12 +17,15 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/network/errores.dart';
 import '../../core/theme/aegis_palette.dart';
 import '../../core/widgets/hud_panel.dart';
 import '../../core/widgets/status_led.dart';
 import '../../data/models/agent_models.dart';
 import '../../data/models/asistente_models.dart';
 import '../providers/agent_providers.dart';
+import 'hoja_alta.dart';
+import 'hoja_ficha.dart';
 
 class ProyectosPage extends ConsumerWidget {
   const ProyectosPage({super.key});
@@ -66,6 +69,8 @@ class ProyectosPage extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 10),
+        _BotonAlta(),
+        const SizedBox(height: 10),
         proyectos.when(
           loading: () => const Text('buscando proyectos…',
               style: TextStyle(
@@ -97,6 +102,39 @@ class ProyectosPage extends ConsumerWidget {
   }
 }
 
+/// El botón de «nuevo proyecto».
+///
+/// Está **encima** de la lista y no al final: hasta ahora la única forma de dar de
+/// alto un proyecto era editar Python, y quien llegaba a esta pantalla no tenía
+/// ninguna acción. Que crear un encargo sea una acción visible desde aquí es
+/// media razón de que exista.
+class _BotonAlta extends ConsumerWidget {
+  const _BotonAlta();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return OutlinedButton.icon(
+      onPressed: () async {
+        final creado = await showModalBottomSheet<bool>(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: AegisPalette.bg1,
+          builder: (context) => const HojaAlta(),
+        );
+        if (creado == true) refrescarAsistente(ref);
+      },
+      icon: const Text('+',
+          style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 14)),
+      label: const Text('Nuevo proyecto'),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AegisPalette.fg,
+        side: BorderSide(color: AegisPalette.brand.withValues(alpha: .5)),
+        alignment: Alignment.centerLeft,
+      ),
+    );
+  }
+}
+
 /// El interruptor de modo, con lo que significa en una frase.
 ///
 /// El nombre solo (`solo`, `permiso`, `pleno`) no lo explica nadie, y un
@@ -122,7 +160,7 @@ class _ModoState extends ConsumerState<_Modo> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No pude cambiar el modo: $e')),
+        SnackBar(content: Text('No pude cambiar el modo: ${mensajeDeError(e)}')),
       );
     } finally {
       if (mounted) setState(() => _ocupado = false);
@@ -193,7 +231,7 @@ class _FilaProyectoState extends ConsumerState<_FilaProyecto> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No pude cambiar el permiso: $e')),
+        SnackBar(content: Text('No pude cambiar el permiso: ${mensajeDeError(e)}')),
       );
     } finally {
       if (mounted) setState(() => _ocupado = false);
@@ -217,7 +255,8 @@ class _FilaProyectoState extends ConsumerState<_FilaProyecto> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No pude leer la ficha de $alias: $e')),
+        SnackBar(content: Text('No pude leer la ficha de $alias: '
+            '${mensajeDeError(e)}')),
       );
       return;
     }
@@ -226,7 +265,7 @@ class _FilaProyectoState extends ConsumerState<_FilaProyecto> {
       context: context,
       isScrollControlled: true,
       backgroundColor: AegisPalette.bg1,
-      builder: (context) => _HojaFicha(alias: alias, ficha: ficha),
+      builder: (context) => HojaFicha(alias: alias, ficha: ficha),
     );
     if (guardado == true) refrescarAsistente(ref);
   }
@@ -362,125 +401,6 @@ class _Explicacion extends StatelessWidget {
               height: 1.55,
               color: AegisPalette.fgFaint,
             ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-/// La hoja de la ficha: leer, corregir y guardar.
-///
-/// Va **sin pasar por el modelo**, y eso no es una preferencia: se comprobó que
-/// un 7B copiando un texto literal se come los `---` del frontmatter, y la ficha
-/// queda sin tipo — que es exactamente lo que la puerta rechaza. Aquí quien
-/// escribe es la persona, y el bridge guarda lo que le dan.
-class _HojaFicha extends ConsumerStatefulWidget {
-  const _HojaFicha({required this.alias, required this.ficha});
-
-  final String alias;
-  final FichaTexto ficha;
-
-  @override
-  ConsumerState<_HojaFicha> createState() => _HojaFichaState();
-}
-
-class _HojaFichaState extends ConsumerState<_HojaFicha> {
-  late final _texto = TextEditingController(text: widget.ficha.texto);
-  String? _aviso;
-  bool _guardando = false;
-
-  @override
-  void dispose() {
-    _texto.dispose();
-    super.dispose();
-  }
-
-  Future<void> _guardar() async {
-    setState(() {
-      _guardando = true;
-      _aviso = null;
-    });
-    try {
-      final r = await ref.read(agentRepositoryProvider).writeFicha(
-            alias: widget.alias,
-            contenido: _texto.text,
-          );
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(r.completa
-              ? 'Ficha de ${widget.alias} completa. La puerta se abre.'
-              : 'Guardada, pero sigue incompleta: faltan ${r.faltan.join(', ')}'),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _guardando = false;
-        _aviso = 'No se pudo guardar: $e';
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final faltan = widget.ficha.faltan;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-          16, 16, 16, MediaQuery.of(context).viewInsets.bottom + 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('FICHA · ${widget.alias}',
-              style: const TextStyle(
-                  fontFamily: AegisPalette.display,
-                  fontSize: 15,
-                  letterSpacing: 2,
-                  color: AegisPalette.fg)),
-          const SizedBox(height: 8),
-          Text(
-            widget.ficha.kind.isEmpty
-                ? 'Sin tipo declarado. La puerta no deja trabajar en un proyecto que no sabe qué es.'
-                : (faltan.isEmpty
-                    ? 'Completa. Aegis puede escribir aquí.'
-                    : 'Faltan: ${faltan.join(', ')}'),
-            style: TextStyle(
-              fontFamily: AegisPalette.mono,
-              fontSize: 11,
-              height: 1.5,
-              color: faltan.isEmpty ? AegisPalette.ok : AegisPalette.warn,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Flexible(
-            child: TextField(
-              controller: _texto,
-              maxLines: 20,
-              minLines: 10,
-              style: const TextStyle(
-                  fontFamily: AegisPalette.mono, fontSize: 11, height: 1.5),
-              decoration: const InputDecoration(
-                hintText: 'kind: producto\n\n## Qué es\n\n…',
-              ),
-            ),
-          ),
-          if (_aviso != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(_aviso!,
-                  style: const TextStyle(
-                      fontFamily: AegisPalette.mono,
-                      fontSize: 11,
-                      color: AegisPalette.danger)),
-            ),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: _guardando ? null : _guardar,
-            style: FilledButton.styleFrom(
-                backgroundColor: AegisPalette.ok, foregroundColor: AegisPalette.bg0),
-            child: Text(_guardando ? 'Guardando…' : 'Guardar la ficha'),
           ),
         ],
       ),

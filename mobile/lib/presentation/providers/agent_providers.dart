@@ -36,6 +36,16 @@ final projectsProvider = FutureProvider<List<ProjectInfo>>((ref) {
   return ref.watch(agentRepositoryProvider).projects();
 });
 
+/// Qué secciones hay que escribir en una ficha, por tipo.
+///
+/// Se pide una vez y se cachea: son las secciones de `SECCIONES_POR_TIPO`, que
+/// cambian cuando alguien las cambia en el bridge, no cuando tú abres una
+/// pantalla. Un formulario que las cumpiera en cada `build` haría una llamada
+/// por sección y por rebuild.
+final plantillasFichasProvider = FutureProvider<PlantillaFichas>((ref) {
+  return ref.watch(agentRepositoryProvider).plantillasFichas();
+});
+
 /// Despliegues esperando aprobación.
 ///
 /// Con un `StreamProvider` y un `while(true)`, al desmontar la pantalla

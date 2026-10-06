@@ -49,8 +49,4 @@ class AppConfig {
     return 'http://$h:$p';
   }
 
-  String get wsBase {
-    final (h, p) = authority;
-    return 'ws://$h:$p/ws';
-  }
 }
