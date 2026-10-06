@@ -326,6 +326,8 @@ class FichaTexto {
     this.kind = '',
     this.estado = 'sin_ficha',
     this.faltan = const [],
+    this.secciones = const {},
+    this.escritas = const [],
   });
 
   final String alias;
@@ -340,6 +342,18 @@ class FichaTexto {
   final String estado;
   final List<String> faltan;
 
+  /// El mapa de secciones ya parseado **por el bridge**.
+  ///
+  /// Existe para que el formulario pueda prellenar los campos sin parsear
+  /// markdown en Dart: `fichas._escrito` tiene reglas que no son triviales
+  /// (comentarios multilínea, `###` que no rellena el `##`, marcadores de
+  /// «pendiente») y duplicarlas aquí es la forma fiable de que las dos copias
+  /// digan cosas distintas.
+  final Map<String, String> secciones;
+
+  /// Las secciones con contenido de verdad. El complemento exacto de `faltan`.
+  final List<String> escritas;
+
   bool get completa => estado == 'completa';
 
   factory FichaTexto.fromJson(Map<String, dynamic> j) => FichaTexto(
@@ -348,5 +362,235 @@ class FichaTexto {
         kind: (j['kind'] ?? '') as String,
         estado: (j['estado'] ?? 'sin_ficha') as String,
         faltan: ((j['faltan'] as List?) ?? const []).cast<String>(),
+        secciones: _mapaDeTexto(j['secciones']),
+        escritas: ((j['escritas'] as List?) ?? const []).cast<String>(),
       );
+}
+
+/// Un `secciones` del bridge puede llegar con cualquier tipo de valor, y un
+/// `cast` fallaría en pantalla si algo viniera raro. Se filtra lo que es texto.
+Map<String, String> _mapaDeTexto(Object? crudo) {
+  if (crudo is! Map) {
+    return const {};
+  }
+  return {
+    for (final e in crudo.entries)
+      if (e.value != null) e.key.toString(): e.value.toString(),
+  };
+}
+
+/// La ficha **comercial** de un proyecto: quién es el cliente y a qué se te
+/// compromete. Fuera de git, y por eso va en un fichero aparte.
+///
+/// ## Por qué no reusa `FichaTexto`
+/// Porque no son el mismo contrato y el bridge lo dice con dos endpoints
+/// distintos. La pública trae `kind`, `estado` y `faltan` —la puerta necesita
+/// esas tres para decirte si puedes trabajar—. La privada trae `existe` y
+/// `plantilla`, y no lleva puerta: el modelo de cobro no tiene forma canónica
+/// (precio cerrado, por hitos, por horas, a partes, o nada), así que exigir un
+/// esquema fijo obligaría a rellenar campos que en un encargo dado no existen.
+/// Reusar la clase y dejar los campos vacíos sería peor que tener dos.
+class FichaPrivada {
+  const FichaPrivada({
+    required this.alias,
+    this.texto = '',
+    this.existe = false,
+    this.path = '',
+    this.plantilla = '',
+    this.secciones = const {},
+    this.escritas = const [],
+  });
+
+  final String alias;
+
+  /// El fichero entero. Se manda entero por la misma razón que en la pública:
+  /// quien lo escribió es una persona y edita el documento.
+  final String texto;
+
+  /// False cuando el proyecto no tiene ficha privada todavía.
+  ///
+  /// No es un error ni un 404: es el estado normal de un proyecto recién dado
+  /// de alta, y la app tiene que poder abrir el editor para crearla. Por eso el
+  /// endpoint responde 200 con el texto vacío en vez de fallar.
+  final bool existe;
+
+  final String path;
+
+  /// Dónde está la plantilla, para poder abrirla si el usuario la destruyó.
+  final String plantilla;
+
+  /// El mapa de secciones ya parseado, como en la pública.
+  final Map<String, String> secciones;
+
+  /// Las secciones con contenido. Aquí es lo que distingue «existe» de «tiene
+  /// datos»: el bridge devuelve la plantilla parseada cuando el fichero no está,
+  /// así que `existe: false` con las doce secciones es el estado normal de un
+  /// proyecto recién dado de alta.
+  final List<String> escritas;
+
+  /// ¿Es una plantilla sin rellenar, o una ficha de verdad?
+  ///
+  /// La plantilla trae las preguntas y ninguna respuesta. Pintar «Cliente» al
+  /// lado de una plantilla sin contestar sería mentir: lo que hay es una lista
+  /// de temas.
+  ///
+  /// Lo decide [escritas], que es el bridge aplicando su propia regla de
+  /// «escrito». Antes se calculaba aquí mirando el texto, y era una segunda
+  /// copia de esa regla que un día iba a decir otra cosa.
+  bool get sinRellenar => !existe || escritas.isEmpty;
+
+  factory FichaPrivada.fromJson(Map<String, dynamic> j) => FichaPrivada(
+        alias: (j['alias'] ?? '') as String,
+        texto: (j['texto'] ?? '') as String,
+        existe: (j['existe'] ?? false) as bool,
+        path: (j['path'] ?? '') as String,
+        plantilla: (j['plantilla'] ?? '') as String,
+        secciones: _mapaDeTexto(j['secciones']),
+        escritas: ((j['escritas'] as List?) ?? const []).cast<String>(),
+      );
+}
+
+/// Lo que devuelve `POST /proyectos`: qué se creó y qué falta por escribir.
+///
+/// ## Por qué `faltan` y no solo un estado
+/// Un alta nunca deja la ficha completa, porque lo que la completa lo sabe la
+/// persona y no el bridge. Devolver los nombres exactos de las secciones
+/// pendientes es lo que permite a la app decir «te faltan estas tres» en vez de
+/// «se creó», que es un mensaje que no sirve para saber qué hacer después.
+class ProyectoAlta {
+  const ProyectoAlta({
+    required this.alias,
+    this.tipo = '',
+    this.estado = '',
+    this.faltan = const [],
+    this.mensaje = '',
+  });
+
+  final String alias;
+
+  /// El tipo que quedó declarado. Se lee del disco, no del cuerpo del POST:
+  /// la fuente de verdad es la ficha escrita, no lo que se pidió.
+  final String tipo;
+
+  final String estado;
+  final List<String> faltan;
+
+  /// El texto largo que arma el bridge. Se enseña entero: explica qué se
+  /// creó, dónde, y avisa de que sin verificador no habrá permiso de escritura.
+  final String mensaje;
+
+  bool get completa => faltan.isEmpty;
+
+  factory ProyectoAlta.fromJson(Map<String, dynamic> j) => ProyectoAlta(
+        alias: (j['alias'] ?? '') as String,
+        tipo: (j['tipo'] ?? '') as String,
+        estado: (j['estado'] ?? '') as String,
+        faltan: ((j['faltan'] as List?) ?? const []).cast<String>(),
+        mensaje: (j['mensaje'] ?? '') as String,
+      );
+}
+
+/// Los modelos de cobro que la plantilla privada ofrece como menú.
+///
+/// ## Por qué es un enum y no un campo de texto
+/// Porque los encargos no se cobran todos igual, y un campo libre produce dos
+/// fallos a la vez: o dejas «precio cerrado» y no queda claro cuánto, o
+/// inventas un número que el cliente nunca dijo. Con opciones excluyentes
+/// eliges **una forma de cobrar** y la app decide qué secciones tienen sentido,
+/// que es la parte que hace cómodo rellenarlo.
+///
+/// Ningún valor trae un importe. El precio lo pone la persona, porque Aegis no
+/// lo inventa nunca (`fichas/_plantilla-privada.md`) y la app tampoco.
+enum ModeloDeCobro {
+  precioCerrado('precio cerrado', 'Una cantidad por el entregable completo.'),
+  porHitos('por hitos', 'Cuánto se paga al entregar cada parte, y en qué orden.'),
+  porHoras('por horas', 'Cuántas horas, a qué tarifa, con qué tope.'),
+  aPartes('a partes', 'Cuota fija recurrente más trabajos fuera de ella.'),
+  sinCobro('sin cobro', 'Proyecto interno, o cliente que ya paga una cuota.'),
+  otro('otro', 'El modelo y sus reglas.');
+
+  const ModeloDeCobro(this.etiqueta, this.ayuda);
+
+  final String etiqueta;
+  final String ayuda;
+
+  String get clave => name;
+
+  static ModeloDeCobro? desdeEtiqueta(String e) {
+    for (final m in ModeloDeCobro.values) {
+      if (m.etiqueta == e) {
+        return m;
+      }
+    }
+    return null;
+  }
+}
+
+/// Las áreas del workspace, con su etiqueta.
+///
+/// Viven en Dart y no se piden al bridge porque `/proyectos` devuelve el área
+/// **derivada** de la ruta de los proyectos ya existentes, no la lista de las
+/// válidas para crear uno nuevo. Con tres valores, hardcodearlas sale más barato
+/// que un endpoint, y el bridge vuelve a validar la que llegue: si aquí se
+/// desincroniza, el alta se rechaza con un 400 que dice las áreas buenas.
+const List<({String valor, String etiqueta})> kAreas = [
+  (valor: 'apps', etiqueta: 'Apps'),
+  (valor: 'web', etiqueta: 'Web'),
+  (valor: 'mobile', etiqueta: 'Móvil'),
+];
+
+/// Los tipos de proyecto, que son los que deciden qué secciones hay que escribir.
+const List<({String valor, String etiqueta})> kTiposProyecto = [
+  (valor: 'encargo', etiqueta: 'Encargo'),
+  (valor: 'producto', etiqueta: 'Producto'),
+  (valor: 'herramienta', etiqueta: 'Herramienta'),
+];
+
+/// Qué secciones hay que escribir, por tipo, y cuáles tiene la ficha privada.
+///
+/// ## Por qué la app pregunta en vez de tener la lista dentro
+/// Las secciones viven en `fichas.SECCIONES_POR_TIPO` del bridge. Copiarlas a
+/// Dart produce un fallo silencioso: el día que el bridge añada una sección, la
+/// app seguiría sin preguntarla, la puerta la seguiría exigiendo, y el usuario
+/// vería «incompleta» sin ninguna sección que la pueda completar. Un bug que
+/// no se puede diagnosticar desde la pantalla.
+///
+/// Es el mismo criterio que los enfoques: el índice sale del disco.
+class PlantillaFichas {
+  const PlantillaFichas({
+    this.secciones = const {},
+    this.tipos = const [],
+    this.privada = const [],
+    this.aviso = '',
+  });
+
+  /// Tipo → secciones ordenadas. El orden es la secuencia en que se rellena.
+  final Map<String, List<String>> secciones;
+  final List<String> tipos;
+
+  /// Los encabezados de la plantilla privada. **No son obligatorios**: es una
+  /// lista de temas, porque el modelo de cobro no tiene forma canónica.
+  final List<String> privada;
+
+  /// Si el bridge no pudo leer la plantilla privada. No es un fallo de la
+  /// llamada —la privada saldría vacía— pero hay que decirlo, porque una lista
+  /// vacía parece un proyecto que no tiene nada que rellenar.
+  final String aviso;
+
+  /// Las secciones de un tipo, o vacío si el tipo no existe.
+  List<String> de(String tipo) => secciones[tipo] ?? const [];
+
+  factory PlantillaFichas.fromJson(Map<String, dynamic> j) {
+    final crudas = (j['secciones'] as Map?) ?? const {};
+    return PlantillaFichas(
+      secciones: {
+        for (final e in crudas.entries)
+          e.key.toString():
+              ((e.value as List?) ?? const []).map((s) => s.toString()).toList(),
+      },
+      tipos: ((j['tipos'] as List?) ?? const []).map((t) => t.toString()).toList(),
+      privada: ((j['privada'] as List?) ?? const []).map((s) => s.toString()).toList(),
+      aviso: (j['aviso'] ?? '') as String,
+    );
+  }
 }

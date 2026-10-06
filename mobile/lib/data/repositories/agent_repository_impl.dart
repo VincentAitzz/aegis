@@ -118,6 +118,75 @@ class AgentRepositoryImpl implements AgentRepository {
   }
 
   @override
+  Future<PlantillaFichas> plantillasFichas() async {
+    final r = await _dio.get<Map<String, dynamic>>(
+      '${config.httpBase}/fichas/plantillas',
+    );
+    return PlantillaFichas.fromJson(r.data!);
+  }
+
+  @override
+  Future<ProyectoAlta> crearProyecto({
+    required String alias,
+    required String area,
+    required String kind,
+    String nombre = '',
+    String alcance = '',
+    String verificar = '',
+    String db = '',
+    String carpeta = '',
+    bool yaExiste = false,
+  }) async {
+    final r = await _dio.post<Map<String, dynamic>>(
+      '${config.httpBase}/proyectos',
+      // Se manda el mapa entero, con los vacíos incluidos: el modelo del
+      // bridge los declara con valor por defecto, y mandar solo lo que hay
+      // obligaría a construir el body a mano y a que se desincronice del
+      // contrato sin que nada avise.
+      data: jsonEncode({
+        'alias': alias,
+        'area': area,
+        'kind': kind,
+        'nombre': nombre,
+        'alcance': alcance,
+        'verificar': verificar,
+        'db': db,
+        'carpeta': carpeta,
+        'ya_existe': yaExiste,
+      }),
+    );
+    return ProyectoAlta.fromJson(r.data!);
+  }
+
+  @override
+  Future<FichaPrivada> readFichaPrivada(String alias) async {
+    final r = await _dio.get<Map<String, dynamic>>(
+      '${config.httpBase}/fichas/$alias/privada',
+    );
+    // Sin `existe` el bridge no lo está mandando y la app lo trataría como
+    // una ficha vacía que se puede guardar: mejor un tipo explícito.
+    return FichaPrivada.fromJson(r.data!);
+  }
+
+  @override
+  Future<FichaPrivada> writeFichaPrivada({
+    required String alias,
+    required String contenido,
+  }) async {
+    await _dio.post<Map<String, dynamic>>(
+      '${config.httpBase}/fichas/$alias/privada',
+      data: jsonEncode({'contenido': contenido}),
+    );
+    // El POST no devuelve el texto guardado, solo que se escribió. Se relee
+    // para que quien llama tenga el documento real y no una suposición: si el
+    // puente normalizara algo al escribir, aquí se vería.
+    return readFichaPrivada(alias).timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => FichaPrivada(alias: alias, texto: contenido, existe: true),
+    );
+  }
+
+  @override
   Future<Actividad> actividad() async {
     final r = await _dio.get<Map<String, dynamic>>('${config.httpBase}/actividad');
     return Actividad.fromJson(r.data!);

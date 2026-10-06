@@ -137,8 +137,155 @@ class FakeAgentRepository implements AgentRepository {
   Future<ProjectInfo> writeFicha({
     required String alias,
     required String contenido,
-  }) async =>
-      const ProjectInfo(alias: 'compra-unida', kind: 'encargo', estado: 'parcial');
+  }) async {
+    contenidoFichaGuardado = contenido;
+    return const ProjectInfo(alias: 'compra-unida', kind: 'encargo', estado: 'parcial');
+  }
+
+  /// Lo que se guardó en la última escritura de ficha, para comprobar que el
+  /// markdown que genera el formulario llega al puente entero y con sus `---`.
+  String? contenidoFichaGuardado;
+
+  /// Las altas que se pidieron, en orden. Sin esto, un test del formulario de
+  /// alta no puede distinguir «no se envió» de «se envió mal».
+  final List<Map<String, dynamic>> altasFake = [];
+
+  /// Lo que devuelve `crearProyecto`. Por defecto, un alta recién hecha: con
+  /// todo lo de la ficha pendiente, que es lo que de verdad pasa.
+  ProyectoAlta altaFake = const ProyectoAlta(
+    alias: 'encargo-nuevo',
+    tipo: 'encargo',
+    estado: 'incompleta (faltan 8)',
+    faltan: [
+      'Qué problema resuelve',
+      'Para qué se usa',
+      'Quién lo usa',
+      'Criterio de aceptación',
+      'Alcance dentro',
+      'Alcance fuera',
+      'Alternativas consideradas',
+      'Cómo se verifica',
+    ],
+    mensaje: "Alta de 'encargo-nuevo' (tipo encargo) en el workspace.",
+  );
+
+  /// Si está a true, `crearProyecto` lanza. Es lo que permite probar el 409 del
+  /// verificador y el 400 del alias inválido sin levantar un bridge de verdad.
+  Object? errorAlta;
+
+  /// Lo que devuelve `readFichaPrivada`. Por defecto, la plantilla sin
+  /// rellenar: es lo que ve alguien que acaba de dar de alta un proyecto.
+  FichaPrivada? privadaFake;
+
+  String? contenidoPrivadaGuardado;
+
+  Object? errorPrivada;
+
+  @override
+  Future<PlantillaFichas> plantillasFichas() async => plantillasFake;
+
+  /// Lo que dice el bridge que hay que rellenar. Por defecto, un encargo con sus
+  /// ocho secciones y una privada con las doce suyas.
+  ///
+  /// Va hardcodeado aquí, y no leído de `bridge/app/fichas.py`, a diferencia del
+  /// test del generador: el fake existe para que un widget test monte pantalla sin
+  /// bridge, y un `File` en un test de widget lo haría depender del disco.
+  /// El test `generador_ficha_test.dart` es el que compara las dos listas, y ese
+  /// sí lee el bridge. Así las tres copias no se pueden desincronizar sin que un
+  /// test lo note.
+  PlantillaFichas plantillasFake = const PlantillaFichas(
+    secciones: {
+      'encargo': [
+        'Qué problema resuelve',
+        'Para qué se usa',
+        'Quién lo usa',
+        'Criterio de aceptación',
+        'Alcance dentro',
+        'Alcance fuera',
+        'Alternativas consideradas',
+        'Cómo se verifica',
+      ],
+      'producto': [
+        'Qué es',
+        'Para quién',
+        'Dónde estamos',
+        'Próximo paso',
+        'Invariantes',
+        'Cómo se verifica',
+      ],
+      'herramienta': [
+        'Qué es',
+        'Por qué existe',
+        'Invariantes',
+        'Cómo se verifica',
+        'Qué no toca',
+      ],
+    },
+    tipos: ['encargo', 'producto', 'herramienta'],
+    privada: [
+      'Cliente y contacto',
+      'El encargo, en sus palabras',
+      'Modelo de cobro',
+      'Presupuesto y pagos',
+      'Fechas y plazos',
+      'Hitos y facturación',
+      'Horas extra o trabajos fuera de alcance',
+      'Canal y reuniones',
+      'Garantía y soporte',
+      'Lo prometido',
+      'Riesgos y qué lo haría pelota',
+      'Lo que hay que tener cuidado de decir',
+    ],
+  );
+
+  @override
+  Future<ProyectoAlta> crearProyecto({
+    required String alias,
+    required String area,
+    required String kind,
+    String nombre = '',
+    String alcance = '',
+    String verificar = '',
+    String db = '',
+    String carpeta = '',
+    bool yaExiste = false,
+  }) async {
+    if (errorAlta != null) throw errorAlta!;
+    altasFake.add({
+      'alias': alias,
+      'area': area,
+      'kind': kind,
+      'nombre': nombre,
+      'alcance': alcance,
+      'verificar': verificar,
+      'db': db,
+      'carpeta': carpeta,
+      'ya_existe': yaExiste,
+    });
+    return ProyectoAlta(
+      alias: altaFake.alias.isEmpty ? alias : altaFake.alias,
+      tipo: altaFake.tipo,
+      estado: altaFake.estado,
+      faltan: altaFake.faltan,
+      mensaje: altaFake.mensaje,
+    );
+  }
+
+  @override
+  Future<FichaPrivada> readFichaPrivada(String alias) async {
+    if (errorPrivada != null) throw errorPrivada!;
+    return privadaFake ?? FichaPrivada(alias: alias, existe: false);
+  }
+
+  @override
+  Future<FichaPrivada> writeFichaPrivada({
+    required String alias,
+    required String contenido,
+  }) async {
+    if (errorPrivada != null) throw errorPrivada!;
+    contenidoPrivadaGuardado = contenido;
+    return FichaPrivada(alias: alias, texto: contenido, existe: true);
+  }
 
   @override
   Future<String> startAutopilot({

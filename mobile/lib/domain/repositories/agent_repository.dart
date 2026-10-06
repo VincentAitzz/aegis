@@ -80,6 +80,63 @@ abstract interface class AgentRepository {
     required String contenido,
   });
 
+  /// Da de alta un proyecto: carpeta, registro, ficha pública y ficha privada.
+  ///
+  /// ## Por qué existe esto
+  /// `project_create` ya estaba como tool del agente, pero solo se alcanzaba
+  /// desde un run de autopilot. Eso obligaba a pasar por el modelo para escribir
+  /// un alta que es enteramente determinista —una carpeta, un JSON y dos
+  /// ficheros de texto—, con el modelo como intermediario innecesario y un
+  /// aprobado de nivel 3 en medio. El alta es de la persona, no del agente.
+  ///
+  /// Devuelve qué secciones de la ficha quedan por escribir, porque un alta
+  /// nunca las deja todas: eso lo sabe la persona, no el puente.
+  Future<ProyectoAlta> crearProyecto({
+    required String alias,
+    required String area,
+    required String kind,
+    String nombre,
+    String alcance,
+    String verificar,
+    String db,
+    String carpeta,
+    bool yaExiste,
+  });
+
+  /// Qué secciones hay que escribir en una ficha, por tipo.
+  ///
+  /// Sin esto, el formulario tendría su propia lista y se desincronizaría del
+  /// bridge: el día que allí añadiese una sección, esta pantalla seguiría sin
+  /// preguntarla y la puerta la seguiría exigiendo. Un bug sin ninguna pista de
+  /// por qué pasa.
+  ///
+  /// Las secciones de la ficha privada vienen en el mismo sitio, y **no son
+  /// obligatorias**: es una lista de temas, porque el modelo de cobro no tiene
+  /// forma canónica.
+  Future<PlantillaFichas> plantillasFichas();
+
+  /// La ficha comercial del proyecto: cliente, presupuesto, forma de pago.
+  ///
+  /// Fuera de git por diseño —es información de un tercero— y por eso va en
+  /// endpoint aparte: mezclarla con la pública acabaría metiendo datos de un
+  /// cliente en un fichero versionado.
+  ///
+  /// No falla con 404 cuando el proyecto no tiene ficha privada: es el estado
+  /// normal de un proyecto recién dado de alta, y el editor tiene que poder
+  /// abrirse para crearla.
+  Future<FichaPrivada> readFichaPrivada(String alias);
+
+  /// Guarda la ficha comercial, también **sin pasar por el modelo**.
+  ///
+  /// Por el mismo motivo que [writeFicha]: a un 7B copiando un texto literal se
+  /// le comen los `---`. Aquí además el contenido es el dato que Aegis tiene
+  /// prohibido inventar —el precio, la fecha—, así que sale de una persona o no
+  /// sale.
+  Future<FichaPrivada> writeFichaPrivada({
+    required String alias,
+    required String contenido,
+  });
+
   /// Fases de trabajo que el puente ofrece: `idea`, `arquitectura`, …
   ///
   /// Qué enfoques existen, para poder **fijar** uno a mano.
