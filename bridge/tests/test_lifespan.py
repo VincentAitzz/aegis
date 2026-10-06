@@ -23,7 +23,9 @@ algunos tests podían pasar sin comprobar nada.
    seguían vivos después de apagar.
 """
 import asyncio
+import os
 import unittest
+from unittest import mock
 
 
 class TestCerrarNoEsIrreversible(unittest.TestCase):
@@ -71,6 +73,32 @@ class TestCerrarNoEsIrreversible(unittest.TestCase):
 
 
 class TestElLifespanSeEjecuta(unittest.TestCase):
+    def setUp(self) -> None:
+        # El anuncio en la red local se apaga para los tests. No por ruido: sin
+        # esto, `register_service` de `zeroconf` puede tardar **90 s** y lanzar
+        # `TimeoutError` en un entorno sin red, y este test pasó de 4 s a 94.
+        # Un `test` que dependa de que haya red es un test que depende de dónde
+        # se ejecuta.
+        patcher = mock.patch.dict(os.environ, {"AEGIS_SIN_DESCUBRIMIENTO": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_el_lifespan_no_anuncia_en_los_tests(self) -> None:
+        """El descubrimiento no puede colarse en una prueba.
+
+        Enseñar un servicio real en la red durante `unittest` es ruido para todo
+        lo que hubiera en la LAN, y un `import` de `zeroconf` en el camino de un
+        test que mide otra cosa convierte un fallo de dependencia en un fallo de
+        puerta que no dice de qué.
+        """
+        from fastapi.testclient import TestClient
+        from app import main
+
+        with mock.patch.object(main, "_anunciar") as anunciar:
+            with TestClient(main.app) as c:
+                self.assertEqual(200, c.get("/health").status_code)
+        anunciar.assert_not_called()
+
     def test_se_puede_usar_el_gestor_de_contexto(self):
         """Antes de esto, ningún test podía. Era el tell de que no se ejecutaba."""
         from fastapi.testclient import TestClient

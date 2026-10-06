@@ -45,12 +45,50 @@ log = logging.getLogger("aegis.bridge")
 settings = get_settings()
 
 
+# -- El anuncio en la red local ------------------------------------------------
+#
+# Envuelto en tres funciones para que **el lifespan se pueda ejecutar entero en
+# los tests**. Enseñar un servicio real en la red durante `unittest` sería ruido
+# para todo lo que hubiera en la LAN, y un `import` de `zeroconf` en el camino
+# de un test que solo mide otra cosa convierte un fallo de dependencia en un
+# fallo de puerta que no dice de qué.
+#: Lo que anuncia el bridge por mDNS, y lo que la app usa para decidir si lo que
+#: encontró es algo con lo que puede hablar.
+VERSION_BRIDGE = "0.1.0"
+
+
+def _anunciar() -> str:
+    from .descubrimiento import registrar
+    return registrar(settings.bridge_port, VERSION_BRIDGE)
+
+
+def _retirar_anuncio() -> None:
+    from .descubrimiento import retirar
+    retirar()
+
+
+def _sin_descubrimiento() -> bool:
+    """Salta el anuncio. Lo usan los tests y quien no lo quiere."""
+    import os
+    return os.environ.get("AEGIS_SIN_DESCUBRIMIENTO") == "1"
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_telemetry(settings.log_dir)
     init_memory(settings)                       # 'cerebro' del proyecto (capas 1-2)
     init_autonomia()                            # qué puede hacer sin preguntar
     init_agenda()                               # notas, tareas y recordatorios
+    # Me anuncio en la red local para que el móvil me encuentre sin que nadie
+    # configure una IP. Va **después** de todo lo que puede fallar, y su fallo no
+    # se propaga: `registrar` devuelve el motivo en vez de lanzar, porque perder
+    # el descubrimiento degrada el caso de uso pero no impide trabajar.
+    #
+    # El puerto sale de los settings y no de una constante: si alguien lo mueve,
+    # un valor fijo anunciaría uno que no escucha y el móvil encontraría el bridge
+    # para no poder hablar con él.
+    if not _sin_descubrimiento():
+        log.info("anuncio en la red: %s", _anunciar())
     log.info("bridge arriba (bind %s:%s -> hermes %s)",
              settings.bridge_bind, settings.bridge_port, settings.hermes_base_url)
     # Que el lifespan se ejecute en los tests HTTP es lo que permite usar
@@ -66,6 +104,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Retirar el anuncio va con el apagado, no con el cierre del cliente: un
+        # anunciante vivo después de apagar el bridge hace que alguien intente
+        # conectarse a algo que ya no está. `retirar` es idempotente y no lanza,
+        # así que duplicarlo con el `atexit` del propio módulo es inofensivo y
+        # cubre el caso de que el proceso muera sin pasar por aquí.
+        _retirar_anuncio()
         await hermes.aclose()
 
 

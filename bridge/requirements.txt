@@ -13,6 +13,16 @@ chromadb>=0.5
 # Fijado a la API clásica: en mcp 2.x `FastMCP` se renombró a `MCPServer`.
 mcp>=1.0,<2
 
+# --- Descubrimiento en la red local ----------------------------------------
+# El bridge se anuncia como `_aegis._tcp` para que el móvil lo encuentre sin
+# que nadie configure una IP. Motivo: la dirección del bridge **no es estable** —
+# la de la tailnet se apaga sola en el móvil y la de la LAN es DHCP—, así que
+# hornearla en el APK produce una app que abre y no ve nada.
+#
+# Sin esto, la única alternativa es subnet scanning desde el móvil, que es
+# peor en todos los sentidos que importan.
+zeroconf>=0.131
+
 # --- Cerebro avanzado (grafo temporal con extracción LLM): opt-in -----------
 # graphiti-core>=0.8
 # falkordb
