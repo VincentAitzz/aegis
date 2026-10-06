@@ -57,8 +57,13 @@ class _WorkspaceTemporal(unittest.TestCase):
         # existe de verdad en el workspace fallaba con "'acme' ya está
         # registrado" y parecía un fallo del alta. Un test que depende de lo que
         # hay vivo en el disco no es un test.
-        self._codigo = {a: p for a, p in projects.PROJECTS.items()
-                        if a not in projects._DATOS}
+        # Se guardan los dos: `PROJECTS` es el mapa y `_DATOS` el `set` de alias que
+        # vienen del disco. Vaciar cualquiera sin restaurarlo lo deja roto para
+        # los tests siguientes —el síntoma aparece en otro fichero: un
+        # `medir_base` que de pronto responde «no está en el registro»— y por
+        # eso costaba atribuir el fallo a quien lo causaba.
+        self._codigo = dict(projects.PROJECTS)
+        self._datos = set(projects._DATOS)
         for alias in list(projects._DATOS):
             projects.PROJECTS.pop(alias, None)
         projects._DATOS.clear()
@@ -68,6 +73,7 @@ class _WorkspaceTemporal(unittest.TestCase):
         projects.PROJECTS.clear()
         projects.PROJECTS.update(self._codigo)
         projects._DATOS.clear()
+        projects._DATOS.update(self._datos)
 
     def escribir(self, alias: str, datos: dict) -> None:
         (self.registro / f"{alias}.json").write_text(

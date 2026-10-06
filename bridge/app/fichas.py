@@ -323,6 +323,59 @@ def leer_para_agente(alias: str) -> str:
     return cabecera + "\n\n" + crudo
 
 
+#: Plantilla de la ficha privada. Es un fichero en disco, no una constante: la
+#: copia de referencia está en `fichas/_plantilla-privada.md` para que se pueda
+#: leer y corregir sin abrir Python.
+PLANTILLA_PRIVADA = "_plantilla-privada.md"
+
+#: Dónde vive la plantilla. Deliberadamente **no** es `FICHAS_DIR`: los tests
+#: parchean `FICHAS_DIR` a un tmpdir para no tocar el disco, y si la plantilla
+#: saliera de ahí, `alta()` fallaría en todos ellos. La plantilla es del repo; el
+#: destino de una ficha es del proyecto.
+_PLANTILLAS_DIR = BRIDGE_DIR / "fichas"
+
+
+def ruta_plantilla_privada() -> Path:
+    return _PLANTILLAS_DIR / PLANTILLA_PRIVADA
+
+
+def plantilla_privada() -> str:
+    """La plantilla de la ficha comercial, tal cual está en disco.
+
+    Se lee en cada llamada y no se cachea a propósito: si alguien corrige la
+    plantilla, el siguiente alta usa la versión nueva sin reiniciar nada.
+
+    ## Por qué una plantilla y no un conjunto fijo de campos
+    Porque los encargos no se cobran todos igual —precio cerrado, por hitos, por
+    horas, a partes, o nada— y un esquema fijo obliga al que rellena a
+    inventar valores para campos que en su encargo no existen. La lista de
+    temas es un recordatorio, no un formulario.
+
+    No hay puerta sobre esta ficha, y a propósito: la información comercial
+    scarce no tiene forma canónica, y Aegis no debe inventar un precio para
+    dejar de preguntar.
+    """
+    try:
+        return ruta_plantilla_privada().read_text(encoding="utf-8")
+    except OSError as exc:
+        raise FichaIncompleta(
+            f"no está la plantilla de la ficha privada en {ruta_plantilla_privada()}: {exc}"
+        ) from exc
+
+
+def crear_privada(alias: str) -> Path:
+    """Deja la ficha privada del alias con la plantilla, y devuelve su ruta.
+
+    No pisa la que ya había: repetir el alta no debe borrar lo comercial que el
+    usuario ya escribió.
+    """
+    path = privada_path(alias)
+    if not path.exists():
+        PRIVADAS_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(plantilla_privada(), encoding="utf-8")
+    return path
+
+
 def plantilla(kind: str) -> str:
     """Esqueleto con los encabezados de su tipo, todo marcado como pendiente."""
     if kind not in SECCIONES_POR_TIPO:

@@ -53,7 +53,9 @@ class TestNingunMutanteSinPuerta(unittest.TestCase):
         main_mod.settings.aegis_api_key = "clave-de-prueba"
         try:
             c = TestClient(self.app)
-            for ruta in ("/autopilot", "/autopilot/start", "/tasks"):
+            # `/tasks` se quitó en la Fase 1 (el segundo motor). Lo que queda
+            # son las dos formas de lanzar un run, y las dos tienen que Cerrar.
+            for ruta in ("/autopilot", "/autopilot/start"):
                 r = c.post(ruta, json={"prompt": "di hola", "max_steps": 1})
                 self.assertEqual(401, r.status_code,
                                  f"{ruta} aceptó lanzar trabajo sin token")
@@ -123,53 +125,43 @@ class TestNingunMutanteSinPuerta(unittest.TestCase):
             main_mod.settings.aegis_api_key = original
 
 
-class TestElWsTambienCierra(unittest.TestCase):
-    """El handshake del WS se comprueba **antes** del `accept()`.
+class TestNoQuedaNingunCanalSinPuerta(unittest.TestCase):
+    """El WS se quitó en la Fase 1, y con él su test de handshake.
 
-    Aceptar primero y comprobar después deja el socket abierto durante la
-    comprobación, y en un `accept()` no hay forma de «desaceptar»: la única
-    puerta es cerrar. Con `AEGIS_API_KEY` puesta, ese socket sin comprobar
-    empuja la traza de los runs a cualquiera que se conecte por la tailnet.
+    Antes había dos superficies: HTTP (con `exigir_token`) y el WebSocket, que
+    necesitaba su propio camino porque la API de WebSocket del navegador **no
+    puede poner cabeceras** en el handshake. Eso obligaba a `_ws_exigir_token`,
+    que cerraba el socket **antes** del `accept()` para no dejar la puerta abierta
+    ni un instante. Todo eso desaparece con la ruta.
+
+    Este test fija el hecho nuevo, que es el que de verdad importa: **ya no
+    existe ninguna superficie que no pase por `exigir_token`**. No es que el WS
+    esté cerrado —es que no hay segundo camino, y un segundo camino es
+    exactamente donde vive un guardarraíl que nadie recuerda.
     """
-
-    def _abrir_ws(self, query: str):
-        """Conecta y sale. No manda nada: el mensaje de goodbye del cliente
-        provocaría un error de validación en el servidor y el cierre limpio
-        acabaría midiendo el shutdown en vez de la puerta."""
-        from app import main as main_mod
-        from fastapi.testclient import TestClient
-        original = main_mod.settings.aegis_api_key
-        main_mod.settings.aegis_api_key = "clave-de-prueba"
-        try:
-            c = TestClient(self.app)
-            with c.websocket_connect("/ws" + query):
-                pass
-        finally:
-            main_mod.settings.aegis_api_key = original
-
-    def test_ws_sin_token_no_llega_a_conectarse(self):
-        """El handshake se rechaza: `cliente WS conectado` **no** aparece en el log.
-
-        No se comprueba el tipo de excepción que lance el transporte, porque
-        depende del cliente de prueba y no de lo que hace el bridge. Lo que se
-        comprueba es la consecuencia: el socket no llegó a estar conectado, y eso
-        es exactamente lo que evita publicar la traza.
-        """
-        with self.assertLogs("aegis.bridge", level="INFO") as registro:
-            try:
-                self._abrir_ws("")
-            except Exception:
-                pass
-        self.assertNotIn("cliente WS conectado",
-                         "\n".join(registro.output))
-
-    def test_ws_con_token_correcto_acepta(self):
-        """Con la llave, el socket abre. Si esto falla, la puerta está mal puesta."""
-        with self.assertLogs("aegis.bridge", level="INFO") as registro:
-            self._abrir_ws("?token=clave-de-prueba")
-        self.assertIn("cliente WS conectado", "\n".join(registro.output))
 
     @property
     def app(self):
         from app.main import app
         return app
+
+    def test_no_hay_websocket(self) -> None:
+        websockets = [r.path for r in self.app.routes if hasattr(r, "websocket")]
+        self.assertEqual([], websockets,
+                         "vuelve a haber un canal que no pasa por exigir_token")
+
+    def test_no_hay_ruta_de_hermes(self) -> None:
+        """`/tasks*` gobernaba runs en el motor que ya no existe. Si vuelve,
+        vuelve un segundo motor con tools (`docs/motores.md` §6)."""
+        tasks = [r.path for r in self.app.routes
+                 if hasattr(r, "path") and r.path.startswith("/tasks")]
+        self.assertEqual([], tasks)
+
+    def test_toda_ruta_solo_por_http(self) -> None:
+        """Y para que no quede un `if` sobre el metodo que se cuele: toda ruta
+        con metodos tiene que ser HTTP."""
+        for r in self.app.routes:
+            metodos = getattr(r, "methods", None)
+            if metodos:
+                self.assertTrue({"GET", "POST", "PUT", "PATCH", "DELETE"} & set(metodos),
+                                f"{r.path} no es HTTP")

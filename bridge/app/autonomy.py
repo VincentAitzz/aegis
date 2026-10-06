@@ -98,6 +98,33 @@ LIBRES = frozenset({
     "enfoques_disponibles",
 })
 
+#: Las tools del **camino rápido** (`app/intents.py`), y su nivel.
+#:
+#: ## Por qué viven aparte y no en `LIBRES`
+#: Porque `LIBRES`, `CON_PERMISO` y `REQUIERE_OK` se declaran con nombres de
+#: tools **reales** —las que salen de `mcp_ops`— y hay un test que exige que no
+#: haya un nombre clasificado que no exista. Añadir aquí `tarea_crear` rompería
+#: ese test, y con razón: no es una tool MCP, es una función que el router
+#: llama después de pasar por la puerta.
+#:
+#: ## Por qué estaban pidiendo tu OK para una alarma
+#: `nivel_de()` cae en `requiere_ok` para **todo lo que no conoce**, y eso es una
+#: propiedad buena: una tool nueva pregunta antes de hacer nada. El coste fue
+#: que «pon una alarma mañana» creaba una petición de aprobación, porque
+#: `tarea_crear` no estaba en ninguna parte. Es decir, la propiedad buena
+#: funcionando, y el coste siendo absurdo: una nota en tu agenda no debería
+#: pedir permiso.
+#:
+#: ## El criterio para añadir una aquí
+#: Que **no escriba fuera de la agenda del usuario**. Una tool que toca el disco
+#: del proyecto, una base o una pantalla es nivel 2 o 3, y va en su conjunto de
+#: verdad. Si un intent de aquí algún día necesita más, se sube de nivel aquí.
+NIVELES_CAMINO_RAPIDO: dict[str, str] = {
+    "tarea_crear": "libre",     # una fila en tu propia agenda
+    "nota_crear": "libre",      # una fila en tus propias notas
+    "projects_list": "libre",   # solo lee (y ya estaba en LIBRES)
+}
+
 #: Herramientas que escriben en tu disco. Necesitan que hayas marcado el
 #: proyecto con `POST /autonomy/{alias}`.
 CON_PERMISO = frozenset({"aegis_write_file", "aegis_patch_file"})
@@ -507,6 +534,10 @@ def nivel_de(tool: str) -> str:
     Lo decide el **nombre**, no el contexto. Un nivel que dependiera de "cómo
     estamos hoy" cambiaría de opinión entre el paso 2 y el paso 3 del mismo run,
     y una puerta que se mueve sola no es una puerta.
+
+    Los intents del camino rápido se resuelven **antes** de la lista blanca,
+    y antes del `requiere_ok` por defecto: no son tools MCP, son funciones que el
+    router llama tras pasar por `decide()`. Ver `NIVELES_CAMINO_RAPIDO`.
     """
     if tool in LIBRES:
         return "libre"
@@ -514,6 +545,8 @@ def nivel_de(tool: str) -> str:
         return "con_permiso"
     if tool in REQUIERE_OK:
         return "requiere_ok"
+    if tool in NIVELES_CAMINO_RAPIDO:
+        return NIVELES_CAMINO_RAPIDO[tool]
     # Una tool desconocida se trata como la más restrictiva. La lista blanca de
     # `autopilot` ya impide ejecutarla, pero si algún día se abre esa lista, el
     # nivel por defecto tiene que ser el que pregunta.

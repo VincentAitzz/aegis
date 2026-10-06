@@ -196,11 +196,19 @@ def alta(alias: str, area: str, kind: str, nombre: str = "",
     fichas.FICHAS_DIR.mkdir(parents=True, exist_ok=True)
     fichas.ficha_path(alias).write_text(texto, encoding="utf-8")
 
+    # La privada se crea también, y con la plantilla **sin rellenar**: es lo que
+    # Aegis no puede inventar. Sin esto, el alta dejaba al usuario sin un sitio
+    # donde poner el precio y la fecha, que son justo los datos que el agente
+    # tiene prohibido suponer.
+    privada = fichas.crear_privada(alias)
+
     pendientes = fichas.read_ficha(alias).faltan()
     lineas = [
         f"Alta de '{alias}' (tipo {kind}) en {root}.",
         f"Registro: {REGISTRO_DIR / (alias + '.json')}",
         f"Ficha:    {fichas.ficha_path(alias)}",
+        f"Privada:  {privada} (plantilla sin rellenar; Aegis no inventa "
+        "precios ni fechas, así que lo que no escribas ahí no lo sabe)",
     ]
     if pendientes:
         lineas.append(

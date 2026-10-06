@@ -254,8 +254,7 @@ def project(alias: str) -> Project:
                          f"(conocidos: {', '.join(sorted(PROJECTS))})")
     return PROJECTS[alias]
 
-
-def neon_entry(alias: str) -> dict:
-    p = project(alias)
-    return {'neon_project': p.neon_project, 'neon_branch': p.neon_branch,
-    }
+# `neon_entry(alias)` se borro en la Fase 1: un solo consumidor en todo el repo,
+# y era `neon.config()`, que lee el `Project` directamente. Lo que queda es la
+# razon por la que la base se pide por alias y no por URL, y esta en el docstring
+# de `app/neon.py`.
