@@ -302,18 +302,92 @@ class _Almacen:
     # -- la cola ------------------------------------------------------------
     def pedir(self, *, run_id: str, paso: int, tool: str, args: dict[str, Any],
               motivo: str, proyecto: str = "") -> str:
+        """Pide un OK y devuelve el id de la petición.
+
+        ## Por qué deduplica, y por qué **no** es un detalle
+        Lo primero que hace un agente al recibir un «no» es **reintentar lo
+        mismo**. Antes, cada reintento insertaba una fila nueva con un uuid
+        nuevo, así que la cola de aprobaciones crecía sin techo y en el móvil se
+        acumulaban tarjetas idénticas: la misma llamada, 31 veces, sin nada que
+        decidir 31 veces.
+
+        Devolver la petición que ya está pendiente no cambia nada de lo que se
+        decide. Es **la misma decisión** esperando a la misma persona, y que
+        aparezca una vez es más honesto que aparecer 31: 31 tarjetas invites a
+        contestarlas una por una, que es trabajo inventado.
+
+        ## Y por qué solo dentro del mismo run
+        Dos runs distintos pidiendo lo mismo son dos decisiones, aunque se parezcan:
+        uno puede ser un reintento y otro un trabajo nuevo que quieres ver
+        approving por separado. Deduplicar entre runs sería concesión de
+        autoridad, y aprobar uno aprobaría el otro sin haberte-enterado.
+
+        ## Y por qué una denegada **no** se reutiliza
+        Denegar con motivo es información, y se inyecta en el prompt del run
+        siguiente para que Aegis no vuelva a proponerlo. Si la reutilizáramos,
+        después de un «no» no habría forma de volver a preguntar, y el motivo
+        quedaría como una prohibición permanente en vez de una corrección.
+
+        ## Y por qué `paso` no entra en la clave
+        Porque el paso cambia entre reintentos del mismo run, y meterlo haría
+        fallar la deduplicación justo en el caso que quiere arreglar. El `paso`
+        guardado es el último, que es lo que se quiere ver: «vuelve a intentarlo
+        en el paso 7» dice más que «en el 2».
+        """
+        firma = json.dumps(args, ensure_ascii=False, sort_keys=True)
+        clave = (run_id, tool, firma)
+        for fila in self._c.execute(
+                "SELECT id, paso FROM aprobaciones WHERE estado='pendiente'"
+                " AND run_id=? AND tool=? AND argumentos=? ORDER BY creado",
+                clave).fetchall():
+            log.info("autonomia: %s reintenta %s; se devuelve la petición %s "
+                     "que ya estaba pendiente", run_id, tool, fila[0])
+            return fila[0]
         pet_id = f"ok-{uuid.uuid4().hex[:10]}"
         self._c.execute(
             "INSERT INTO aprobaciones(id, run_id, paso, tool, argumentos, motivo,"
             " proyecto, estado, creado) VALUES(?,?,?,?,?,?,?,?,?)",
-            (pet_id, run_id, paso, tool, json.dumps(args, ensure_ascii=False),
+            (pet_id, run_id, paso, tool, firma,
              motivo[:600], proyecto, "pendiente", _ahora()))
         self._c.commit()
         log.info("autonomia: %s pide OK para %s (run=%s paso=%s)",
                  run_id, tool, run_id, paso)
         return pet_id
 
+    def caducar(self, horas: int = VIGENCIA_APROBACION_H) -> int:
+        """Las pendientes más viejas que [horas] pasan a `caducada`. Devuelve cuántas.
+
+        ## Por qué caducar y no borrar
+        Porque un OK que nadie contestó **es un «no»**, y un «no» viejo deja de
+        ser información: la situación que querías aprobar ya no existe. Pero el
+        rastro importa —«se puede auditar»—, así que la fila se marca en vez de
+        desaparecer.
+
+        ## Y por qué la misma ventana que el token
+        Porque es el mismo plazo por el mismo motivo: una decisión sobre una
+        llamada concreta no sobrevive a un día. Una aprobación tampoco sobrevive,
+        y eso ya estaba hecho (`aprobadas_sin_gastar`).
+
+        Se llama al leer, no con un temporizador: un proceso que limpia cada hora
+        es un proceso más que se puede parar mal, y el retraso solo afecta a lo que
+        se ve, que es justo lo que hay que caducar.
+        """
+        limite = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - horas * 3600))
+        cur = self._c.execute(
+            "UPDATE aprobaciones SET estado='caducada' WHERE estado='pendiente'"
+            " AND creado < ?", (limite,))
+        self._c.commit()
+        return cur.rowcount
+
     def pendientes(self, run_id: str = "") -> list[dict[str, Any]]:
+        """Lo que espera tu OK, **sin lo caducado**.
+
+        Caduca antes de leer, así que la lista que se enseña es la de lo que de
+        verdad se puede decidir hoy. Las caducadas siguen en la tabla, con su
+        estado, para poder preguntarle por qué no se hizo.
+        """
+        self.caducar()
         if run_id:
             rows = self._c.execute(
                 "SELECT id, run_id, paso, tool, argumentos, motivo, proyecto, creado"

@@ -295,11 +295,35 @@ class TestSiemprePregunta(_Piso):
         self.assertIn("NO se abrirá", d.motivo)
         self.assertIn("telefono", d.motivo)
 
-    def test_cada_peticion_es_una_distinta(self):
+    def test_reintentar_es_la_misma_peticion(self):
+        """Antes este test decía lo contrario: que cada intento creaba una fila.
+
+        Y era lo que había, y por eso el móvil llegó a enseñar **31 tarjetas
+        idénticas** de la misma llamada. Lo primero que hace un agente al recibir
+        un «no» es reintentar lo mismo, así que cada reintento era una tarjeta
+        más y la cola no tenía techo.
+
+        Ahora lo correcto es lo de aquí: el reintento del mismo run, con la misma
+        tool y los mismos argumentos, **devuelve la petición que ya está
+        pendiente**. Es la misma decisión esperando a la misma persona, y que
+        aparezca una vez es más honesto que aparecer 31 — 31 tarjetas invitan a
+        contestarlas una por una, que es trabajo inventado.
+
+        La dedup se explica entera en `pedir()` y tiene sus tests en
+        `tests/test_cola_aprobaciones.py`.
+        """
         p1 = autonomy.decide("db_migrate", {"project": "compra-unida"},
                              run_id="r1", paso=1, almacen_=self.a).peticion
         p2 = autonomy.decide("db_migrate", {"project": "compra-unida"},
                              run_id="r1", paso=2, almacen_=self.a).peticion
+        self.assertEqual(p1, p2)
+
+    def test_otros_runs_si_son_peticiones_distintas(self):
+        """Aprobar uno no debe aprobar el otro sin que te enteres."""
+        p1 = autonomy.decide("db_migrate", {"project": "compra-unida"},
+                             run_id="r1", paso=1, almacen_=self.a).peticion
+        p2 = autonomy.decide("db_migrate", {"project": "compra-unida"},
+                             run_id="r2", paso=1, almacen_=self.a).peticion
         self.assertNotEqual(p1, p2)
 
 

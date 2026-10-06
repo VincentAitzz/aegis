@@ -174,16 +174,27 @@ class TestElAltaPorHttp(_Cliente):
 
         La segunda además sigue exigiendo verificador declarado, así que un alta
         sin `verificar` deja el proyecto en lectura, y eso es lo correcto.
+
+        ## Por qué esto mira el almacén y **no** llama a `decide`
+        Porque `decide()` sin `almacen_` escribe en el almacén **real**, y eso
+        dejó 31 aprobaciones de `ficha_write` falsas en el móvil de quien esto
+        escribe. Este test se ejecutó 31 veces y cada una dejó una.
+
+        La lección está en `tests/test_registro.py` y en la de A-103: un test que
+        toca estado global tiene que aislarlo. Aquí aislarlo era facilísimo —
+        `almacen()` devuelve el almacén— y no se hizo. El síntoma apareció días
+        después en la pantalla de Ahora de un móvil, sin ninguna relación visible
+        con este test.
         """
-        from app import projects
+        from app import autonomy
         self.c.post("/proyectos", headers=self.headers, json={
             "alias": "encargo-http", "area": "apps", "kind": "encargo",
         })
-        from app import autonomy
-        # `decide` necesita `run_id`/`paso` porque el token valida **una**
-        # llamada de un run concreto, no un permiso general.
-        d = autonomy.decide("ficha_write", {"path": "ficha"}, run_id="r", paso=1)
-        self.assertFalse(d.ok, "el alta concedio escritura por su cuenta")
+        escribibles = autonomy.almacen().proyectos()
+        self.assertNotIn(
+            "encargo-http", escribibles,
+            "el alta concedio escritura por su cuenta: crear el proyecto y poder "
+            "escribir en él son dos decisiones distintas")
 
 
 class TestLaPrivadaPorHttp(_Cliente):
