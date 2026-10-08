@@ -2482,3 +2482,148 @@ blanco, deformados y con resolución mala.
   rellenan a la vez.
 - **Y la forma de encontrarlo**: `python -m unittest <una clase> <la que falla>`
   es el binomio que separa contaminación de bug. Vale por menos de un minuto.
+
+## A-104 — Un interceptor que no llama a `handler.next()` no falla: cuelga
+
+> Aplica cuando: cuando algo de Dart se queda esperando sin excepción y sin
+> avance, y el servidor dice que recibió la petición.
+
+- **Qué pasó**: la app móvil se quedaba eternamente en «buscando proyectos…».
+  El bridge registraba el `GET /health` con `200 OK`: la petición **llegaba** y
+  la respuesta volvía. El `await` no se completaba nunca.
+- **Por qué costó**: el síntoma —«se queda pensando»— se parece a una red mala, a
+  un servidor lento o a un bucle de reintentos. Se probaron las tres antes de
+  mirar el cliente. La causa estaba en cuatro líneas:
+  ```dart
+  InterceptorsWrapper(onRequest: (options, _) async {
+    options.baseUrl = await _base();
+  })
+  ```
+  Un interceptor que **transforma** la petición tiene que decir «siguiente». Sin
+  `handler.next(options)`, Dio no lanza ningún error: simplemente nunca continúa.
+  El peor tipo de fallo posible, porque no hay nada que leer en un log.
+- **La forma de encontrarlo**: el log del **servidor**. Si la petición aparece
+  allí y la respuesta vuelve con `200`, el cuelgue está después de llegar, o sea
+  en el cliente, y no en la red. Esa línea parte el problema por la mitad.
+- **Regla**: todo interceptor que toque la petición llama a `handler.next`. Y
+  todo lo que espera a algo tiene que poder decir «no me llegó». Un `await` sin
+  plazo no es una espera: es una apuesta.
+- **Y cómo se vigila**: un test contra un `HttpClientAdapter` de verdad, con un
+  `fetch` que sí responde. Quitar el `handler.next()` hace fallar el test a los
+  10 s; ponerlo lo hace pasar. Un test con un doble que devuelve `null` no lo
+  habría visto nunca.
+
+## A-105 — Una pantalla que se queda en «preguntando» no es un bug de red: es un `await` sin `setState`
+
+> Aplica cuando: cuando un `Future` falla y la UI se queda en el estado
+> «cargando» para siempre, sin mensaje.
+
+- **Qué pasó**: sin bridge, o con un error de red, el diálogo de actualización se
+  quedaba en «preguntando al bridge…» indefinidamente. No salía ni un error.
+- **Por qué**: la excepción se comía el `setState`. El `await` de dentro lanzaba,
+  el `catch` no existía, y el framework se quedaba con el último estado que
+  recuerda: el de «cargando».
+- **Por qué costó**: en Flutter esto **parece** un bug de red porque la red está
+  rota de verdad. Es también un bug de red. Lo que faltaba era la segunda mitad:
+  decir que la red falló.
+- **Regla**: todo `await` que puede fallar y cuyo resultado se pinta tiene un
+  `on Object catch`. Sin eso no hay estado de error, hay estado eterno.
+- **Corolario**: distinguir «no pude comprobar» de «comprobé que no hay nada».
+  Son dos textos distintos porque llevan a dos sitios distintos. Un APK que el
+  bridge no tiene y una consulta que no llegó se veían igual, y el primero se
+  arregla en el bridge y el segundo en el móvil.
+
+## A-105b — El motivo de un error tiene que llevar a **su** sitio
+
+> Aplica cuando: cuando un mensaje se muestra para varios errores distintos.
+
+- **Qué pasó**: tres fallos con un solo texto, «no hay APK que servir»:
+  1. El bridge no tiene APK. Se arregla compilando.
+  2. El APK es más viejo que el código. Se arregla **recompilando**.
+  3. El token no viaja, y el `HEAD` vuelve `401`. Se arregla **en la app**.
+- **Por qué costó**: con (3), quien lo veía iba a mirar la puerta de actualización
+  del bridge —que estaba perfectamente bien— y no el token. Un motivo que no
+  lleva a su sitio cuesta **más** que no dar ninguno, porque dirige la mirada.
+- **Regla**: un motivo nombra la causa, no el síntoma. Y los códigos distintos
+  tienen textos distintos: `401` es la llave, `404` es que no hay binario, `409`
+  es recompilar. `404` y `409` son los dos «no hay APK» y se confundían.
+- **Y el `HEAD` manda**: el motivo del `409` no puede vivir en el cuerpo, porque
+  un `HEAD` no tiene cuerpo. Va en una cabecera. Y **las cabeceras no son
+  UTF-8**: viajan en latin-1, y un motivo con `código` dentro revienta la
+  respuesta con `UnicodeDecodeError`. Se queda en la cabecera **sin acentos** y
+  el original sigue en el `detail`, que sí los admite.
+
+## A-106 — `resolveActivity` dice qué le gusta al sistema; `startActivity` es lo que lanza
+
+> Aplica cuando: cuando un intent «no hace nada» en vez de fallar.
+
+- **Qué pasó**: el botón «Ir al permiso en Ajustes» no hacía absolutamente nada,
+  sin error visible, en un dispositivo sin pantalla de Ajustes. El código elegía
+  el intent con `resolveActivity` y lanzaba **solo ese**. La primera opción no
+  resolvía, así que caía a la segunda, que tampoco — y como la segunda solo se
+  había comprobado por adelantado, `startActivity` reventó con
+  `ActivityNotFoundException` dentro del `MethodChannel`, sin que nadie lo
+  escuchara.
+- **Por qué costó**: `resolveActivity` devuelve un `ComponentName`, y su
+  documentación dice que **puede** devolver `null` aunque exista algo que pueda
+  manejar el intent. Es un dato, no una garantía. Por eso la pregunta «¿existe?»
+  solo la responde el intento de verdad.
+- **Regla**: cuando lanzas un intent que puede faltar, **pruébalo**. `for` sobre
+  candidatos, `try`/`catch` de `ActivityNotFoundException`, y si no arranca
+  ninguno, **devuelve el motivo**. Un método que no puede fallar en su interfaz
+  obliga a que quien llama finja que todo fue bien.
+- **Corolario en Dart**: traga el `PlatformException`. Sin el `try`/`catch` en
+  Dart, el motivo se queda en el nativo donde nadie lo lee, y el botón sigue sin
+  hacer nada —igual que antes, pero ahora sin ninguna pista de por qué.
+- **Y el texto**: el motivo se pinta en la etiqueta del bridge, no donde va el
+  motivo del bridge. Si comparte línea, `didChangeAppLifecycleState` lo borra al
+  repreguntar al volver de Ajustes —que es justo el momento en que importa— y el
+  fallo se va por la ventana.
+
+## A-107 — Una frase que se elige por una condición no dice si hay nada que hacer
+
+> Aplica después de instalar: en el diálogo de actualización.
+
+- **Qué pasó**: con la v12 ya instalada y la v12 en el bridge, el diálogo decía
+  «Listo: al instalar te lo confirmará Android» y no había ningún botón al lado.
+  La frase se elegía mirando **el permiso**, y con el permiso concedido —el
+  caso normal— salía esa, haya o no algo nuevo.
+- **Por qué importa más de lo que parece**: no es un texto feo. Es la diferencia
+  entre «puedes» y «tienes que». Una frase que ofrece una acción que no existe
+  enseña a leer mal el resto de la pantalla.
+- **Regla**: el orden de las condiciones de un texto es el orden de las
+  **situaciones del mundo**, no el de las variables que tienes a mano. Aquí:
+  no hay APK → hay APK pero no hay nada nuevo → hay APK nuevo y permiso → hay APK
+  nuevo sin permiso. Con el permiso primero, las dos del medio se confundían
+  siempre.
+
+## A-108 — Un valor declarado caducado se acepta siempre, porque nadie lo comprueba
+
+> Aplica cuando: cuando una variable del `.env` o de la config describe «dónde
+> está algo» y nadie mira si sigue estando allí.
+
+- **Qué pasó**: `bridge/.env` declaraba `AEGIS_BRIDGE_TAILNET_IP=192.168.0.50`.
+  La Tailscale del bridge es `100.101.102.100` y la LAN de esta máquina es
+  `192.168.0.51`. O sea: ni una ni la otra. Cada `build_apk(target='telefono')`
+  compilaba una app apuntando a una dirección muerta.
+- **Por qué costó**: no se vio **ningún** error. La actualización completa
+  (descargar, instalar, confirmar, instalar de nuevo) pasó con el host
+  equivocado, porque el emulador se llegaba por `adb reverse` y `localhost`.
+  Un fallo que solo aparece cuando ya no queda otra ruta, es un fallo que llega
+  al móvil.
+- **El test lo enseñó antes**: `test_la_ip_declarada_gana_a_tailscale` usaba
+  `192.168.0.50` como **ejemplo válido**. El test no guardaba el error: lo
+  guardaba como regla. Al añadir la comprobación, el test fue el primero en
+  fallar — que es exactamente lo que tiene que hacer.
+- **El intento erróneo y por qué se descartó**: la primera reacción fue exigir
+  que la IP estuviera en `100.64.0.0/10`, el rango de Tailscale. Habría
+  resuelto este caso y **roto otro legítimo**: hay builds que se apuntan a la LAN
+  a propósito, porque el móvil no siempre corre Tailscale y eso está documentado
+  en `TestLaIpDelPuenteEnElTelefono`. Un fallo común no se arregla con una regla
+  más estricta, se arregla con la regla que dice **lo que importa**: que la
+  dirección sea una de las que esta máquina tiene ahora.
+- **Regla**: una variable que describe dónde está algo se comprueba contra la
+  realidad, no contra su formato. «Parece una IP de tailnet» es una heurística;
+  «es una de las mías» es un hecho. Y el fallo —«no es de esta máquina»— se
+  descarta **sin** lanzar error, cayendo a lo que la máquina sí tiene: seguir
+  pudiendo compilar vale más que no compilar por un dato inválido.

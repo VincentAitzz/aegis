@@ -303,6 +303,35 @@ retroceso, aunque haya un bug de fondo:
 Cuando un guardarraíl bloquea algo legítimo, **se amplía el guardarraíl**, no se
 desactiva: el motivo de cada veto está en el mensaje.
 
+## 4.1 La app se actualiza a sí misma, y por eso el puente tiene que estar al día
+
+Hay **dos** caminos para poner una build en el móvil, y confundirlos cuesta una
+tarde:
+
+| Camino | Quién decide | Para qué |
+|---|---|---|
+| `install_apk(target=…)` | Aegis, con tu OK | una release |
+| Ajustes → «Actualizar Aegis» | tú, en Android | una build que ya está en el bridge |
+
+El segundo es el día a día, y tiene una regla que no es negociable: **el bridge no
+sirve un APK más viejo que su propio código.** Un APK viejo instalado como si
+fuera nuevo deja la app peor que antes, y es el peor tipo de fallo posible: uno
+que parece una mejora. Por eso `HEAD /apk/{base}` devuelve `409` con el motivo en
+`x-aegis-motivo`, y la app lo enseña.
+
+Las dos cosas que hacen que esto funcione, y que ya se rompieron una vez:
+
+- **El motivo viaja en cabecera**, no en el cuerpo. La app pregunta con un
+  `HEAD`, y un `HEAD` no tiene cuerpo. Y va **sin acentos**, porque las cabeceras
+  viajan en latin-1 (A-105b).
+- **Un `await` que puede fallar tiene `catch`.** Sin él, la excepción se come el
+  `setState` y la pantalla se queda en «preguntando» para siempre, que es
+  indistinguible de una red lenta (A-105).
+
+Para probar el ciclo entero hacen falta **dos** builds: una que se instala a mano
+con `adb` y otra más nueva que se sirve. Con una sola, la app ve que ya tiene la
+última y no hay nada que probar. Detalle en `docs/runbook.md` §4.1.2.
+
 ## 5. Operación (verificar antes de asumir)
 
 ```bash

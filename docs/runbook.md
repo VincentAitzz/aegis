@@ -284,6 +284,45 @@ adb -s <serial> shell am start -n com.aegis.aegis_console/.MainActivity
 - Las tools de `aegis-ops` resuelven el dispositivo solas: `adb_connect()` usa
   mDNS + la IP de la tailnet. Funcionan con o sin Tailscale (misma Wi-Fi).
 
+## 4.1.2. Actualizar la app desde la propia app
+
+Hay dos caminos y se confunden mucho:
+
+| Camino | Quién decide | Cuándo |
+|---|---|---|
+| `install_apk(target=…)` | Aegis, con tu OK | una **release** que hay que poner en el móvil |
+| Ajustes → «Actualizar Aegis» en la app | tú, en Android | una **build** que ya está en el bridge |
+
+El segundo es el del día a día:
+
+1. `HEAD /apk/telefono` — tres cabeceras, no 50 MB.
+2. Si el número es mayor que el instalado, ofrece **Bajar la nueva**.
+3. Si falta el permiso de «instalar apps desconocidas», ofrece llevar a Ajustes y
+   **vuelve a preguntar solo** cuando la app pasa a primer plano.
+4. Descarga a `Android/data/<paquete>/files/apk/`, lo único que el `FileProvider`
+   puede leer sin permisos extra.
+5. Pasa el fichero al instalador del sistema con un `content://`. **Tú confirmas.**
+
+Lo que Aegis **no** puede hacer, y no hay diseño que lo arregle: responder al
+diálogo de Android. Por eso el diálogo dice «te toca confirmar», nunca
+«instalado».
+
+```bash
+# El bridge tiene que servir un APK AL DÍA. Si el código cambió después de
+# compilarlo devuelve 409 y no sirve nada — a propósito: un APK viejo
+# instalado como si fuera nuevo deja la app peor que estaba.
+cd bridge && bin/api GET apk/telefono   # 200 + x-aegis-version, o 409 + x-aegis-motivo
+```
+
+> El motivo del `409` viaja en la **cabecera** porque la app pregunta con un
+> `HEAD`, y un `HEAD` no tiene cuerpo. Va **sin acentos**: las cabeceras viajan en
+> latin-1 y un `código` dentro revienta la respuesta con `UnicodeDecodeError`. El
+> original con acentos sigue en el `detail`, que sí los admite.
+
+Para probar el ciclo entero hacen falta **dos** builds: una que se instala a mano
+con `adb` y otra más nueva que se sirve. Con una sola, la app ve que ya tiene la
+última y no hay nada que probar.
+
 ## 4.2. Agente autónomo (`/autopilot`)
 
 Los modelos locales de 6 GB **no emiten `tool_calls` fiables** dentro de los runs
@@ -379,7 +418,7 @@ lecciones(alias='aegis', tema='voy a decir que ya he hecho todo')
 lecciones(alias='aegis', numeros='A-055,A-061')
 ```
 
-### 4.4 Fases de trabajo
+### 4.5 Fases de trabajo
 
 Un enfoque son las instrucciones que solo valen mientras se piensa. Cada uno es un
 fichero en `bridge/enfoques/` con su entrada en `_indice.json`, y solo se inyecta
@@ -481,6 +520,13 @@ curl -H "Authorization: Bearer $API_SERVER_KEY" http://127.0.0.1:8642/health
 | `estado: roto` en un run largo        | `fin: modelo_caido` o `reventado`: el modelo no respondió, o el bridge reventó. El `error` va en su propio campo |
 | Un verificador rojo deja el bridge colgado | ya no: `verifier.gate` corre el comando en un hilo. Si vuelve a pasar, `tests/test_verificador_no_bloquea.py` lo detecta |
 | La app no conecta                     | verifica MagicDNS `aegis.tailXXXXXX.ts.net` e IP 100.x, y que `GET /health` responde (va sin token) |
+| La app se queda en «buscando proyectos…» | el `GET /health` sale en el log del bridge con `200`: si llega y vuelve, el cuelgue está en el cliente. Un interceptor sin `handler.next()` cuelga sin error (A-104) |
+| El diálogo se queda en «preguntando»     | un `await` sin `catch` deja el estado a medias; con excepción se queda en «cargando» para siempre (A-105) |
+| «el bridge no tiene un APK que servir»   | mira el **status** del `HEAD`: si es `401`/`403` el token no viaja o caducó, y el arreglo está en la app, no en el bridge (A-105b) |
+| El 409 no muestra el motivo              | el motivo va en `x-aegis-motivo`, y **sin acentos**: las cabeceras viajan en latin-1 y un `código` dentro revienta la respuesta |
+| «Ir al permiso en Ajustes» no hace nada  | el dispositivo no tiene ninguna activity que lo maneje. Debe decirlo, no fallar en silencio: los intents se prueban, no se consultan (A-106) |
+| «Listo para instalar» sin nada que instalar | la frase se elegía por el permiso y no por si hay versión nueva (A-107) |
+| `build_apk(telefono)` apunta a una dirección muerta | `AEGIS_BRIDGE_TAILNET_IP` en `bridge/.env`: si está, **tiene que ser una de las que da `ip -4 addr`** — una caducada se descarta sola y cae a `tailscale ip -4` (A-108). Ahora está sin declarar a propósito |
 | `pkill uvicorn` mata la propia shell   | usar patrón `[u]vicorn` (evita auto-match)                          |
 | Ollama OOM a 64k                       | RAM libre ~5 GB es justo; evitar construir contexto +44k sin cache_read |
 | Tailscale "Logged out" tras reboot     | `sudo tailscale up --hostname aegis` y completar login (URL impresa)|
