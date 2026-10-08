@@ -53,8 +53,11 @@ class AgentRepositoryImpl implements AgentRepository {
   /// Para los tests: sin eso, probar que la app elige bien el bridge exigiría
   /// levantar un bridge real y abrir un socket mDNS de verdad. Es el mismo motivo
   /// que en `Resolvedor`.
-  AgentRepositoryImpl({required this.config, Resolvedor? resolvedor})
-      : _resolutor = resolvedor,
+  AgentRepositoryImpl({
+    required this.config,
+    Resolvedor? resolvedor,
+    HttpClientAdapter? adaptador,
+  })  : _resolutor = resolvedor,
         _dio = Dio(BaseOptions(
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
@@ -68,9 +71,29 @@ class AgentRepositoryImpl implements AgentRepository {
             'X-Aegis-Token': _token,
           },
         )) {
+    // La costura de los tests: sin ella no hay forma de ejecutar la cadena real
+    // de Dio sin abrir un puerto, y la única capa que estaba rota era
+    // precisamente esa. Un test que no puede llegar a la capa que importa no
+    // prueba nada de ella.
+    if (adaptador != null) _dio.httpClientAdapter = adaptador;
+
     _dio.interceptors.add(
-      InterceptorsWrapper(onRequest: (o, _) async {
+      // ## Por qué `handler.next()` es lo que hace que esto funcione
+      // En Dio 5, `onRequest` **no** continúa solo: hay que llamar a
+      // `handler.next(options)` a mano. Sin esa llamada la petición se queda
+      // parada dentro del interceptor, y no con un error: se queda **esperando
+      // una respuesta que ya no va a llegar**. La `Future` de cada llamada del
+      // repositorio nunca termina, y la pantalla se queda en «buscando
+      // proyectos…» para siempre.
+      //
+      // No hay excepción, ni log, ni socket: la petición no llegó a salir. Y
+      // como era el único interceptor de la cadena, parecía el comportamiento correcto y no
+      // faltaba nada visible. Todo lo demás —mDNS, contrato de `/health`— se
+      // puede depurar mirando la red; esto no aparece en la red porque en la red
+      // nunca estuvo.
+      InterceptorsWrapper(onRequest: (o, handler) async {
         o.baseUrl = await _base();
+        handler.next(o);
       }),
     );
   }
@@ -513,7 +536,53 @@ class AgentRepositoryImpl implements AgentRepository {
   ///
   /// Consulta con `HEAD`, no bajando el fichero: las tres cabeceras que dice
   /// esto pesan menos que una cabecera, y el cuerpo son 50 MB que no sirven para
-  /// responder «¿tengo la última?».
+
+  /// Lo que hay que contarle a la persona cuando la respuesta no trae versión.
+  ///
+  /// ## Por qué el 401 necesita su propio mensaje
+  /// Se dio de verdad: un APK compilado sin el token recibía 401, y la app decía
+  /// «el bridge no tiene un APK que servir todavía». No era verdad: había un APK,
+  /// y lo que pasaba es que la app no podía ni mirarlo. Con ese texto se iba a
+  /// mirar la puerta de actualización del bridge —que estaba bien— y no se iba a
+  /// mirar el token, que era lo roto.
+  ///
+  /// La regla es la de siempre: cada motivo lleva a **su** sitio. Un 401 es la
+  /// llave, un 409 es recompilar, y un 404 es que no hay binario. Los tres son
+  /// arreglos distintos, en sitios distintos.
+  static String _motivoDe(Response<dynamic> r) {
+    switch (r.statusCode) {
+      case 401:
+      case 403:
+        return 'el bridge no reconoce esta app: el token no viaja o está '
+            'caducado. Sin él no se puede ni preguntar.';
+      case 409:
+        return _cabeceraDe(r, 'x-aegis-motivo') ??
+            _cuerpoDe(r) ??
+            'el APK que hay no sirve todavía: recompílalo.';
+      default:
+        return '';
+    }
+  }
+
+  static String? _cabeceraDe(Response<dynamic> r, String nombre) {
+    final v = r.headers.value(nombre);
+    if (v == null || v.trim().isEmpty) return null;
+    return v.trim();
+  }
+
+  // `Response<void>` no sirve aquí: con `data` tipado a `void` no se puede ni
+  // mirarlo. Es el tipo de la respuesta que Dio devuelve en el HEAD, y aun así
+  // en un 409 el cuerpo trae el `detail`, así que se lee como dynamic.
+  static String? _cuerpoDe(Response<dynamic> r) {
+    final d = r.data;
+    if (d is! String || d.trim().isEmpty) return null;
+    return d.trim();
+  }
+
+  /// Si el bridge tiene un APK más nuevo que el instalado, y si se puede instalar.
+  ///
+  /// Responde a «¿tengo la última?» y a «¿puedo instalarla?», que son dos
+  /// preguntas y no una: tener la última no sirve de nada sin el permiso.
   @override
   Future<VersionApk> versionApk({required int instalado, required bool hayPermiso}) async {
     // `telefono` es el **destino**, no el nombre del fichero. El bridge compone
@@ -538,7 +607,13 @@ class AgentRepositoryImpl implements AgentRepository {
           versionName: _cabecera(r, 'x-aegis-version-name') ?? '',
           etag: _cabecera(r, 'etag') ?? '',
         ),
-        motivo: r.statusCode == 409 ? (_cuerpo(r) ?? 'el bridge no tiene un APK al día') : '',
+        // El motivo sale de la cabecera y no del cuerpo: esta llamada es un
+        // `HEAD`, y un `HEAD` no tiene cuerpo. Leyéndolo del `detail` —que es lo
+        // natural— el 409 llegaba sin texto y la app enseñaba «el bridge no tiene
+        // un APK que servir todavía» cuando lo que pasaba era que el APK era más
+        // viejo que el código y solo había que recompilarlo. Dos Worlds
+        // distintos, y el mensaje mandaba al sitio equivocado.
+        motivo: _motivoDe(r),
       );
     } on Object {
       // Sin bridge, o con un error de red. No es una excepción que merezca tirar
@@ -599,9 +674,4 @@ class AgentRepositoryImpl implements AgentRepository {
     return (v == null || v.isEmpty) ? null : v;
   }
 
-  String? _cuerpo(Response<dynamic> r) {
-    final d = r.data;
-    if (d is String && d.isNotEmpty) return d;
-    return null;
-  }
 }

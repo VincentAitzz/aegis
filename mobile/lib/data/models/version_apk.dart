@@ -63,8 +63,24 @@ class VersionApk {
   /// Porque en la UI se lee mejor una frase, y porque fija aquí la regla que
   /// importa: **no se ofrece instalar el mismo número**, que es lo que Android
   /// rechazaría.
+  ///
+  /// ## Por qué la pregunta de si hay algo nuevo va **primero**
+  /// Se dio de verdad: después de instalar la v12 con la v12 ya en el bridge,
+  /// el diálogo seguía diciendo «Listo: al instalar te lo confirmará Android»,
+  /// sin botón de instalar al lado. El motivo es que esta frase se elegía
+  /// mirando solo el permiso, así que con el permiso concedido decía «puedes
+  /// instalar» aunque no hubiera nada que instalar.
+  ///
+  /// El orden importa porque las tres frases son sobre tres mundos: no hay APK,
+  /// hay APK pero no hay nada nuevo, y hay APK nuevo. Con el permiso primero, la
+  /// segunda y la tercera se confundían siempre que el permiso estuviera
+  /// concedido —que es el caso normal.
   String get estado {
     if (versionCode <= 0) return motivo.isEmpty ? 'El bridge no tiene APK que servir.' : motivo;
+    if (!disponible) {
+      return 'Estás al día: el bridge sirve esta misma versión '
+          '($versionName).';
+    }
     if (puedeInstalar) return 'Listo: al instalar te lo confirmará Android.';
     return 'Antes hay que concederle a Aegis el permiso de instalar apps '
         'desconocidas (Ajustes → Apps → Acceso especial).';

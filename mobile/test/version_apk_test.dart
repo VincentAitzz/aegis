@@ -131,4 +131,44 @@ void main() {
       expect(await d.instalar('/x.apk'), 'sin_instalador');
     });
   });
+
+  test('al día no dice «listo para instalar», aunque tenga permiso', () {
+    // El fallo medido: con la v12 instalada y la v12 en el bridge, el diálogo
+    // seguía diciendo «Listo: al instalar te lo confirmará Android» y no había
+    // ningún botón al lado. La frase se elegía mirando el permiso y solo el
+    // permiso.
+    final v = VersionApk.evaluado(
+      instalado: 12,
+      hayPermiso: true,
+      delBridge: const VersionApk(versionCode: 12, versionName: '1.0.11'),
+    );
+
+    expect(v.disponible, isFalse);
+    expect(v.estado, contains('al día'));
+    expect(v.estado, isNot(contains('instalar')));
+  });
+
+  test('con versión nueva y permiso, sí dice que se puede instalar', () {
+    // El otro lado de la misma regla: que «al día» no se coma el caso bueno.
+    final v = VersionApk.evaluado(
+      instalado: 11,
+      hayPermiso: true,
+      delBridge: const VersionApk(versionCode: 12, versionName: '1.0.11'),
+    );
+
+    expect(v.disponible, isTrue);
+    expect(v.estado, contains('Android'));
+  });
+
+  test('al día sin permiso tampoco pide el permiso', () {
+    // Pedir un permiso que no hace falta es ruido: la única razón de pedirlo es
+    // que haya algo que instalar.
+    final v = VersionApk.evaluado(
+      instalado: 12,
+      hayPermiso: false,
+      delBridge: const VersionApk(versionCode: 12, versionName: '1.0.11'),
+    );
+
+    expect(v.estado, isNot(contains('permiso')));
+  });
 }

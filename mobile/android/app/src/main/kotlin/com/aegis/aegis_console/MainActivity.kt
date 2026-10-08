@@ -96,10 +96,13 @@ class MainActivity : FlutterActivity() {
 
                     // Abre Ajustes. El permiso se concede a mano: es un viaje de
                     // la persona al sistema y no hay forma de automatizarlo.
-                    "abrirPermiso" -> {
-                        Instalador.abrirPermiso(this)
-                        result.success(null)
-                    }
+                    //
+                    // Devuelve un motivo si no se pudo abrir. Antes devolvía siempre
+                    // `null`, o sea «todo bien», y el caso real —un dispositivo sin
+                    // pantalla de Ajustes que lo resuelva— era un botón que no
+                    // hacía nada y una excepción sin dueño. Decir «no pude» es lo
+                    // que permite que Dart lo enseñe.
+                    "abrirPermiso" -> result.success(Instalador.abrirPermiso(this))
 
                     // Pasa el APK al instalador. Devuelve `null` si el intent se
                     // lanzó, y un **motivo** si no. Que se lanzara no quiere decir

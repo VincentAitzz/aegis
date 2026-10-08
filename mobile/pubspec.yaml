@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # actualizar una app si el `versionCode` nuevo es mayor o igual que el instalado.
 # Es lo que lee el bridge con `aapt` para saber si hay versión nueva, y lo que
 # lee la app sobre sí misma para decirselo. Subirlo es parte de publicar.
-version: 1.0.3+4
+version: 1.0.13+14
 
 environment:
   sdk: ^3.13.4

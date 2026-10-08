@@ -23,6 +23,8 @@ import logging
 import re
 import time
 from pathlib import Path
+import inspect
+import typing
 from typing import Any, Optional
 
 import httpx
@@ -310,6 +312,41 @@ _STDLIB_RE = re.compile(r"<stdlib_response>(.*?)</stdlib_response>", re.DOTALL)
 _PREFIXED_CALL_RE = re.compile(
     r"(?:tool_call|tool\s*call)\s*\)?\s*[:\-]?\s*([A-Za-z0-9_:]+)\s*(\{.*)", re.DOTALL | re.IGNORECASE
 )
+
+
+def _args_efectivas(tool: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Los argumentos tal y como la tool los va a recibir.
+
+    Rellena lo que falte con el valor por defecto **de la firma**, y solo con
+    eso: lo que el modelo dijo se respeta, y lo que no dijo se hace explícito.
+
+    ## Por qué el relleno y no un «usa los defaults»
+    Un `args: {}` o un `args: null` en una aprobación no dice qué se va a
+    ejecutar, solo qué función. Y el ejecutor va a usar los valores por defecto
+    igualmente: la petición sigue siendocierta, lo que falta es la parte de la
+    petición que hay que revisar antes de decir que sí.
+
+    ## Por qué se ignoran los extras
+    Si el modelo mandó una clave que la tool no declara, no se copia: se queda la
+    lista limpia. Un argumento inventado que sobrevive en el registro hace creer
+    que va a hacer algo que en realidad se ignoraría.
+    """
+    if tool is None or not isinstance(args, dict):
+        return args if isinstance(args, dict) else {}
+    try:
+        hints = typing.get_type_hints(tool.fn)
+        defaults = {
+            nombre: p.default
+            for nombre, p in inspect.signature(tool.fn).parameters.items()
+            if p.default is not inspect.Parameter.empty
+        }
+    except Exception:  # noqa: BLE001 — si no se puede intuir la firma, no se inventa
+        return args
+    out = {k: v for k, v in args.items() if k in hints}
+    for nombre, valor in defaults.items():
+        if nombre not in out:
+            out[nombre] = valor
+    return out
 
 
 def _coerce_args(args: Any) -> dict[str, Any]:
@@ -821,8 +858,35 @@ async def _bucle(prompt: str, *, ollama_url: str, model: str,
                 # Consultarla después sería un informe, y un informe llega tarde:
                 # la escritura ya está en el disco.
                 if autonomy is not None:
+                    # Lo que se guarda en la aprobación son los argumentos
+                    # **efectivos**, no los que escribió el modelo.
+                    #
+                    # ## Por qué esto no es un detalle
+                    # Un 7B pide `build_apk` sin argumentos —medido dos veces
+                    # seguidas—. Con lo que emitía, la petición se guardaba como
+                    # `args: null`, y eso tiene dos efectos que importan:
+                    #
+                    # 1. **No se puede aprobar lo que no se ve.** La pantalla de
+                    #    aprobaciones enseñaba `build_apk` y nada más, con
+                    #    `target` ausente: quien aprueba no sabe si va a
+                    #    publicar para el emulador o para el teléfono. La
+                    #    invariante de «se puede auditar» deja de cumplirse justo
+                    #    en el punto donde más importa.
+                    # 2. **Aprobar no es lo que parece.** Los valores por defecto
+                    #    se aplican igual, así que el permiso se concedía para
+                    #    otra llamada —`target: emulador`—, y el APK se publicaba
+                    #    apuntando a `localhost`. El token valida *la llamada*, y
+                    #    aquí la llamada era otra.
+                    #
+                    # La alternativa era negar por `args` distintos, que es el
+                    # comportamiento correcto del motor pero no arregla el
+                    # problema: la petición seguiría sin enseñar qué se iba a
+                    # ejecutar. Aquí se rellena lo que falta con el valor que la
+                    # tool va a usar de verdad, y la aprobación pasa a ser
+                    # fiel.
+                    efectives = _args_efectivas(ops_mcp._tool_manager.get_tool(name), args)
                     veredicto = autonomy.decide(
-                        name, args, run_id=run_id, paso=step,
+                        name, efectives, run_id=run_id, paso=step,
                         estado_base=estado_base, token=token,
                         enfoque=activos[0] if activos else "")
                     entry["autonomia"] = {"ok": veredicto.ok, "motivo": veredicto.motivo,

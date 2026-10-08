@@ -44,7 +44,7 @@ class DialogoActualizar extends StatefulWidget {
   State<DialogoActualizar> createState() => _DialogoActualizarState();
 }
 
-class _DialogoActualizarState extends State<DialogoActualizar> {
+class _DialogoActualizarState extends State<DialogoActualizar> with WidgetsBindingObserver {
   _Fase _fase = _Fase.buscando;
   VersionApk _v = const VersionApk(versionCode: 0);
   String _motivo = '';
@@ -52,24 +52,81 @@ class _DialogoActualizarState extends State<DialogoActualizar> {
   int _recibidos = 0;
   int _total = 0;
 
+  /// El `versionCode` de **lo que hay instalado en este móvil**.
+  ///
+  /// Antes no se guardaba: la línea «tienes» pintaba `_v.versionCode`, que es la
+  /// versión **remota**. Con una 3 instalada y una 4 en el bridge, decía «tienes
+  /// versión 4» —justo lo contrario de lo que pasa— y el diálogo era un espejo
+  /// de la respuesta del servidor en lugar de una comparación.
+  int? _instalado;
+
+  /// Si la última consulta llegó a preguntarle al bridge.
+  ///
+  /// Distingue dos pantallas que antes se confundían en una sola: «el bridge no
+  /// tiene APK» y «no se pudo preguntar». La segunda salía con la caja vacía y
+  /// sin motivo, porque la excepción se comía el `setState` y el `await` nunca
+  /// llegaba —el diálogo se quedaba en «preguntando» para siempre.
+  bool _llego = false;
+
+  /// Algo que pasó al intentar abrir Ajustes y que hay que contar.
+  ///
+  /// Vive aparte de [motivo] a propósito: `_motivo` es lo que dijo el bridge y
+  /// se borra al volver a preguntar. Esto es «tu botón acaba de fallar», que
+  /// sobrevive a esa repregunta porque si no, el fallo se iría por la ventana en
+  /// cuanto `didChangeAppLifecycleState` preguntara otra vez.
+  String _nota = '';
+
   bool get _descargando => _fase == _Fase.bajando;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _comenzar();
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState estado) {
+    // Volver de Ajustes es el momento en que el permiso puede haber cambiado, y
+    // es el único momento en que se puede notar. Sin esto, el diálogo decía
+    // «vuelve a pulsar» sin ningún botón que pulsar: había que cerrar y abrir a
+    // mano, y un texto que pide algo que no existe es una calle sin salida.
+    if (estado == AppLifecycleState.resumed) _comenzar();
+  }
+
   Future<void> _comenzar() async {
-    final instalado = widget.instalado ?? await widget.nativo.versionCode();
-    final permiso = await widget.nativo.puedeInstalar();
-    final v = await widget.repo.versionApk(instalado: instalado, hayPermiso: permiso);
-    if (!mounted) return;
     setState(() {
-      _v = v;
       _fase = _Fase.buscando;
-      _motivo = v.estado;
+      _motivo = 'preguntando al bridge…';
     });
+    try {
+      final instalado = widget.instalado ?? await widget.nativo.versionCode();
+      final permiso = await widget.nativo.puedeInstalar();
+      final v = await widget.repo.versionApk(instalado: instalado, hayPermiso: permiso);
+      if (!mounted) return;
+      setState(() {
+        _instalado = instalado;
+        _v = v;
+        _llego = true;
+        _fase = _Fase.buscando;
+        _motivo = v.estado;
+      });
+    } on Object catch (e) {
+      // Sin esto el diálogo se queda mudo: la excepción sube, el `setState` no
+      // se llama, y la pantalla queda en «preguntando» sin ninguna pista. Un
+      // fallo que no se enseña no se puede arreglar.
+      if (!mounted) return;
+      setState(() {
+        _fase = _Fase.buscando;
+        _motivo = 'no se pudo comprobar la actualización: $e';
+      });
+    }
   }
 
   Future<void> _bajar() async {
@@ -129,10 +186,28 @@ class _DialogoActualizarState extends State<DialogoActualizar> {
     });
   }
 
+  /// Lleva a la persona a donde se concede el permiso.
+  ///
+  /// ## Por qué aquí no se avisa «ya está» y se calla
+  /// No se avisa porque al volver, `didChangeAppLifecycleState` vuelve a
+  /// preguntar y el diálogo enseña el resultado solo. Si se escribiera «vuelve a
+  /// pulsar» habría que inventarse un botón que no existe.
+  ///
+  /// Lo que sí hace falta es **tragarse el fallo**. Se dio de verdad: en un
+  /// dispositivo sin pantalla de Ajustes el botón no hacía nada, y el motivo
+  /// —«no hay ninguna pantalla donde concederlo»— se perdía en una excepción sin
+  /// dueño que nadie iba a leer. Un botón que no hace nada es peor que un botón
+  /// que dice que no puede.
   Future<void> _abrirPermiso() async {
-    await widget.nativo.abrirPermiso();
-    if (!mounted) return;
-    setState(() => _motivo = 'cuando lo hayas concedido, vuelve a pulsar');
+    try {
+      final motivo = await widget.nativo.abrirPermiso();
+      if (motivo == null || motivo.isEmpty) return;
+      if (!mounted) return;
+      setState(() => _nota = motivo);
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() => _nota = 'no se pudo abrir Ajustes: $error');
+    }
   }
 
   @override
@@ -150,13 +225,24 @@ class _DialogoActualizarState extends State<DialogoActualizar> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _linea('tienes', _v.versionCode > 0 ? 'versión ${_v.versionCode}' : 'la que hay instalada'),
+            _linea('tienes', _instalado == null || _instalado! <= 0
+                ? 'lo que hay instalada'
+                : 'versión $_instalado'),
             _linea('el bridge tiene',
-                _v.versionCode > 0 ? '${_v.versionCode} (${_v.versionName})' : 'nada que servir'),
+                !_llego
+                    ? '— sin respuesta'
+                    : _v.versionCode > 0
+                        ? '${_v.versionCode} (${_v.versionName})'
+                        : 'nada que servir'),
             const SizedBox(height: 12),
-            Text(_motivo,
-                style: const TextStyle(
-                    fontFamily: AegisPalette.mono, fontSize: 11.5, color: AegisPalette.fgDim)),
+            Text(_nota.isNotEmpty ? _nota : _motivo,
+                style: TextStyle(
+                    fontFamily: AegisPalette.mono,
+                    fontSize: 11.5,
+                    // La nota se pinta distinta porque no es lo que dijo el
+                    // bridge: es lo que pasó aquí. Del mismo color se leía como
+                    // parte de la respuesta del servidor.
+                    color: _nota.isNotEmpty ? AegisPalette.brand : AegisPalette.fgDim)),
             if (ocupado) ...[
               const SizedBox(height: 14),
               LinearProgressIndicator(

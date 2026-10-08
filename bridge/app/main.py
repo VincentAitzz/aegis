@@ -321,6 +321,23 @@ PRIVADA_MAX = 20_000
 _ALIAS_PRIVADO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,48}$")
 
 
+def _ascii_corto(texto: str, tope: int = 180) -> str:
+    """Un motivo que quepa en una cabecera HTTP.
+
+    ## Por qué hay que quitarlo a mano
+    Las cabeceras no son UTF-8: viajan en latin-1. Un motivo con `código` —que es
+    exactamente el texto que escribe este endpoint— hace que la respuesta
+    reviente con `UnicodeDecodeError` al codificarse, y el 409 se convierte en un
+    500 sin motivo.
+
+    La salida fácil —dejar el texto solo en el `detail`, que sí admite UTF-8— ya
+    se probó y es la que hace que la app pierda el motivo: pregunta con `HEAD`, y
+    un `HEAD` no tiene cuerpo.
+    """
+    limpio = texto.encode("ascii", "ignore").decode("ascii")
+    return limpio[:tope]
+
+
 @app.api_route("/apk/{base}", methods=["GET", "HEAD"])
 async def apk_descargar(base: str,
                         _auth: None = Depends(exigir_token)) -> FileResponse:
@@ -364,6 +381,14 @@ async def apk_descargar(base: str,
     El `versionCode` leído del propio APK, que es el número que Android compara.
     Con eso la app decide si hay versión nueva **antes** de descargar 50 MB, y sin
     que el dato pueda discrepar del binario: sale del fichero, no de otro sitio.
+
+    ## Y `X-Aegis-Motivo` en el 409
+    El motivo va **también en una cabecera**, y no solo en el `detail` del JSON.
+    Porque la app pregunta con `HEAD`, y un `HEAD` no tiene cuerpo: el `detail`
+    no le llega nunca. Medido: un `409` porque el APK era más viejo que el código
+    aparecía en el móvil como «el bridge no tiene un APK que servir todavía», que
+    es justo lo contrario de lo que pasaba —había un APK, y lo que faltaba era
+    recompilarlo—. Un motivo que se pierde no es un motivo: es ruido con pasos.
     """
     from .deploy import _huella_binario, apk_desactualizado, apk_sin_verificar
     from .deploy import sello_de
@@ -389,11 +414,13 @@ async def apk_descargar(base: str,
         raise HTTPException(
             status_code=409,
             detail=f"el APK de '{base}' no representa el código de ahora: {motivo}. "
-                   f"Recompílalo.")
+                   f"Recompílalo.",
+            headers={"X-Aegis-Motivo": _ascii_corto(f"recompila: {motivo}")})
     if (motivo := apk_sin_verificar(apk)):
         raise HTTPException(
             status_code=409,
-            detail=f"el APK de '{base}' no ha pasado la puerta: {motivo}")
+            detail=f"el APK de '{base}' no ha pasado la puerta: {motivo}",
+            headers={"X-Aegis-Motivo": _ascii_corto(f"sin verificar: {motivo}")})
     code, nombre = version_de(apk)
     desde = sello_de(apk)
     respuesta = FileResponse(

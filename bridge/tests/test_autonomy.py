@@ -1276,3 +1276,67 @@ class TestAdbConnectDiceLaVerdad(unittest.TestCase):
         with mock.patch.object(mcp_ops, "_run", return_value=proc):
             puertos = mcp_ops._puertos_mdns()
         self.assertEqual(puertos, [("192.168.0.5", "46119")])
+
+
+class ArgsEfectivas(unittest.TestCase):
+    """Lo que se guarda en una aprobación tiene que poder revisarse.
+
+    ## El fallo que fijan estos tests
+    Un 7B pide `build_apk` sin argumentos —medido dos veces seguidas—. La
+    petición se guardaba con `args: null`: la pantalla enseñaba `build_apk` y
+    nada más, sin `target`, así que no se podía saber si se publicaba para el
+    emulador o para el teléfono. Y no era solo cosmetico: el ejecutor aplicaba
+    los valores por defecto igual, así que aprobar concedía el permiso para una
+    **otra** llamada. El token valida *la llamada*; una llamada que no se puede
+    ver no se puede validar.
+    """
+
+    def _tool_build_apk(self):
+        from app.mcp_ops import mcp
+        return mcp._tool_manager.get_tool("build_apk")
+
+    def test_rellena_lo_que_el_modelo_no_dijo_con_el_default_de_la_firma(self):
+        from app.autopilot import _args_efectivas
+        efectivas = _args_efectivas(self._tool_build_apk(), {})
+        self.assertEqual(efectivas["target"], "emulador")
+        self.assertIs(efectivas["release"], True)
+
+    def test_lo_que_el_modelo_dijo_manda(self):
+        from app.autopilot import _args_efectivas
+        efectivas = _args_efectivas(self._tool_build_apk(), {"target": "telefono"})
+        self.assertEqual(efectivas["target"], "telefono")
+
+    def test_un_argumento_que_la_tool_no_declara_no_sobrevive_en_el_registro(self):
+        # Si sobrevive, el registro hace creer que va a hacer algo que en
+        # realidad se ignoraría.
+        from app.autopilot import _args_efectivas
+        efectivas = _args_efectivas(self._tool_build_apk(), {"destino": "lmfi.xyz"})
+        self.assertNotIn("destino", efectivas)
+
+    def test_una_tool_desconocida_no_inventa_argumentos(self):
+        from app.autopilot import _args_efectivas
+        self.assertEqual(_args_efectivas(None, {"target": "telefono"}), {"target": "telefono"})
+
+    def test_lo_que_manda_el_autopilot_lo_misma_aprobacion_lo_enseña(self):
+        """Extremo a extremo: la aprobación pendiente lleva los argumentos Effective.
+
+        Es el contrato entero en un test — nada deDefaults, nada de null — porque
+        las dos mitades pueden romperse por separado y seguir de acuerdo.
+        """
+        from app.autopilot import _args_efectivas
+
+        # Ruta propia, siempre: `_Almacen()` sin argumentos escribe en la base
+        # **real**, y un test que deja una aprobación pendiente ahí se cuela en
+        # la cola de verdad. Ya pasó con este mismo fichero.
+        al = autonomy._Almacen(Path(tempfile.mkdtemp()) / "autonomia.sqlite3")
+        pid = al.pedir(run_id="r1", paso=1, tool="build_apk",
+                       args=_args_efectivas(self._tool_build_apk(), {}),
+                       motivo="compila")
+        pendiente = [p for p in al.pendientes() if p["id"] == pid][0]
+        self.assertEqual(json.loads(pendiente["argumentos"])["target"], "emulador")
+        self.assertTrue(pid)
+
+    def test_build_apk_es_de_nivel_3_y_se_pregunta_siempre(self):
+        from app.autonomy import REQUIERE_OK, nivel_de
+        self.assertIn("build_apk", REQUIERE_OK)
+        self.assertEqual(nivel_de("build_apk"), "requiere_ok")

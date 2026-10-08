@@ -10,6 +10,8 @@
 // verdad importa aquí, que es **mDNS no responde y el compilado sí**. Para eso
 // hace falta poder apagar el multicast, y no hay forma de hacerlo desde un test
 // sin dejar el resto del proceso sin red.
+import 'dart:async';
+
 import 'package:aegis_console/core/config/app_config.dart';
 import 'package:aegis_console/core/network/descubrimiento.dart';
 import 'package:aegis_console/core/network/resolvedor.dart';
@@ -107,6 +109,41 @@ void main() {
       );
       expect(await r.resolver(), 'http://localhost:8000');
     });
+
+    test('el contrato real de /health, que es status, cuenta como vivo', () async {
+      // Este test es el que faltaba, y por eso costó media tarde. `/health`
+      // devuelve `status: "ok"`; en la raíz **no hay** ningún `ok`, y el que sí
+      // existe es el de Ollama, anidado. Con el contrato inventado, el bridge
+      // contestaba 200 con cuerpo entero y el resolutor lo tenía por muerto:
+      // cero errores, cero pistas, y la app en «buscando proyectos…» para
+      // siempre. Lo que faltaba no era un `if`: era leer el contrato del otro
+      // lado antes de escribirlo.
+      final r = Resolvedor(
+        config: compilado('100.101.102.100'),
+        buscar: () async => const [],
+        // Un recorte fiel de lo que devuelve el bridge de verdad.
+        sondear: (base) async => base.contains('100.84')
+            ? {
+                'status': 'ok',
+                'bridge': {'host': 'aegis', 'bind': '0.0.0.0', 'port': 8000},
+                'hermes': {'status': 'ok'},
+                'ollama': {'ok': true, 'models': ['qwen2.5:7b']},
+              }
+            : sano(base),
+      );
+      expect(await r.resolver(), 'http://100.101.102.100:8000');
+    });
+
+    test('un body vacío tampoco cuenta como vivo', () async {
+      // Un puerto abierto que devuelve cualquier cosa no es un bridge.
+      final r = Resolvedor(
+        config: compilado('100.101.102.100'),
+        buscar: () async => const [],
+        sondear: (base) async =>
+            base.contains('100.84') ? const {} : sano(base),
+      );
+      expect(await r.resolver(), 'http://localhost:8000');
+    });
   });
 
   group('el orden de los candidatos', () {
@@ -149,6 +186,29 @@ void main() {
       await r.intentos();
       expect(sondeadas, 3); // el duplicado + compilado + loopback
     });
+  });
+
+  group('un buscador que se cuelga', () {
+    // El fallo que se vio en el emulador: sin plazo, `resolver()` no terminaba
+    // nunca y **toda** petición de la app se quedaba esperando. No lanzaba
+    // nada, así que no había error que mirar en ninguna parte.
+    test('no arrastra a la resolución, y se prueban los candidatos de siempre', () async {
+      final r = Resolvedor(
+        config: compilado('100.101.102.100'),
+        buscar: () => Completer<List<BridgeEncontrado>>().future,
+        sondear: sano,
+      );
+      expect(await r.resolver(), 'http://100.101.102.100:8000');
+    }, timeout: const Timeout(Duration(seconds: 20)));
+
+    test('y si no hay nadie en ninguna parte, devuelve null en vez de colgar', () async {
+      final r = Resolvedor(
+        config: compilado('100.101.102.100'),
+        buscar: () => Completer<List<BridgeEncontrado>>().future,
+        sondear: (_) async => throw StateError('sin respuesta'),
+      );
+      expect(await r.resolver(), isNull);
+    }, timeout: const Timeout(Duration(seconds: 20)));
   });
 
   group('Descubridor', () {

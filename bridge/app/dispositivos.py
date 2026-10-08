@@ -295,6 +295,61 @@ def resolver(target: str = "emulador") -> Device:
     return d
 
 
+def direcciones_locales() -> set[str]:
+    """Las IPv4 que tiene **esta máquina** ahora mismo.
+
+    Se pregunta al sistema y no se recuerda: una IP de la LAN cambia cuando
+    cambia de red, y una recordada es justo la que se queda vieja sola.
+    """
+    try:
+        proc = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    ips = set()
+    for linea in proc.stdout.splitlines():
+        partes = linea.split()
+        if "inet" in partes:
+            idx = partes.index("inet")
+            if idx + 1 < len(partes):
+                ips.add(partes[idx + 1].split("/")[0])
+    return ips
+
+
+def _es_de_esta_maquina(ip: str, propias: set[str] | None = None) -> bool:
+    """¿Esta dirección es una de las que tiene ahora mismo esta máquina?
+
+    ## Por qué se comprueba, y por qué esto y no «que sea de la tailnet»
+    Se dio de verdad: `bridge/.env` declaraba `AEGIS_BRIDGE_TAILNET_IP` con
+    192.168.0.50, que no era la Tailscale del bridge (100.101.102.100) ni la de
+    esta máquina en su propia red (192.168.0.51). La función devolvía lo
+    declarado tal cual y cada `build_apk(target='telefono')` compilaba una app
+    apuntando a una dirección muerta.
+
+    En el emulador no se notó: el `adb reverse` la dejaba hablar por `localhost`
+    y la actualización entera pasó la puerta con el host equivocado.
+
+    Lo primero que se pensó fue exigir el rango `100.64.0.0/10` de Tailscale, y
+    **eso estaba mal**: el móvil no siempre corre Tailscale, y hay legitimamente
+    builds que se apuntan a la LAN (ver `TestLaIpDelPuenteEnElTelefono`). Un
+    rango solo habría roto un caso bueno.
+
+    Lo que no tiene caso bueno es una dirección que **no es de esta máquina**.
+    Eso es un valor caducado, y se comprueba mirando las que hay, no encasillando
+    la que se escribe.
+    """
+    if propias is None:
+        propias = direcciones_locales()
+    if not propias:
+        # Sin poder comprobar no se inventa un veredicto: se acepta lo declarado.
+        # Un `ip` que no exista en la máquina es un problema del entorno, y
+        # rechazarlo a ciega dejaría sin poder compilar.
+        return True
+    return ip in propias
+
+
 def tailnet_ip() -> str:
     """La IP de **esta máquina** en la tailnet, o "" si no se puede saber.
 
@@ -303,7 +358,7 @@ def tailnet_ip() -> str:
     usa lo que el usuario exporte, o no se compila.
     """
     ip = os.environ.get("AEGIS_BRIDGE_TAILNET_IP", "").strip()
-    if ip:
+    if ip and _es_de_esta_maquina(ip):
         return ip
     # También del `.env`, por el mismo motivo que `AEGIS_PHONE_SERIAL`: nadie lo
     # exporta, así que declararlo ahí no hacía nada y parecía una avería del bridge.
@@ -312,7 +367,7 @@ def tailnet_ip() -> str:
         declarado = str(get_settings().bridge_tailnet_ip or "").strip()
     except Exception:  # noqa: BLE001 — sin config, se sigue por tailscale
         declarado = ""
-    if declarado:
+    if declarado and _es_de_esta_maquina(declarado):
         return declarado
     try:
         proc = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,

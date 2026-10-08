@@ -86,6 +86,24 @@ class Descubridor {
   /// devolver un `Stream` obligaría al widget a gestionar un `StreamSubscription`,
   /// que es donde se cuelgan las apps. Aquí el alcance está acotado por [espera] y
   /// se cierra al terminar.
+  /// El tope **duro** de una búsqueda.
+  ///
+  /// ## Por qué hace falta, y por qué no basta el `timeout` del `lookup`
+  /// El `timeout` de `multicast_dns` es lo que dura una entrada en **la caché**,
+  /// no lo que vive un `lookup`. Un `lookup` al que nadie responde **no cierra
+  /// el stream nunca**, así que `await stream.toList()` se queda esperando
+  /// indefinidamente.
+  ///
+  /// Medido en el emulador: sin esto, la app se quedaba en «buscando proyectos…»
+  /// para siempre —porque la base resuelta no llegaba, y **toda** petición
+  /// esperaba a esa base—. El síntoma no era un error sino una pantalla que nunca
+  /// termina de cargar, y el bridge sí contestando a las peticiones del resolutor:
+  /// dos piezas que parecían rotas y eran una sola, un `await` sin plazo.
+  ///
+  /// Y lo grave: es un fallo **silencioso**. Nada lanza, nada sale en el log, y
+  /// la red funciona. Un `throw` se habría visto en el primer minuto.
+  static const Duration topeBusqueda = Duration(seconds: 6);
+
   Future<List<BridgeEncontrado>> buscar({
     Duration espera = const Duration(seconds: 3),
   }) async {
@@ -152,17 +170,32 @@ class Descubridor {
   ) async {
     for (var intento = 0; intento < 2; intento++) {
       try {
-        final r = await _cliente.lookup<T>(consulta, timeout: espera).toList();
+        final r = await _cliente
+            .lookup<T>(consulta, timeout: espera)
+            .toList()
+            // El `.timeout` es **lo** que hace que esto termine. Sin él, el
+            // `timeout` de arriba solo caduca la caché y el stream sigue abierto
+            // para siempre cuando no hay respuesta.
+            .timeout(_plazo(espera));
         if (r.isNotEmpty) return r;
       } on Object {
-        // Un `lookup` puede lanzar si el cliente no está arrancado o si el
-        // paquete viene mal formado. Es el mismo caso que «no llegó»: se
-        // reintenta y, si tampoco, se devuelve vacío.
+        // Un `lookup` puede lanzar si el cliente no está arrancado, si el
+        // paquete viene mal formado, o —lo de aquí— si no llegue nada y vence el
+        // plazo. Los tres son el mismo caso desde fuera: «no se sabe», así que
+        // se reintenta una vez y, si tampoco, se devuelve vacío.
       }
       if (intento == 0) await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     return const [];
   }
+
+  /// El plazo de **un** `lookup`, recortado por el tope de la búsqueda entera.
+  ///
+  /// El recorte importa: con tres registros y dos intentos, un plazo por
+  /// consulta podría dejar la búsqueda entera en casi un minuto. `topeBusqueda`
+  /// es el que la deja en [topeBusqueda].
+  Duration _plazo(Duration espera) =>
+      espera < topeBusqueda ? espera : topeBusqueda;
 
   /// Cierra el socket. Sin esto el proceso se queda con el descriptor abierto.
   void cerrar() {

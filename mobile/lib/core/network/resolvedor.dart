@@ -97,6 +97,29 @@ class Resolvedor {
   /// **`localhost` al final**: sirve para el emulador con `adb reverse` y para los
   /// tests. Nunca debe ganar a un bridge real, porque si el emulador encaja con
   /// el bucle local, cualquier fallo del bridge **parece** un fallo de la app.
+  /// Un buscador con plazo, y que **siempre** termina.
+  ///
+  /// ## El `.then` con tipo explícito no es cosmético: es el arreglo
+  /// `Future.timeout` decide el tipo de `onTimeout` por el tipo **de ejecución**
+  /// del future, no por el declarado. Un buscador que solo lanza —`() async =>
+  /// throw …`— se compila como `Future` de `Never`, así que `timeout` espera un
+  /// `onTimeout` de `Future<Never>` y el `await` recibe el **fallo de tipos** como
+  /// si fuera una excepción en tiempo de ejecución. El `on Object` lo traga, la
+  /// resolución sigue sin mDNS, y no aparece nada en ningún log: compila, el test
+  /// pasa, y la red desaparece.
+  ///
+  /// Declarar el tipo de la variable no lo arregla —este arrange lo probó—, y
+  /// porque el tipo de ejecución sigue siendo `Never`. Lo que lo arregla es
+  /// **construir un future nuevo** con el tipo que se quiere: de ahí el `.then`
+  /// con tipo explícito.
+  Future<List<BridgeEncontrado>> _conPlazo(
+    BuscadorBridge buscar,
+    Duration plazo,
+  ) =>
+      buscar()
+          .then<List<BridgeEncontrado>>((r) => r)
+          .timeout(plazo, onTimeout: () => const <BridgeEncontrado>[]);
+
   Future<List<Intento>> intentos() async {
     final vistos = <String, String>{};
 
@@ -106,7 +129,8 @@ class Resolvedor {
 
     final out = <Intento>[];
     for (final c in vistos.entries) {
-      out.add(await _probar(c.key, c.value));
+      final i = await _probar(c.key, c.value);
+      out.add(i);
     }
     return out;
   }
@@ -130,8 +154,16 @@ class Resolvedor {
     // mDNS primero. Un fallo aquí **no** es un fallo: puede que el multicast
     // esté bloqueado, que no haya nadie, o que el móvil esté en datos. Por eso
     // va con `catchError` y sigue.
+    //
+    // El `timeout` es la segunda red de seguridad, y no sobra aunque
+    // `Descubridor` ya tenga el suyo: aquí la consecuencia de un cuelgue es
+    // distinta. Un `await` colgado aquí retiene **toda** la resolución, y con
+    // ella todas las peticiones de la app —se vio en el emulador—. Un `catch`
+    // sobre una `Future` que nunca termina no se ejecuta nunca, así que el plazo
+    // tiene que estar en el `await`, no alrededor.
     try {
-      for (final b in await _buscar()) {
+      final encontrados = await _conPlazo(_buscar, Descubridor.topeBusqueda);
+      for (final b in encontrados) {
         lista.add((base: b.base, origen: 'mDNS'));
       }
     } on Object {
@@ -161,17 +193,36 @@ class Resolvedor {
       final j = await _sondear(base);
       return Intento(
         base: base,
-        ok: j['ok'] == true,
+        ok: _vivo(j),
         origen: origen,
         // El detalle se enseña cuando falla: sin él, «no encuentra el bridge» y
         // «el bridge contesta pero está degradado» son la misma línea para quien
         // lee.
-        detalle: 'ok=${j['ok']} · hermes=${j['hermes_ok']} · ollama=${j['ollama_ok']}',
+        detalle: 'status=${j['status']} · ok=${j['ok']} · hermes=${j['hermes_ok']} · ollama=${j['ollama_ok']}',
       );
     } on Object catch (e) {
       return Intento(base: base, ok: false, origen: origen, detalle: _motivo(e));
     }
   }
+
+  /// Si esta respuesta dice que hay un bridge detrás.
+  ///
+  /// ## Por qué se aceptan `ok` y `status`, y por qué esto ya pasó
+  /// `/health` devuelve **`status: "ok"`**, no `ok: true`. El `ok` que sí existe
+  /// es el de Ollama, anidado. Aquí sePedía `ok` en la raíz, así que **el bridge
+  /// vivo se leía como muerto**: el sondeo contestaba 200 y con cuerpo, y el
+  /// resolutor lo tiraba.
+  ///
+  /// Dos piezas que parecían rotas y eran un contrato inventado. Y lo caro: no
+  /// salía ningún error, porque un 200 con cuerpo raro no es un error para nadie.
+  /// La app se quedaba «buscando proyectos…» para siempre sin una sola línea en
+  /// el log —y el bridge, tan vivo, registrando cada sondeo en el suyo.
+  ///
+  /// Se aceptan los dos porque son las dos formas que ha tenido este endpoint, y
+  /// porque un cliente nuevo tiene que funcionar contra el bridge que hay, no
+  /// contra el que uno se imagina.
+  static bool _vivo(Map<String, dynamic> j) =>
+      j['ok'] == true || j['status'] == 'ok';
 
   /// Cuánto se espera a un candidato antes de declararlo muerto.
   ///

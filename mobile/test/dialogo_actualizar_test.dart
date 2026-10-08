@@ -84,7 +84,59 @@ void main() {
     await t.tap(find.text('Ir al permiso en Ajustes'));
     await t.pumpAndSettle();
     expect(nativo.permisoAbierto, isTrue);
-    expect(find.textContaining('vuelve a pulsar'), findsOneWidget);
+    // Y no pide pulsar nada que no exista: al volver se vuelve a preguntar solo.
+    expect(find.textContaining('vuelve a pulsar'), findsNothing);
+  });
+
+  testWidgets('al volver de Ajustes, pregunta otra vez y ofrece la descarga', (t) async {
+    // El permiso se concede fuera de la app, así que el diálogo solo puede
+    // enterarse al volver. Antes se quedaba esperando a que pulsaran algo que no
+    // había, y había que cerrar y abrir a mano.
+    final (repo, nativo) = montar(hayPermiso: false);
+    await abrir(t, repo, nativo);
+    await t.pumpAndSettle();
+    expect(find.text('Ir al permiso en Ajustes'), findsOneWidget);
+
+    nativo.puedeInstalarValue = true; // concedido en Ajustes
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await t.pumpAndSettle();
+
+    expect(find.text('Bajar la nueva'), findsOneWidget);
+  });
+
+  testWidgets('«tienes» es lo instalado, no lo que sirve el bridge', (t) async {
+    // Con 2 instalada y 3 en el bridge, decir «tienes versión 3» es mentira.
+    final (repo, nativo) = montar();
+    await abrir(t, repo, nativo);
+    await t.pumpAndSettle();
+    expect(find.text('versión 2'), findsOneWidget);
+    expect(find.text('3 (1.0.3)'), findsOneWidget);
+  });
+
+  testWidgets('si el nativo falla al preguntar, lo dice en vez de quedarse mudo', (t) async {
+    // El fallo se vio en el emulador: sin este `catch` el diálogo se quedaba en
+    // «preguntando» para siempre, sin error y sin pista de qué pasaba.
+    final (repo, _) = montar();
+    final nativo = InstaladorFalso(versionCodeValue: 2)..fallaVersionCode = true;
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Builder(
+          builder: (ctx) => TextButton(
+            onPressed: () => showDialog<void>(
+              context: ctx,
+              builder: (_) => DialogoActualizar(repo: repo, nativo: nativo),
+            ),
+            child: const Text('abrir'),
+          ),
+        ),
+      ),
+    ));
+    await t.tap(find.text('abrir'));
+    await t.pump();
+    await t.pumpAndSettle();
+    expect(find.textContaining('no se pudo comprobar la actualización'), findsOneWidget);
+    expect(find.text('Bajar la nueva'), findsNothing);
   });
 
   testWidgets('sin versión nueva, no ofrece bajarla', (t) async {
@@ -172,5 +224,44 @@ void main() {
     await abrir(t, repo, InstaladorFalso(versionCodeValue: 2));
     await t.pumpAndSettle();
     expect(find.textContaining('no tiene un APK'), findsOneWidget);
+  });
+
+  testWidgets('si Ajustes no abre, lo dice en vez de tragárselo', (t) async {
+    // El caso medido: un dispositivo sin pantalla de Ajustes donde conceder el
+    // permiso. El botón «Ir al permiso» no hacía nada, y el motivo se perdía en
+    // una excepción sin dueño. Un botón que no hace nada es peor que un botón
+    // que dice que no puede.
+    final (repo, nativo) = montar(versionCode: 4, hayPermiso: false);
+    nativo.motivoPermiso = 'no hay ninguna pantalla de Ajustes';
+
+    await abrir(t, repo, nativo);
+    await t.tap(find.text('Ir al permiso en Ajustes'));
+    await t.pumpAndSettle();
+
+    expect(nativo.permisoAbierto, isTrue);
+    expect(
+      find.textContaining('no hay ninguna pantalla de Ajustes'),
+      findsOneWidget,
+      reason: 'el motivo tiene que verse en el diálogo, no solo existir en el nativo',
+    );
+  });
+
+  testWidgets('y el motivo sobrevive a la repregunta al volver', (t) async {
+    // La nota vive aparte del motivo del bridge a propósito. Ese se borra al
+    // volver a preguntar; si el fallo de abrir Ajustes viviera ahí, se iría por
+    // la ventana en cuanto la app repreguntara al volver de Ajustes — que es
+    // justo lo que pasa.
+    final (repo, nativo) = montar(versionCode: 4, hayPermiso: false);
+    nativo.motivoPermiso = 'no hay ninguna pantalla de Ajustes';
+
+    await abrir(t, repo, nativo);
+    await t.tap(find.text('Ir al permiso en Ajustes'));
+    await t.pumpAndSettle();
+
+    // Vuelve la app del fondo: el diálogo repregunta al bridge.
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await t.pumpAndSettle();
+
+    expect(find.textContaining('no hay ninguna pantalla de Ajustes'), findsOneWidget);
   });
 }

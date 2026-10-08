@@ -119,6 +119,50 @@ class TestElEndpointNiegaLoQueNoDebe(_Cliente):
         self.assertEqual(409, r.status_code)
         self.assertIn("12:04", r.json()["detail"])
 
+    def test_el_motivo_tambien_va_en_cabecera_para_un_HEAD(self) -> None:
+        """Un `HEAD` no tiene cuerpo, así que el `detail` no le llega a la app.
+
+        ## Por qué esto importa
+        La app pregunta con `HEAD`. Con el motivo solo en el `detail` —que es lo
+        natural—, un `409` por APK viejo llegaba al móvil **sin texto**, y la
+        pantalla enseñaba «el bridge no tiene un APK que servir todavía»: lo
+        contrario de lo que pasaba, porque había un APK y lo que faltaba era
+        recompilarlo. Un motivo que se pierde en el camino no es un motivo.
+        """
+        from app import deploy as deploy_mod
+        from app import dispositivos as disp
+        apk = self._con_apk()
+        with mock.patch.object(deploy_mod, "apk_desactualizado",
+                               return_value="el código cambió"), \
+             mock.patch.object(disp, "apk_para", return_value=apk):
+            head = self.c.head("/apk/telefono", headers=self.headers)
+            get = self.c.get("/apk/telefono", headers=self.headers)
+        self.assertEqual(409, head.status_code)
+        self.assertIn("recompila", head.headers["x-aegis-motivo"])
+        # Y el cuerpo del GET sigue diciendo lo mismo: la cabecera no sustituye
+        # al `detail`, lo acompaña.
+        self.assertEqual(409, get.status_code)
+        self.assertIn("el código cambió", get.json()["detail"])
+        # La cabecera es ASCII a propósito, y el motivo original lleva tilde.
+        self.assertNotIn("ó", head.headers["x-aegis-motivo"])
+
+    def test_el_motivo_no_se_pierde_al_volver_a_preguntar(self) -> None:
+        """La app pregunta al abrir y vuelve a preguntar al volver de Ajustes.
+
+        El motivo tiene que seguir ahí en la segunda: es el mismo 409, y quien
+        acaba de cambiar el permiso del sistema es quien lo va a leer.
+        """
+        from app import deploy as deploy_mod
+        from app import dispositivos as disp
+        apk = self._con_apk()
+        with mock.patch.object(deploy_mod, "apk_desactualizado",
+                               return_value="el código cambió"), \
+             mock.patch.object(disp, "apk_para", return_value=apk):
+            primera = self.c.head("/apk/telefono", headers=self.headers)
+            segunda = self.c.head("/apk/telefono", headers=self.headers)
+        self.assertEqual(primera.headers["x-aegis-motivo"],
+                         segunda.headers["x-aegis-motivo"])
+
     def test_un_apk_sin_puerta_no_se_sirve(self) -> None:
         from app import deploy as deploy_mod
         from app import dispositivos as disp

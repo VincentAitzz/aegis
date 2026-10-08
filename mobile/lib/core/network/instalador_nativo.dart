@@ -27,7 +27,13 @@ abstract interface class InstaladorNativo {
   Future<bool> puedeInstalar();
 
   /// Abre Ajustes, en el sitio donde se concede ese permiso.
-  Future<void> abrirPermiso();
+  /// Abre la pantalla donde se concede el permiso de instalar apps desconocidas.
+  ///
+  /// Devuelve `null` si se pudo abrir, o el motivo por el que no. Antes no
+  /// devolvía nada y por eso no había forma de distinguir «se abrió» de «este
+  /// dispositivo no tiene dónde abrirlo»: en el segundo caso el botón no hacía
+  /// nada y el motivo se perdía en una excepción sin dueño.
+  Future<String?> abrirPermiso();
 
   /// Pasa un APK al instalador. Devuelve `null` si el intent se lanzó, o el
   /// motivo por el que no.
@@ -45,21 +51,34 @@ class InstaladorPorCanal implements InstaladorNativo {
   final String canal;
   static const String _nombre = 'aegis/instalar';
 
+  // ## Por qué esto **sí** deja lanzar
+  // Aquí antes decía «no se lanza: una app que no puede leer su versión propia
+  // debe poder seguir usando todo lo demás». Era falso —un canal sin registrar
+  // lanza `MissingPluginException`, y eso es lo que se vio en el emulador— y la
+  // mentira costaba caro: el `catch` que faltaba estaba en el diálogo, y sin él
+  // la actualización se quedaba en «preguntando» para siempre.
+  //
+  // Degradar a `0` tampoco era la alternativa honesta: `0` dice «no tienes
+  // ninguna versión instalada», así que el diálogo ofrecería descargar e instalar
+  // una actualización de una app que no sabe cuál es. Un número inventado es
+  // peor que un error.
+  //
+  // Quien llama loatrapa y lo enseña: hoy es el diálogo, y un aviso visible es
+  // justo lo que hace falta para arreglar un canal mal registrado.
+
   @override
   Future<int> versionCode() async {
     final v = await _canal.invokeMethod<int>('versionCode');
-    // `0` si el nativo no sabe. No se lanza: una app que no puede leer su
-    // versión propia debe poder seguir usando todo lo demás, y la actualización
-    // se queda en «no se pudo comprobar» en vez de tumbar el arranque.
     return v ?? 0;
   }
+
 
   @override
   Future<bool> puedeInstalar() async =>
       await _canal.invokeMethod<bool>('puedeInstalar') ?? false;
 
   @override
-  Future<void> abrirPermiso() => _canal.invokeMethod<void>('abrirPermiso');
+  Future<String?> abrirPermiso() => _canal.invokeMethod<String>('abrirPermiso');
 
   @override
   Future<String?> instalar(String ruta) =>
@@ -78,6 +97,7 @@ class InstaladorFalso implements InstaladorNativo {
     this.versionCodeValue = 1,
     this.puedeInstalarValue = false,
     this.fallaInstalar = false,
+    this.fallaVersionCode = false,
     this.ruta = '/data/apk/aegis-2.apk',
   });
 
@@ -86,6 +106,10 @@ class InstaladorFalso implements InstaladorNativo {
 
   /// Para probar el camino de «el sistema no aceptó», que tiene su propio texto.
   bool fallaInstalar;
+
+  /// Para reproducir el fallo real: un canal que no está registrado lanza
+  /// `MissingPluginException` en vez de devolver 0.
+  bool fallaVersionCode;
   String ruta;
 
   /// Rutas que se le pidieron instalar, en orden. Un test necesita saber **qué**
@@ -96,14 +120,25 @@ class InstaladorFalso implements InstaladorNativo {
   /// botón roto, y el test tiene que poder verlo.
   bool permisoAbierto = false;
 
+  /// El motivo que devuelve `abrirPermiso` cuando no se pudo abrir. Es el caso
+  /// que se midió en un dispositivo sin pantalla de Ajustes: sin esto, el test
+  /// no tiene forma de comprobar que el diálogo lo enseña en vez de tragárselo.
+  String? motivoPermiso;
+
   @override
-  Future<int> versionCode() async => versionCodeValue;
+  Future<int> versionCode() async {
+    if (fallaVersionCode) throw MissingPluginException('aegis/instalar');
+    return versionCodeValue;
+  }
 
   @override
   Future<bool> puedeInstalar() async => puedeInstalarValue;
 
   @override
-  Future<void> abrirPermiso() async => permisoAbierto = true;
+  Future<String?> abrirPermiso() async {
+    permisoAbierto = true;
+    return motivoPermiso;
+  }
 
   @override
   Future<String?> instalar(String r) async {

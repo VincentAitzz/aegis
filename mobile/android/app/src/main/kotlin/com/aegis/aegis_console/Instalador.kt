@@ -1,5 +1,6 @@
 package com.aegis.aegis_console
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -73,21 +74,36 @@ object Instalador {
      * solo abre la pantalla; el resultado se consulta después con
      * [puedeInstalar].
      */
-    fun abrirPermiso(context: Context) {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-            Uri.parse("package:${context.packageName}")
+    fun abrirPermiso(context: Context): String? {
+        val pkg = Uri.parse("package:${context.packageName}")
+        val candidatos = listOf(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, pkg),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg),
+            Intent(Settings.ACTION_SETTINGS),
         )
-        // Un móvil viejo, o un fabricante que mueve la pantalla, puede no tener
-        // esa activity. Se cae al ajustes de la app, que siempre existe, en vez
-        // de reventar con `ActivityNotFoundException`: el usuario ve algo y
-        // busca, que es mejor que un crash.
-        val nekst = intent.resolveActivity(context.packageManager) == null
-        context.startActivity(
-            if (nekst) Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                .setData(Uri.parse("package:${context.packageName}"))
-            else intent
-        )
+
+        // ## Por qué se prueban y no se consulta
+        // La versión anterior elegía con `resolveActivity` y luego lancaba solo
+        // esa. Se midió en un emulador sin `com.android.settings`: la primera no
+        // resolvía, caía a la segunda, y esa tampoco —y la segunda solo se
+        // comprobaba por adelantado, así que `startActivity` reventaba con
+        // `ActivityNotFoundException` y el botón no hacía nada, en silencio.
+        //
+        // `resolveActivity` dice qué le **gusta** al sistema; `startActivity` es
+        // lo que de verdad lanza. Cuando pueden discrepar, gana el que lanza.
+        for (candidato in candidatos) {
+            try {
+                context.startActivity(candidato.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return null
+            } catch (_: ActivityNotFoundException) {
+                // Siguiente.
+            }
+        }
+
+        // Devolver el motivo en vez de dejar que reviente es lo que permite que
+        // Dart lo enseñe. Un permiso que no se puede abrir tiene una solución
+        // distinta a un APK que no se puede bajar, y quien lo ve es quien sabe.
+        return "no hay ninguna pantalla de Ajustes en este dispositivo donde concederlo"
     }
 
     /**

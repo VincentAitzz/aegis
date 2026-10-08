@@ -152,9 +152,70 @@ class TestResolverNoEligeElTelefono(unittest.TestCase):
 
     def test_el_entorno_manda_sobre_la_tailnet(self) -> None:
         # Sin parchear `tailnet_ip`: aquí se prueba la precedencia de verdad.
-        with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "100.1.2.3"}):
+        # Se parchea `_es_de_esta_maquina` para que el test mida **precedencia** y
+        # no la red en la que se ejecuta: una IP inventada no es de esta máquina
+        # casi nunca, y un test que depende de eso no es un test (A-057).
+        with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "100.1.2.3"}), \
+             mock.patch.object(disp, "_es_de_esta_maquina", return_value=True):
             self.assertEqual(disp.tailnet_ip(), "100.1.2.3")
             self.assertEqual(disp.api_host_para("telefono"), "100.1.2.3")
+
+    def test_una_ip_caducada_no_manda(self) -> None:
+        """La IP vieja declarada en el `.env`: el fallo que se coló.
+
+        `bridge/.env` declaraba `AEGIS_BRIDGE_TAILNET_IP` con 192.168.0.50, que
+        no era la Tailscale del bridge (100.101.102.100) ni la de esta máquina en su
+        propia red (192.168.0.51). La función devolvía lo declarado tal cual y
+        cada `build_apk(target='telefono')` compilaba una app apuntando a una
+        dirección muerta.
+
+        En el emulador no se notó —el `adb reverse` la dejaba hablar por
+        `localhost`— y la actualización entera pasó la puerta con el host
+        equivocado. Un fallo que solo aparece cuando ya no queda otra ruta es un
+        fallo que llega al móvil.
+        """
+        propias = {"192.168.0.51", "100.101.102.100"}
+        with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "192.168.0.50"}), \
+             mock.patch("app.config.get_settings",
+                        return_value=mock.Mock(bridge_tailnet_ip="")), \
+             mock.patch.object(disp, "direcciones_locales", return_value=propias), \
+             mock.patch.object(
+                 disp.subprocess, "run",
+                 return_value=mock.Mock(returncode=0, stdout="100.101.102.100\n")):
+            self.assertEqual(disp.tailnet_ip(), "100.101.102.100")
+
+    def test_una_ip_de_lan_que_si_es_de_esta_maquina_sigue_manda(self) -> None:
+        # El caso bueno que el arreglo anterior rompía: el móvil puede no tener
+        # sesión de Tailscale, y apuntar a la LAN es legítimo (ver
+        # `TestLaIpDelPuenteEnElTelefono`). La regla no es «que sea de la
+        # tailnet», es «que sea de esta máquina».
+        propias = {"192.168.0.51", "100.101.102.100"}
+        with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "192.168.0.51"}), \
+             mock.patch("app.config.get_settings",
+                        return_value=mock.Mock(bridge_tailnet_ip="")), \
+             mock.patch.object(disp, "direcciones_locales", return_value=propias):
+            self.assertEqual(disp.api_host_para("telefono"), "192.168.0.51")
+
+    def test_sin_poder_comprobar_se_acepta_lo_declarado(self) -> None:
+        # Si `ip` no está en la máquina es un problema del entorno, no del
+        # código. Rechazar a ciega dejaría sin poder compilar, que es peor que
+        # compilar con algo declarable y corregible.
+        with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "192.168.0.50"}), \
+             mock.patch("app.config.get_settings",
+                        return_value=mock.Mock(bridge_tailnet_ip="")), \
+             mock.patch.object(disp, "direcciones_locales", return_value=set()):
+            self.assertEqual(disp.tailnet_ip(), "192.168.0.50")
+
+    def test_la_comprobacion_es_de_esta_maquina_y_no_de_un_rango(self) -> None:
+        # El intento que se descartó: exigir `100.64.0.0/10`. Habría roto el caso
+        # bueno de apuntar a la LAN, y un fallo común no se arregla con una regla
+        # más estricta: se arregla con la regla que dice lo que importa.
+        propias = {"192.168.0.51", "172.17.0.1", "127.0.0.1"}
+        self.assertTrue(disp._es_de_esta_maquina("192.168.0.51", propias))
+        self.assertTrue(disp._es_de_esta_maquina("172.17.0.1", propias))
+        self.assertFalse(disp._es_de_esta_maquina("192.168.0.50", propias))
+        self.assertFalse(disp._es_de_esta_maquina("8.8.8.8", propias))
+        self.assertFalse(disp._es_de_esta_maquina("", propias))
 
     def test_la_tailnet_es_la_fuente_sin_entorno(self) -> None:
         def ip(*a, **k):
@@ -1759,15 +1820,20 @@ class TestLaIpDelPuenteEnElTelefono(_Piso):
     """
 
     def test_la_ip_declarada_gana_a_tailscale(self) -> None:
+        # Una IP de la LAN es una declaración legítima: el móvil puede no tener
+        # sesión de Tailscale. Lo que no vale es una IP que no sea de esta
+        # máquina, que es un valor caducado (ver `test_una_ip_caducada_no_manda`).
         with mock.patch.dict(os.environ, {"AEGIS_BRIDGE_TAILNET_IP": "192.168.0.50"}), \
                 mock.patch("app.config.get_settings",
-                           return_value=mock.Mock(bridge_tailnet_ip="")):
+                           return_value=mock.Mock(bridge_tailnet_ip="")), \
+                mock.patch.object(disp, "_es_de_esta_maquina", return_value=True):
             self.assertEqual(disp.tailnet_ip(), "192.168.0.50")
 
     def test_tambien_llega_desde_el_env_de_la_config(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch("app.config.get_settings",
-                           return_value=mock.Mock(bridge_tailnet_ip="192.168.0.50")):
+                           return_value=mock.Mock(bridge_tailnet_ip="192.168.0.50")), \
+                mock.patch.object(disp, "_es_de_esta_maquina", return_value=True):
             self.assertEqual(disp.tailnet_ip(), "192.168.0.50")
 
 
