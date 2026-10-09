@@ -859,9 +859,31 @@ class _DialogoCodigosRecuperacion extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            // ## Por qué el texto dice lo que dice, y no lo que se querria
+            //
+            // Antes aquí ponía «son lo único que queda si pierdes este móvil»,
+            // y es **falso**: canjear un código marca el hash como gastado y ya.
+            // No devuelve el acceso a nada, no reabre la cuenta y no restaura
+            // nada. Es una manera de llevar la cuenta de cuántos códigos quedan
+            // sin usar, que es otra cosa.
+            //
+            // Es peor que no prometer: alguien que pierde el móvil lee esto,
+            // lo toma por la red de seguridad, **no guarda los códigos de
+            // GitHub** —que son los que sí devuelven el acceso— y descubre el
+            // problema cuando ya no hay nada que hacer.
+            //
+            // Así que el texto dice las tres cosas que importan: que son de
+            // Aegis, que no devuelven el acceso al servicio, y que para eso
+            // hacen falta los del propio servicio.
             Text(
-              'Son de «$titulo», y son lo único que queda si pierdes este '
-              'móvil. Escríbelos o imprímelos: Aegis solo guarda la huella.',
+              'Estos son de Aegis, de «$titulo». Cuentan cuántos te quedan, '
+              'pero **no** devuelven el acceso a nada: canjear uno solo lo marca '
+              'como gastado.\n\n'
+              'Si pierdes este móvil, lo que te deja entrar en el servicio son '
+              'los códigos de recuperación que te dio **él**. Guárdalos antes '
+              'de que Aegis sea tu único sitio.\n\n'
+              'Aegis solo guarda la huella de estos. Escríbelos si los quieres, '
+              'pero no cuentan como red de seguridad.',
               style: const TextStyle(
                 fontFamily: AegisPalette.mono,
                 fontSize: 11,

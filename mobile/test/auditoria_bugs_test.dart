@@ -348,6 +348,51 @@ void main() {
       expect((await abrirCopia(sobre, 'la contraseña')).cuentas.length, 1);
     });
   });
+
+  group('Fase 0 — el diálogo no promete lo que Aegis no cumple', () {
+    // El texto decía «son lo único que queda si pierdes este móvil». No es que
+    // Aegis no cumpliera todavía: es que **canjear no puede** cumplirlo, porque
+    // marcar un hash como gastado no devuelve el acceso a nada.
+    //
+    // La trampa de este fallo es que el texto era plausible y el botón estaba
+    // ahí. Alguien que pierde el móvil lo lee, lo toma por la red de seguridad,
+    // **no guarda los códigos del propio servicio** —que son los que sí
+    // devuelven el acceso— y descubre el problema cuando ya no hay nada que
+    // hacer.
+    test('el texto dice que no devuelven el acceso', () {
+      // Se mira solo el **texto de la app**, no el fichero entero: la frase
+      // prohibida aparece en el comentario que explica por qué se quitó, y un
+      // test que la busca en todo el fichero tendría que，女孩 Prohibition。
+      // Y no la quitamos: explica el fallo.
+      final fuente = File('lib/presentation/pages/claves_page.dart')
+          .readAsStringSync();
+      final soloTexto = fuente
+          .split('\n')
+          .where((l) => !l.trimLeft().startsWith('//'))
+          .join('\n');
+      expect(soloTexto.contains('son lo único que queda si pierdes este'),
+          isFalse,
+          reason: 'no devuelven el acceso al servicio: no se puede prometer');
+      expect(soloTexto.contains('no** devuelven el acceso'), isTrue,
+          reason: 'tiene que decir que no devuelven el acceso');
+      expect(soloTexto.contains('códigos de recuperación que te dio **él**'),
+          isTrue,
+          reason: 'tiene que decir dónde está la red de verdad');
+    });
+
+    test('el canje solo marca el hash como gastado, y nada más', () {
+      // El motivo por el que el texto anterior era falso, comprobado contra el
+      // código y no de memoria: no hay ningún otro uso del id que devuelve.
+      final fuente = File('lib/presentation/pages/claves_page.dart')
+          .readAsStringSync();
+      final i = fuente.indexOf('Future<void> _canjear()');
+      final cuerpo = fuente.substring(i, i + 1200);
+      expect(cuerpo.contains('showSnackBar'), isTrue);
+      expect(cuerpo.contains('escribirEn'), isFalse);
+      expect(cuerpo.contains('cifrarBoveda'), isFalse);
+      expect(cuerpo.contains('abrirCopia'), isFalse);
+    });
+  });
 }
 
 /// El bloque de limpieza del portapapeles, tal cual está en el fichero.
