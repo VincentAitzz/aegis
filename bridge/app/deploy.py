@@ -447,38 +447,80 @@ def _raiz_del_movil(apk: Path) -> Path | None:
     return None
 
 
+#: Ficheros que escribe la herramienta dentro del proyecto y que **no son código
+#: de nadie**: no se editan, se regeneran, y cambian por una causa que no es que
+#: alguien tocara el código.
+#:
+#: Está fuera de la firma del APK, y lo que lo sostiene es que el juego de
+#: plugins entra por `pubspec.lock`, que sí se hashea. Ver `_firma_del_codigo`.
+_GENERADOS_POR_FERRAMENTA = frozenset({
+    Path("android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"),
+})
+
+
 def _firma_del_codigo(raiz: Path) -> str:
-    """Huella del código fuente del que sale un APK: ruta, tamaño y fecha.
+    """Huella del código fuente del que sale un APK.
 
     ## Por qué una firma y no comparar fechas
     Se probó primero con fechas y dio un falso positivo medido: un fichero de
     `lib/` tenía `mtime` posterior al APK **sin haber cambiado de contenido**
-    (`git status` limpio). Bloquear una instalación por eso sería teachat el
-    teléfono cada dos compilaciones, y una puerta que avisa en falso trains:
-    la siguiente vez miras el aviso por encima.
+    (`git status` limpio). Bloquear una instalación por eso sería teaching el
+    teléfono cada dos compilaciones, y una puerta que avisa en falso entrena: la
+    siguiente vez miras el aviso por encima.
 
     ## Qué entra
-    `pubspec.yaml`, `lib/**` y `android/app/src/main/**`: lo que cambia lo que
-    acaba dentro del APK. `build/**` no entra, porque el propio binario está
-    ahí y se compararía consigo mismo.
+    `pubspec.yaml`, `pubspec.lock`, `lib/**` y `android/app/src/main/**`: lo que
+    cambia lo que acaba dentro del APK. `build/**` no entra, porque el propio
+    binario está ahí y se compararía consigo mismo.
 
     ## Por qué el **contenido** y no la fecha
     La primera versión metía `mtime` y `st_size` por abaratar la cuenta, y el
-    falso positivo siguió apareciendo: un `touch` cambia la fecha sin cambiar una
+    falso positivo seguía apareciendo: un `touch` cambia la fecha sin cambiar una
     letra del código. Aquí se lee el fichero entero, que son unos cientos de
     kilobytes y se tarda menos que el `adb` que viene después. Barato y cierto.
+
+    ## Por qué `pubspec.lock` entra
+    Porque es lo que determina **qué plugins se registran** en el APK, y eso no
+    sale de `pubspec.yaml`: sale del grafo resuelto. Sin el lock, cambiar una
+    versión de una dependencia —o añadirla— no movería la firma, y el APK se quedaría
+    viejo en silencio. Con él, esa señal sigue ahí.
+
+    ## Por qué el fichero **generado** se queda fuera
+    `android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java`
+    lo escribe la herramienta de Flutter en cada build, y su encabezado dice
+    `Generated file. Do not edit.` No es código que nadie escribiera: es
+    consecuencia del lock, que ya entra.
+
+    Estaba dentro de la firma solo por dónde cae, y eso producía un fallo medido:
+    `verificar_binario` corre `flutter analyze`/`flutter test`/el humo, que
+    **regeneran** ese fichero, así que la firma cambiaba después de haber sido
+    sellada y el APK salía «desactualizado» para siempre. El 409 que veía la app
+    decía «recompílalo», y recompilar no lo arreglaba: la puerta se invalidaba a
+    sí misma.
+
+    Excluirlo no la debilita, la **corrige**: una puerta que avisa en falso es
+    peor que ninguna. Y la señal que se sacrifica («cambió el juego de
+    plugins») la sostiene el lock.
     """
     import hashlib
 
     h = hashlib.sha256()
     files: list[Path] = []
-    pub = raiz / "pubspec.yaml"
-    if pub.exists():
-        files.append(pub)
+    for pub in ("pubspec.yaml", "pubspec.lock"):
+        p = raiz / pub
+        if p.exists():
+            files.append(p)
     for sub in ("lib", "android/app/src/main"):
         d = raiz / sub
         if d.is_dir():
-            files.extend(f for f in d.rglob("*") if f.is_file())
+            # La comparación es **relativa a la raíz**: `rglob` devuelve rutas
+            # completas, y comparar esas contra una constante con ruta relativa
+            # no encontraría nunca nada. Un filtro que no filta parece que filtra,
+            # que es la peor forma de que un guardarraíl falle.
+            files.extend(
+                f for f in d.rglob("*")
+                if f.is_file() and f.relative_to(raiz) not in _GENERADOS_POR_FERRAMENTA
+            )
     for f in sorted(files, key=lambda x: str(x)):
         h.update(str(f.relative_to(raiz)).encode("utf-8"))
         h.update(b":")

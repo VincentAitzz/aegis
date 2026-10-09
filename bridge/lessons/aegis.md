@@ -2627,3 +2627,186 @@ blanco, deformados y con resolución mala.
   «es una de las mías» es un hecho. Y el fallo —«no es de esta máquina»— se
   descarta **sin** lanzar error, cayendo a lo que la máquina sí tiene: seguir
   pudiendo compilar vale más que no compilar por un dato inválido.
+
+## A-109 — Una capacidad de la app no es una tool del agente
+
+> Aplica cuando: cuando pidas al agente algo que podría hacer el móvil entero,
+> sin que pase por el bridge ni por el modelo.
+
+- **Qué pasó**: se pidió que Aegis fuera una app de autenticación. El camino
+  rápido que «tocaba» era una tool más en `mcp_ops` y ya está: el modelo la
+  llama, la ejecuta, responde. Eso es lo que hace `A-016` con las llaves, y con
+  las semillas es peor.
+- **Por qué no va en `mcp_ops`**: tres razones, y la tercera es la que no se ve
+  leyendo el schema. Una, el prompt es la variable (`vision.md` §2): meterlo
+  agranda los 19.083 chars que se pagan en cada paso de cada run. Dos, TOTP es
+  determinista: cero modelo, como `intents.py`. Y tres, **la semilla pasaría
+  por la traza del autopilot, el log de telemetría y la memoria de Chroma** — las
+  tres se pueden leer. Un secreto en la traza es el mismo problema que A-016, del
+  mismo tamaño.
+- **La regla que sale**: antes de añadir algo a `mcp_ops`, pregúntate si
+  necesita el modelo. Si la respuesta es «no», y puede vivir en el cliente, **va
+  en el cliente**, y la respuesta al encargo es «esto no va en el agente» con el
+  motivo. Un servidor que guarda en claro no es un sitio donde meter un
+  secreto: es un sitio donde meterlos los hace legibles de golpe.
+- **Consecuencia medible**: la capacidad entera salió con **cero cambios en
+  `bridge/`**. Es la primera cosa del repo que es de la app y no del agente, y
+  por eso esta lección está aquí y no en `docs/`.
+
+## A-110 — «Corrupto» y «vacío» no son el mismo estado, y la diferencia es irrecuperable
+
+> Aplica cuando: cuando leas un estado guardado y puedas devolver «nada» o
+> «no lo pude leer».
+
+- **Qué pasó**: una bóveda cifrada que se guarda en el Keystore. La primera
+  versión lanzaba `BovedaCorrupta`, el provider la traducía a `AsyncError`, y con
+  **Riverpod 3 la pantalla se quedaba con el spinner de carga indefinidamente**:
+  ni el error ni un fallo, solo «cargando» sobre algo ilegible. Peor: si en
+  algún momento se hubiera pintado como lista vacía, un «añadir» por debajo
+  habría destruido lo que quedaba, y no habría forma de recuperarlo.
+- **Por qué el spinner eterno es el peor resultado posible**: porque parece que
+  está haciendo algo. Un error visible se ve; un «cargando» infinito no da ni
+  una pista, y el usuario espera.
+- **El arreglo**: la corrupción pasó a ser un **valor** —`Boveda.corrupta`— y no
+  una excepción. Con valor, la pantalla no puede confundir «no tienes nada» con
+  «no se puede leer», y **la negativa a escribir encima vive en el valor**, no en
+  cada llamador: `escribirEn` se niega si `corrupta`. Un olvido en uno de los
+  llamadores habría sido exactamente la pérdida.
+- **La regla**: cuando un estado guardado se puede leer o no, «no lo pude leer»
+  tiene que ser un estado de **primer orden**, no una excepción que alguien
+  convierte en lista vacía. Y la protección de no-sobrescribir va en el tipo que
+  representa el estado, no repartida por los que lo usan.
+- **Lo mismo aplica a la cadena de JSON**: la primera versión de `desdeJson`
+  tenía un `try` alrededor de todo que devolvía una bóveda vacía. Importabas tu
+  copia y la app te decía que no tienes cuentas, sin decir que la había leído
+  mal. Ahora cada cuenta se lee por separado y **solo se pierde la que está mal**.
+  Un error de lectura que degrada a «vacío» es indistinguishable de una pérdida
+  de datos, y se pierde sin que nadie lo decida.
+
+## A-111 — Dos-literales contiguos y una constante partida fallan sin decir nada
+
+> Aplica cuando: cuando escribas un valor largo de otro idioma que you've escrito
+> en otro idioma o en otro sitio, y no venga de la librería.
+
+- **Qué pasó**: la semilla de los vectores de SHA-512 se escribió partida en dos
+  literales contiguos de Dart, contando los caracteres a mano. Salió de **62
+  bytes en vez de 64**, y los tests fallaban con cuatro números que no cuadtaban
+  y ninguna explicación. La primera hipótesis fue siempre el código, porque un
+  número que no cuadra parece un bug de cálculo.
+- **Por qué no lo decía nadie**: porque el fallo era en la **constante de
+  entrada**, y ninguna parte del cálculo puede saber que su entrada no es la que
+  cree ser.
+- **Regla**: una constante que viene de una especificación —un vector, una
+  clave, un valor por defecto de un RFC— lleva **su propio test de longitud**. Se
+  comprueba el `length`, no el valor: el valor falla de forma opaca, y la
+  longitud falla de forma obvious.
+- **Y de paso**: cuando un test falla con números, **comprueba los números
+  contra una implementación independiente** antes de tocar el código. Salió que
+  la RFC 6238 usa semillas **distintas** para SHA-1 (20 bytes), SHA-256 (32) y
+  SHA-512 (64), y que las mías estaban mal para las tres. Doce tests «bien
+  escritos» con constantes inventadas.
+
+## A-112 — Una firma no puede medir algo que el paso siguiente va a cambiar
+
+> Aplica cuando: cuando compares un binario contra el código del que salió, y la
+> comprobación se haga en dos pasos que no son atómicos.
+
+- **Qué pasó**: `build_apk` sellaba el APK con la firma del código y **después**
+  corría la puerta (analyze, tests y humo). Esa puerta hace que la herramienta de
+  Flutter **regenere** `GeneratedPluginRegistrant.java`, que vive en
+  `android/app/src/main/**` — y esa carpeta entra en la firma. O sea: la firma
+  cambiaba **después** de haber sido sellada.
+- **Lo que se veía**: `build_apk` decía «compilado», y a la vez la app recibía un
+  **409 «el APK no corresponde al código de ahora»** con la instrucción de
+  recompilar. Y **recompilar no lo arreglaba**: la puerta se invalidaba a sí
+  misma. Un ciclo cerrado en el que no hay salida.
+- **Por qué no se había visto**: solo ocurre al **cambiar el juego de plugins**,
+  porque es lo único que cambia el contenido de ese fichero generado. Con las
+  dependencias quietas no se movía y la puerta pasaba sin que nadie supiera por
+  qué a veces fallaba.
+- **El arreglo, una línea**: sacar de la firma el fichero que dice `Generated
+  file. Do not edit.`. Está dentro del «código» solo por dónde cae.
+- **La segunda parte es obligatoria**: excluirlo **debilita** la puerta si no
+  compensas. Ese fichero registra qué plugins entran, así que la señal de «cambió
+  el juego de plugins» se pierde. La sostiene `pubspec.lock`, que es lo que
+  determina el grafo resuelto, y que ahora entra en la firma. Hay un test para
+  cada mitad: cambiar el lock **sí** invalida, tocar el generado **no**.
+- **La regla**: cuando una comprobación va en dos pasos, **el segundo no puede
+  cambiar lo que el primero midió**. Y al excluir algo de un conjunto hay que
+  **escribir el test de que sigue entrando lo de al lado**.
+
+### El intento que empeoró las cosas
+
+Lo primero que se intentó fue **mover el sello a después de verificar**, con la
+razón de que así el sello ya no se invalidaba por el paso siguiente. Es cierto, y
+fue un **error**: `verificar_binario` **empieza** comprobando
+`apk_desactualizado`, que lee el fichero del sello. Con la escritura después, la
+verificación leía el sello **del build anterior**, veía que no cuadraba y se
+negaba a verificar. El APK compilaba, pasaba analyze, y quedaba **sin verificar**.
+
+Peor que no hacer nada: la puerta se cerraba sola y **ningún test se enteró**,
+porque todos probaban las dos piezas por separado y ninguno probaba el **orden**.
+
+- **La regla del orden**: no muevas un dato que el paso siguiente **lee** para
+  decidir. Antes de reordenar dos pasos, lee qué lee cada uno. Aquí la pregunta
+  era «qué lee `verificar_binario` antes de nada», y la respuesta estaba en su
+  primera línea.
+- **La regla de los tests**: un behaviour que depende del **orden** de dos cosas
+  necesita un test **del orden**. Hay uno ahora (`TestElOrdenDelSello`), y
+  comprueba sobre el **código fuente** y no sobre una ejecución real, porque una
+  ejecución necesita adb, gradle y minutos. Fallar ese test significa que el
+  orden cambió, que es lo único que se quiere vigilar.
+
+
+## A-113 — Un test que no toca el código pasa con el bug puesto
+
+> Aplica cuando: cuando acabes de escribir un test para un fallo y no hayas
+> comprobado que falla con el fallo dentro.
+
+- **Qué pasó**: auditando el autenticador salieron seis fallos. Para cada uno se
+  escribió un test, y **cuatro de los tests pasaban con el bug puesto**. Se
+   Se vio porque se comprobó uno por uno que fallaban al reintroducirlo, que es
+  lo que se debería hacer siempre y casi nunca se hace.
+- **El caso más instructivo**: el anillo pintaba los segundos con un `30`
+  escrito a fuego. El primer test **calculaba los segundos en el propio test**
+  (`(f * periodo).ceil()`) y comparaba contra eso. Pasaba siempre, porque no
+  tocaba el widget. Lo tenía 30 fijo y el test verde.
+- **El otro**: el `RelojController` acumulaba `Timer.periodic`. El test medía el
+  número de llamadas al reloj, pero **reconstruir con `invalidate` es perezoso**:
+  si no forces la lectura, la última reconstrucción cae dentro de la ventana
+  medida y el test da 11 en vez de 10. Era un test mal escrito, no el bug.
+- **La regla**: un test que **reimplementa la fórmula** no la está probando. Si
+  el test puede pasar sin que el código cambie, no está midiendo el código.
+- **La comprobación que no cuesta nada y lo encuentra todo**: deshaz el arreglo,
+  ejecuta el test, y mira si **falla**. Si pasa, el test no está probando lo que
+  crees. Es un minuto por test y convierte «he añadido cobertura» en «he añadido
+  cobertura».
+- **Y con `fakeAsync`**: medir un timer es medir el número de disparos, no el
+  tiempo. El `advance`/elapse da el reloj, pero si la construcción del objeto
+   cuenta los disparos, el número sale mal y parece un bug.
+
+## A-114 — Un `try` que cubre el parseo y no la lectura no cubre el fallo real
+
+> Aplica cuando: cuando un `try`gut wrap lo «que puede fallar» de una llamada.
+
+- **Qué pasó**: la bóveda leía del Keystore dentro de un `try` que solo
+  envolvía `jsonDecode`. Capturaba `FormatException`, y por eso el código parecía
+  a prueba de una bóveda ilegible.
+- **Por qué no bastaba**: `FlutterSecureStorage` **documenta que todos sus
+  métodos pueden lanzar `PlatformException`**, y en Android es lo que hace
+  cuando la clave se invalida: restauración del dispositivo, desinstalación,
+  Keystore bloqueado. Eso escapaba fuera del `try`.
+- **Por qué era grave**: el futuro de `build()` se rechazaba, y (medido en este
+  repo, con Riverpod 3) eso deja la pantalla en `loading` **para siempre**: ni
+  error ni fallo. Es decir, un `try` mal puesto producía un **spinner eterno** en
+  lugar de un mensaje.
+- **La regla**: cuando dices «este `try` protege contra X», comprueba que **la
+  llamada que puede fallar está dentro**. El parseo y la lectura son dos
+  operaciones, y la que falla es la lectura. Un `try` alrededor del `jsonDecode`
+  protege contra un fichero raro; no protege contra una plataforma que no
+  contesta.
+- **Y el criterio general**: un `try` que devuelve un estado degradado es bueno
+  **si el estado degradado es distinguible**. Aquí `Boveda.corrupta` es un valor,
+  no una excepción, justamente para que la pantalla no pueda confundir «no tienes
+  cuentas» con «no se pudo leer». Si el `try` degrada a la lista vacía, se
+  destroys el aviso.

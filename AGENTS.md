@@ -478,6 +478,36 @@ Un archivo de lecciones que no existe se carga vacío; no es un error.
 | `trazeurs` | `~/Workspace/mobile/trazeurs` | `flutter analyze` | `flutter test` |
 | `compra-unida` | `~/Workspace/apps/compra-unida` | `tsc --noEmit` | `npm test` |
 | `recepcion-persa` | `~/Workspace/apps/recepcion_persa` | `compileall` | `pytest -q` |
+| `aegis_console` | `mobile/` | `flutter analyze` | `flutter test` |
+
+**`aegis_console` es la app, y su puerta es aparte.** No está en `PROJECTS`
+porque no es un proyecto que el agente opere: es el cliente. Pero es lo más
+grande de este repo por superficie, y por eso su puerta también es
+**completa**:
+
+```bash
+export PATH="$HOME/development/flutter/bin:$PATH"
+export JAVA_HOME="$HOME/jdk"                      # sin esto, gradle no arranca
+cd mobile
+flutter analyze && flutter test                  # 0 issues / verde: ambos exactos
+flutter test integration_test/                   # contra el Keystore del emulador
+flutter build apk --debug --dart-define=API_HOST=10.0.2.2
+```
+
+- **La base es 0 issues de `flutter analyze` y verde.** Se midió antes de
+  empezar (2026-10-07) y el criterio de éxito es «cero nuevos», no «no más de
+  N».
+- **`flutter test integration_test/` no es opcional.** Hay cosas que no existen
+  en el host: `flutter_secure_storage` habla con el Keystore de Android, y un
+  doble en memoria daría verde sobre lo único que hay que demostrar. Empieza el
+  emulador antes (§5).
+- **`flutter analyze` sobre `test/` y `integration_test/` también.** Los tests
+  son código y pagan el mismo coste de análisis que el resto.
+- **Si la app dice «el APK no corresponde al código de ahora»** (un 409 en
+  `GET /apk/telefono`), no es que el APK sea viejo: es que el sello no cuadra
+  con la firma. Se comprueba sin adb con
+  `PYTHONPATH=. bridge/.venv/bin/python -c "from pathlib import Path; from app.deploy import apk_desactualizado; print(apk_desactualizado(Path('mobile/build/app/outputs/flutter-apk/app-release-telefono.apk')))"`
+  — y la respuesta vacía es la buena. El motivo de fondo está en A-112.
 
 **`trazeurs` tiene una base roja: 452 issues de `flutter analyze`**, casi todos del
 `test/widget_test.dart` de la plantilla. Antes de delegar ahí, el criterio de

@@ -17,7 +17,20 @@
   El `path` **no** lleva el fichero, solo el directorio. Con el fichero en la
   ruta, cambiar de nombre obliga a cambiar este XML y delata el descuido el día
   que se renombra.
+
+  ## Por qué hay una segunda entrada
+  La de `apk/` es del instalador. La de `copias/` es de la copia de seguridad de
+  las claves de doble factor, que se escribe en
+  `Android/data/<paquete>/files/copias/`.
+
+  ## Por qué ese directorio y no las Descargas del usuario
+  Porque `Android/data/` **no necesita ningún permiso de almacenamiento**, y
+  escribir en `Downloads/` lo necesita: o un permiso enorme que no se pide para
+  guardar una copia, o SAF, que deja elegir entre una carpeta local y Drive.
+  Lo segundo es una nube en el menú de un activo que son semillas, y eso aquí
+  no está concedido.
 -->
 <paths>
     <external-files-path name="apk" path="apk/" />
+    <external-files-path name="copias" path="copias/" />
 </paths>

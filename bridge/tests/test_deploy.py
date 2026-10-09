@@ -1494,6 +1494,71 @@ class TestInstalarEnSegundoPlano(_Piso):
                         "el token tiene que quedar gastado tras la instalación")
 
 
+class TestElOrdenDelSello(unittest.TestCase):
+    """El sello se escribe **antes** de verificar, y eso hay que sujetarlo.
+
+    ## Por qué hace falta un test y no una lectura cuidadosa
+    Se movió el sello a después de `verificar_binario` con una buena razón, y
+    rompió la puerta: `verificar_binario` **empieza** comprobando
+    `apk_desactualizado`, que lee el fichero del sello. Con la escritura
+    después, la verificación leía el sello del build anterior, veía que no
+    cuadraba y se negaba — con el APK recién compilado y sin verificar.
+
+    Peor: la puerta se cerraba sola y **ningún test se enteró**, porque todos
+    probaban las dos piezas por separado y ninguna probaba el orden. Este es el
+    test que faltaba.
+    """
+
+    def test_verificar_lee_el_sello_antes_de_mirar_nada_mas(self) -> None:
+        """La comprobación de caducidad va **primero**, y por eso importa el orden.
+
+        No se está probando que se compruebe, sino **dónde**: si esta comprobación
+        no fuera la primera, el orden del sello sería irrelevante y este test
+        estaría probando otra cosa.
+        """
+        llamadas: list[str] = []
+
+        def _malo(apk, *_a, **_k):
+            llamadas.append("caducidad")
+            return "el APK no corresponde al código de ahora"
+
+        with mock.patch.object(deploy, "apk_desactualizado", _malo), \
+             mock.patch.object(deploy, "verificar_analisis") as an, \
+             mock.patch.object(deploy, "verificar_tests") as te:
+            ok, detalle = deploy.verificar_binario(Path("/no/existe.apk"),
+                                                   con_humo=False)
+        self.assertFalse(ok)
+        self.assertIn("no corresponde", detalle)
+        self.assertEqual(llamadas, ["caducidad"])
+        # Y nada más se llegó a correr: si un sello viejo para la puerta, no tiene
+        # sentido gastar minutos en analyze.
+        an.assert_not_called()
+        te.assert_not_called()
+
+    def test_el_sello_se_escribe_antes_de_verificar(self) -> None:
+        """El orden en `build_apk`, leído del código que lo ejecuta.
+
+        Se comprueba sobre el **código fuente** y no sobre una ejecución, porque
+        una ejecución real necesita adb, gradle y minutos. Lo que importa es que
+        el orden no se pueda cambiar sin que este test lo note.
+        """
+        import re
+        from pathlib import Path as P
+        fuente = (P(deploy.__file__).resolve().parent / "mcp_ops.py").read_text(
+            encoding="utf-8")
+        # Solo el bloque de `build_apk`: se corta por el final de la función.
+        bloque = fuente.split("def build_apk(", 1)[-1].split("\ndef ", 1)[0]
+        primero = re.search(r"escribir_sello\(destino\)", bloque)
+        segundo = re.search(r"verificar_binario\(destino", bloque)
+        self.assertIsNotNone(primero, "build_apk ya no escribe el sello")
+        self.assertIsNotNone(segundo, "build_apk ya no verifica el binario")
+        self.assertLess(
+            primero.start(), segundo.start(),
+            "el sello se tiene que escribir ANTES de verificar: verificar_binario "
+            "lee el sello para comprobar la caducidad, y si no existe todavía lee "
+            "el del build anterior")
+
+
 class TestHuellaDelBinario(_Piso):
     """Lo aprobado y lo ejecutado tienen que ser el mismo fichero."""
 
@@ -1904,3 +1969,94 @@ class TestElApkCorrespondeAlCodigo(_Piso):
 
     def test_un_apk_fuera_de_un_proyecto_no_se_juzga(self) -> None:
         self.assertEqual(deploy.apk_desactualizado(Path(__file__)), "")
+
+    # -- el fichero que la herramienta genera --------------------------------
+    #
+    # Este bloque es la redacción de un fallo medido, no una cobertura hipotética.
+    # `verificar_binario` corre analyze/test/humo, y eso hace que Flutter
+    # regenere `GeneratedPluginRegistrant.java`. Como vivía dentro de
+    # `android/app/src/main/**` —que entra en la firma—, la firma cambiaba
+    # **después** de sellada y el APK recién compilado salía «desactualizado»
+    # para siempre. El 409 decía «recompílalo» y recompilar no lo arreglaba.
+
+    def _proyecto_con_generado(self, tmp: Path) -> Path:
+        """Un proyecto Flutter con el fichero generado que escribe la herramienta."""
+        raiz = tmp / "mobile"
+        apk = self._proyecto(tmp)
+        gen = (raiz / "android/app/src/main/java/io/flutter/plugins"
+               / "GeneratedPluginRegistrant.java")
+        gen.parent.mkdir(parents=True, exist_ok=True)
+        gen.write_text(
+            "package io.flutter.plugins;\n"
+            "// Generated file. Do not edit.\n"
+            "public final class GeneratedPluginRegistrant {\n}\n",
+            encoding="utf-8",
+        )
+        return apk
+
+    def test_el_generado_no_invalida_el_apk(self) -> None:
+        """Regenerar el registrant no vuelve viejo el binario.
+
+        Es el caso que mordió: después de verificar, el fichero cambia de
+        contenido y el APK pasaba a estar «desactualizado» contra su propio
+        código, sin que nadie hubiera tocado nada.
+        """
+        apk = self._proyecto_con_generado(self.tmp)
+        apk.write_bytes(b"x")
+        deploy.escribir_sello(apk)
+        # Lo que hace la herramienta al volver a arrancar: lo reescribe con otro
+        # juego de plugins.
+        gen = (self.tmp / "mobile" / "android/app/src/main/java/io/flutter/plugins"
+               / "GeneratedPluginRegistrant.java")
+        gen.write_text(gen.read_text(encoding="utf-8")
+                       + "  // una dependencia mas\n", encoding="utf-8")
+        self.assertEqual(deploy.apk_desactualizado(apk), "")
+
+    def test_cambiar_pubspec_lock_si_lo_invalida(self) -> None:
+        """La señal que se sacrifica al excluir el generado, recuperada.
+
+        Cambiar el lock cambia qué plugins se registran, y eso cambia lo que
+        acaba en el APK. Si esto pasara, la puerta sería ciega justo para el
+        cambio que más la necesita: **dependencias nuevas**.
+        """
+        apk = self._proyecto(self.tmp)
+        apk.write_bytes(b"x")
+        lock = self.tmp / "mobile" / "pubspec.lock"
+        lock.write_text("packages:\n  flutter_secure_storage:\n", encoding="utf-8")
+        deploy.escribir_sello(apk)
+        lock.write_text("packages:\n  mobile_scanner:\n", encoding="utf-8")
+        self.assertIn("no corresponde al código", deploy.apk_desactualizado(apk))
+
+    def test_cambiar_el_registrant_sin_tocar_el_lock_no_lo_invalida(self) -> None:
+        """Las dos mitades del trato, juntas.
+
+        El generado se mueve solo (nadie lo editó, no significa nada) y el lock
+        se queda igual (el juego de plugins es el mismo): el APK **no** es
+        viejo. Si este test falla, el filtro está comparando rutas de otra
+        manera — que es como se cuela un `not in` que nunca encuentra nada.
+        """
+        apk = self._proyecto_con_generado(self.tmp)
+        apk.write_bytes(b"x")
+        (self.tmp / "mobile" / "pubspec.lock").write_text("packages:\n",
+                                                           encoding="utf-8")
+        deploy.escribir_sello(apk)
+        gen = (self.tmp / "mobile" / "android/app/src/main/java/io/flutter/plugins"
+               / "GeneratedPluginRegistrant.java")
+        gen.write_text("// rehacer\n", encoding="utf-8")
+        self.assertEqual(deploy.apk_desactualizado(apk), "")
+
+    def test_un_fichero_real_de_android_sigue_invalida(self) -> None:
+        """Excluir el generado **no** es excluir la carpeta entera.
+
+        El `AndroidManifest.xml` y el Kotlin de la app son código tuyo y van
+        dentro del APK. Si el filtro se pasara de generoso, esto no fallaría y
+        el APK se serviría sin el permiso de cámara.
+        """
+        apk = self._proyecto(self.tmp)
+        apk.write_bytes(b"x")
+        man = self.tmp / "mobile" / "android/app/src/main/AndroidManifest.xml"
+        man.parent.mkdir(parents=True, exist_ok=True)
+        man.write_text("<manifest/>\n", encoding="utf-8")
+        deploy.escribir_sello(apk)
+        man.write_text("<manifest uses-permission='CAMERA'/>\n", encoding="utf-8")
+        self.assertIn("no corresponde al código", deploy.apk_desactualizado(apk))

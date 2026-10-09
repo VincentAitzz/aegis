@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # actualizar una app si el `versionCode` nuevo es mayor o igual que el instalado.
 # Es lo que lee el bridge con `aapt` para saber si hay versión nueva, y lo que
 # lee la app sobre sí misma para decirselo. Subirlo es parte de publicar.
-version: 1.0.13+14
+version: 1.0.15+17
 
 environment:
   sdk: ^3.13.4
@@ -57,9 +57,64 @@ dependencies:
   # bridge y no de otra cosa que se anuncie en la red.
   multicast_dns: ^0.3.3
 
+  # `crypto` es la base de `dart:convert` para hashes, y de `Hmac` para TOTP. Es
+  # de las que ya venían en el árbol como dependencia de otra, pero eso no la
+  # hace directa: si el cálculo del código no la declara, un `pub upgrade` que
+  # sacara a la intermediaria se lleva por delante el autenticador.
+  crypto: ^3.0.7
+
+  # ## Por qué `flutter_secure_storage` y no un fichero
+  # Porque las semillas **son** el activo: quien las tiene, entra. Un fichero en
+  # el directorio de la app se puede copiar con `adb` en un portátil sin
+  #	root en cuanto el móvil está desbloqueado; el Keystore no, porque la clave
+  # no sale del dispositivo. Por eso esto no es «cómodo»: es la diferencia entre
+  # un autenticador y una lista de números en un fichero.
+  #
+  # La v11 usa ciphers propios sobre Keystore (`RSA_ECB_OAEPwithSHA_256…` para la
+  # clave, `AES_GCM_NoPadding` para el dato) porque Jetpack Security quedó
+  # deprecado. Sube `minSdk` a 24, que es justo el mínimo que Flutter ya exige:
+  # no hamovido el suelo de la app.
+  flutter_secure_storage: ^11.2.0
+
+  # Argon2id y AES-GCM para el fichero de copia. **Puro Dart**, a propósito: la
+  # alternativa (`pointycastle`) son ~400 KB de nativo para cifrar un fichero que
+  # se genera una vez y se lee un par de veces. La lentitud de Argon2id aquí es
+  # una propiedad útil: 200 ms de espera al abrir la copia es lo que hace que
+  # probar contraseñas sea caro.
+  cryptography: ^2.9.0
+
+  # Para el directorio de la app, donde va la copia cifrada. Venía de forma
+  # transitiva por `mobile_scanner`, pero eso no la hace dependencia nuestra: si
+  # el escáner la suelta, la copia de seguridad se deja de guardar sin que nadie
+  # lo note hasta que hace falta.
+  path_provider: ^2.1.5
+
+  # ## Por qué el QR va dentro y no dentro de una app aparte
+  # ML Kit **empaquetado** (el que se usa por defecto): la decodificación ocurre
+  # en el dispositivo y no toca la red. La alternativa «unbundled» pesa 600 KB
+  # menos pero descarga el modelo de ML Kit desde Play Services al primer uso, y
+  # un autenticador que necesita red para leer un QR no funciona en un avión.
+  # El precio son 3-10 MB de APK; se paga una vez y es el correcto aquí.
+  mobile_scanner: ^7.4.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  # Para probar contra el dispositivo de verdad. Lo que se necesita aquí no es
+  # Widget: `flutter_secure_storage` habla con el Keystore de Android, y en el
+  # host de pruebas no hay Keystore. Un doble en memoria daría verde sobre lo
+  # único que hay que demostrar, que es que las semillas sobreviven al proceso
+  # y no salen del dispositivo.
+  integration_test:
+    sdk: flutter
+
+  # Para medir temporizadores sin esperarlos de verdad: un `Timer.periodic` que
+  # dura 10 s son 10 s de test si no hay forma de avanzar el reloj. Venía de
+  # forma transitiva por `flutter_test`, y eso no la hace nuestra dependencia:
+  # si flutter_test la suelta, el test que vigila el reloj de los anillos se
+  # deja de compilar.
+  fake_async: ^1.3.3
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

@@ -12,6 +12,28 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- ## Por qué `CAMERA` y qué NO permite
+         Aegis la pide para **leer el QR de una cuenta** de dos pasos. Es la
+         primera vez que esta app pide la cámara, así que lo que decide es el
+         patrón que se queda:
+
+         - **No hay `required`**, ni nada que la app no pueda hacer sin ella. Un
+           permiso `required` en la Play Store puede hacer que la app no se
+           pueda instalar en dispositivos sin cámara, y Aegis se usa en el
+           emulador.
+         - **No se escribe ninguna imagen.** El preview es de ML Kit, en
+           memoria, y de lo escaneado solo sale la cadena de texto. No hay
+           ninguna imagen en disco ni ninguna subida.
+         - **La cámara solo existe dentro de la pantalla de escaneo** y se para
+           en cuanto la app va a segundo plano (`didChangeAppLifecycleState`).
+
+         Y `docs/vision.md` §6 deja las cámaras fuera del objetivo, con el
+         motivo de que grabar a quien está en tu casa es una decisión de
+         privacidad. Esto no es eso, y la diferencia está en el código: no hay
+         fotograma que salga de aquí. Lo que sí exige este permiso, y que no se
+         puede deshacer, es que ML Kit escriba un poco de caché en la app. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+
     <!-- ## Para poder instalar la actualización que descarga
          `REQUEST_INSTALL_PACKAGES` es lo que pide Android el permiso de
          «instalar apps desconocidas», que el móvil concede **a mano** en

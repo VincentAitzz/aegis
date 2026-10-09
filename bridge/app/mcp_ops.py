@@ -1240,10 +1240,25 @@ def build_apk(target: str = "emulador", force: bool = False,
         elif movido:
             anotado = "sin token (AEGIS_API_KEY vacia: los endpoints nuevos daran 401)"
     ok = proc.returncode == 0 and movido
-    # El sello de código va **antes** del resumen, y solo si la compilación
-    # terminó bien: es lo que después permite que la puerta diga «este APK no
-    # corresponde al código de ahora». Lo escribe quien compila porque es el
-    # único que sabe de qué fuente salió el binario (A-061).
+    # El sello de código va **antes** del resumen y **antes de verificar**, y el
+    # orden importa, pero no por la razón que se creyó primero.
+    #
+    # `verificar_binario` empieza comprobando `apk_desactualizado`, que lee este
+    # mismo fichero (A-061). Si el sello se escribiera después, la verificación
+    # leería el sello **del build anterior** y se negaría a verificar por estar
+    # «desactualizado». Eso se intentó y es un fallo real: la puerta se cierra
+    # sola y el APK queda sin verificar aunque compile y pase analyze.
+    #
+    # Lo que de verdad rompía el sello era otro: verificar corre analyze/test/humo,
+    # que hacen que Flutter regenere `GeneratedPluginRegistrant.java`, que estaba
+    # dentro de la firma — así que la firma cambiaba después de sellada y el APK
+    # salía desactualizado para siempre. **Eso** se arregla en
+    # `_firma_del_codigo`, excluyendo el fichero generado, no cambiando el orden.
+    #
+    # Lo que se vio en la práctica: `build_apk` decía «compilado» y la app
+    # recibía un 409 «el APK no corresponde al código de ahora», con la
+    # instrucción de recompilar. Y recompilar no lo arreglaba. Solo se notaba al
+    # cambiar el juego de plugins, que es lo único que movía ese fichero.
     if ok:
         from .deploy import escribir_sello
         escribir_sello(destino)
@@ -1252,8 +1267,7 @@ def build_apk(target: str = "emulador", force: bool = False,
     # «varios minutos de silencio» se lee como «se colgó» (A-068).
     #
     # `humo=False` por defecto: el humo instala y arranca el emulador, y quien
-    # compila para su propio uso no siempre lo quiere. El que sí lo quiere
-    # instala, y para entonces el sello ya está.
+    # compila para su propio uso no siempre lo quiere.
     puerta = ""
     verificado = False
     if ok:

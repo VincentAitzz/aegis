@@ -20,6 +20,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/auth/boveda.dart';
 import '../../core/theme/aegis_palette.dart';
 import '../../core/widgets/aegis_mark.dart';
 import '../../core/widgets/hud_panel.dart';
@@ -27,6 +28,8 @@ import '../../core/widgets/status_led.dart';
 import '../../data/models/agent_models.dart';
 import '../../data/models/asistente_models.dart';
 import '../providers/agent_providers.dart';
+import '../providers/boveda_providers.dart';
+import 'claves_page.dart';
 
 class AhoraPage extends ConsumerStatefulWidget {
   const AhoraPage({super.key});
@@ -190,6 +193,8 @@ class _AhoraPageState extends ConsumerState<AhoraPage> {
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
       children: [
         const _Saludo(),
+        const SizedBox(height: 10),
+        const _EntradaClaves(),
         const SizedBox(height: 16),
         _Aprobaciones(onRelanzar: _relanzarConPermiso),
         const SizedBox(height: 16),
@@ -1055,6 +1060,92 @@ class _Saludo extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// La entrada a las claves.
+///
+/// ## Por qué va aquí y no como pestaña
+/// La barra de secciones ya tiene seis, y `test/sections_test.dart` falla a
+/// propósito por la séptima: con seis pestañas a 180 px cada una las etiquetas
+/// se leen; con siete hay que encogerlas, y el propio test avisa de que la
+/// solución no es el texto.
+///
+/// ## Por qué es un botón y no un icono suelto
+/// Porque hay un estado que hay que ver desde fuera —«te quedan dos códigos de
+/// recuperación»— y para eso hace falta sitio. Con un icono en la barra ese
+/// aviso no cabe, y un aviso que no cabe no es un aviso.
+///
+/// ## Por qué cuenta las cuentas sin abrir la bóveda entera
+/// Consulta el provider, que ya está en memoria. Descifrar el Keystore en cada
+/// `build` de la pantalla principal sería de las pocas cosas que hacen que la
+/// app arranque NotImplemented.
+class _EntradaClaves extends ConsumerWidget {
+  const _EntradaClaves();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final boveda = ref.watch(bovedaProvider);
+    final cuentas = switch (boveda) {
+      AsyncData(:final value) => value.cuentas,
+      _ => const <Cuenta>[],
+    };
+    final sinRecuperacion = switch (boveda) {
+      AsyncData(:final value) =>
+        value.cuentas.where((c) => value.sinGastar(c.id) == 0).length,
+      _ => 0,
+    };
+
+    return InkWell(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const ClavesPage()),
+      ),
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+        decoration: BoxDecoration(
+          color: AegisPalette.bg1,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: sinRecuperacion > 0 ? AegisPalette.warn : AegisPalette.line,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.key_outlined,
+              size: 16,
+              color: sinRecuperacion > 0 ? AegisPalette.warn : AegisPalette.fgDim,
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Text(
+                switch (cuentas.length) {
+                  0 => 'Claves de doble factor',
+                  final n => '$n clave${n == 1 ? '' : 's'} de doble factor',
+                },
+                style: const TextStyle(
+                  fontFamily: AegisPalette.mono,
+                  fontSize: 12,
+                  color: AegisPalette.fgDim,
+                ),
+              ),
+            ),
+            if (sinRecuperacion > 0)
+              Text(
+                'sin recuperación',
+                style: const TextStyle(
+                  fontFamily: AegisPalette.mono,
+                  fontSize: 10,
+                  color: AegisPalette.warn,
+                ),
+              )
+            else
+              const Icon(Icons.chevron_right, size: 15, color: AegisPalette.fgFaint),
+          ],
+        ),
       ),
     );
   }
