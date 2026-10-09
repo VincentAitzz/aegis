@@ -85,10 +85,11 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
         // `Boveda.corrupta`: tiene que ser un estado que sobreviva a cada
         // reconstrucción, o la pantalla volvería a pintarse como si no tuvieras
         // nada y un «añadir» por debajo se comería lo que queda.
-        data: (b) => b.corrupta
-            ? _BovedaRota(alReintentar: () {
-                ref.invalidate(bovedaProvider);
-              })
+        data: (b) => b.intocable
+            ? _BovedaRota(
+                demasiadoNueva: b.demasiadoNueva,
+                alReintentar: () => ref.invalidate(bovedaProvider),
+              )
             : _cuerpo(context, b, ahora),
       ),
     );
@@ -729,9 +730,13 @@ class _BarraAcciones extends StatelessWidget {
 /// tocar cualquier cosa y sobrescribirla con una lista vacía, y entonces ya no
 /// hay ni copia ni aviso. Esta pantalla no se va sola y dice qué hacer.
 class _BovedaRota extends StatelessWidget {
-  const _BovedaRota({required this.alReintentar});
+  const _BovedaRota({required this.alReintentar, this.demasiadoNueva = false});
 
   final VoidCallback alReintentar;
+
+  /// Lo guardado es más nuevo que la app. El consejo es el contrario: aquí no
+  /// hay que.iterator, hay que **actualizar**.
+  final bool demasiadoNueva;
 
   @override
   Widget build(BuildContext context) {
@@ -744,22 +749,28 @@ class _BovedaRota extends StatelessWidget {
             const Icon(Icons.lock_outline,
                 size: 32, color: AegisPalette.danger),
             const SizedBox(height: 16),
-            const Text(
-              'La bóveda no se puede leer.',
+            Text(
+              demasiadoNueva
+                  ? 'Lo guardado es más nuevo que esta app.'
+                  : 'La bóveda no se puede leer.',
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                 fontFamily: AegisPalette.mono,
                 fontSize: 13,
                 color: AegisPalette.fg,
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'No se ha tocado nada. Si importaste una copia, vuelve a '
-              'importarla; y no añadas cuentas hasta que esto se resuelva, '
-              'porque eso sobrescribiría lo que queda.',
+            Text(
+              demasiadoNueva
+                  ? 'No se ha tocado nada y no hay que tocar nada. Aegis está '
+                      'viejo para lo que tienes guardado: actualízalo y se '
+                      'leerá solo.'
+                  : 'No se ha tocado nada. Si importaste una copia, vuelve a '
+                      'importarla; y no añadas cuentas hasta que esto se '
+                      'resuelva, porque eso sobrescribiría lo que queda.',
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                 fontFamily: AegisPalette.mono,
                 fontSize: 11.5,
                 height: 1.5,

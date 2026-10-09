@@ -56,7 +56,7 @@ class BovedaController extends AsyncNotifier<Boveda> {
   /// [Boveda.escribirEn].
   Future<List<String>?> anadir(CuentaQr qr) async {
     final b = await _almacen.leer();
-    if (b.corrupta) return null;
+    if (b.intocable) return null;
     final codigos = await _almacen.anadir(qr);
     await _recargar();
     return codigos;
@@ -73,7 +73,7 @@ class BovedaController extends AsyncNotifier<Boveda> {
   /// Canjea un código de recuperación. Devuelve el `id` de la cuenta o `null`.
   Future<String?> canjear(String codigo) async {
     final b = await _almacen.leer();
-    if (b.corrupta) return null;
+    if (b.intocable) return null;
     final id = await _almacen.canjear(codigo);
     await _recargar();
     return id;

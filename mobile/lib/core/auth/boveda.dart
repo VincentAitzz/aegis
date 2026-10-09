@@ -231,12 +231,58 @@ List<String> generarCodigos({int n = _codigosPorCuenta, Random? aleatorio}) {
   );
 }
 
+/// La versión del formato de la bóveda.
+///
+/// ## Por qué vive en el contenido y no en el nombre de la clave
+/// La clave del Keystore se llama `aegis.boveda.v1`. Si al cambiar el formato
+/// se cambiara **también** el nombre, los datos de la v1 quedarían bajo una
+/// clave que ya nadie lee: serían huérfanos, y sin copia fuera no hay
+/// recuperación. La versión viaja en el contenido y la clave se queda.
+///
+/// ## Por qué hay que subirla
+/// Cuando cambie algo que no se deduce solo —un campo nuevo sin valor por
+/// defecto sensato, un tipo que cambia— hay que subir esto **y** añadir la
+/// migración. Subirla sin migración deja copias viejas ilegibles; añadir la
+/// migración sin subirla no llega a ejecutarse nunca.
+const versionBovedaActual = 1;
+
+/// Un paso de la cadena de migraciones.
+class MigracionBoveda {
+  const MigracionBoveda({required this.hasta, required this.aplicar});
+
+  /// La versión a la que lleva este paso.
+  final int hasta;
+
+  /// Devuelve el mapa en la versión siguiente.
+  final Map<String, dynamic> Function(Map<String, dynamic>) aplicar;
+}
+
+/// La cadena, de la más antigua a la más nueva.
+///
+/// Vacía a propósito: la v1 es la primera y no hay nada anterior que migrar.
+/// Existe ahora, **probada con una v1 real**, para que cuando llegue la v2 sea
+/// añadir una entrada y no escribir un lector desde cero.
+const _migraciones = <MigracionBoveda>[];
+
+/// La copia guardada es de una versión que esta app no entiende.
+///
+/// Distinto de [BovedaCorrupta] a propósito: el fichero está bien, es que es
+/// más nuevo que la app. La respuesta es actualizar Aegis, no borrar nada.
+class BovedaDeFuturo implements Exception {
+  const BovedaDeFuturo();
+
+  @override
+  String toString() =>
+      'La copia es de una versión más nueva que esta app.';
+}
+
 /// La bóveda completa: cuentas y sus códigos de recuperación.
 class Boveda {
   Boveda({
     List<Cuenta>? cuentas,
     Map<String, List<CodigoRecuperacion>>? recuperacion,
     this.corrupta = false,
+    this.demasiadoNueva = false,
   })  : cuentas = cuentas ?? <Cuenta>[],
         _recuperacion = recuperacion ?? <String, List<CodigoRecuperacion>>{};
 
@@ -258,6 +304,14 @@ class Boveda {
   /// encima de algo que no ha leído.
   final bool corrupta;
 
+  /// Lo guardado es de una versión **más nueva** que esta app.
+  ///
+  /// Separate de [corrupta] porque el consejo es el contrario: corrupto dice
+  /// «no añadas nada, no vas a poder leer lo que hay», y esto dice «actualiza
+  /// Aegis». Confundirlos hace que alguien borre una bóveda que solo necesitaba
+  /// una app más al día.
+  final bool demasiadoNueva;
+
   /// `escribir` sobre una bóveda corrupta no toca lo que hay.
   ///
   /// Se pone aquí y no en cada llamador porque un olvido en uno de ellos es
@@ -267,6 +321,9 @@ class Boveda {
   /// una línea síncrona y a otro con un `Future` en error, según cuándo llegue.
   /// Con `asFuture` los dos caminos son el mismo.
   Future<void> escribirEn(AlmacenBoveda almacen) {
+    if (demasiadoNueva) {
+      return Future<void>.error(const BovedaDeFuturo());
+    }
     if (corrupta) {
       return Future<void>.error(const BovedaCorrupta());
     }
@@ -274,6 +331,13 @@ class Boveda {
   }
 
   bool get vacia => cuentas.isEmpty && !corrupta;
+
+  /// No se puede escribir encima: o no se entiende, o es más nuevo que la app.
+  ///
+  /// Los dos casos se niegan por la misma razón y con la misma consecuencia —no
+  /// perder lo que hay— pero por motivos distintos, y por eso el segundo tiene
+  /// su bandera.
+  bool get intocable => corrupta || demasiadoNueva;
 
   /// Los códigos sin gastar de una cuenta. Lo que ve el usuario.
   List<CodigoRecuperacion> recuperacionDe(String id) =>
@@ -377,10 +441,11 @@ class Boveda {
         cuentas: [...cuentas],
         recuperacion: _recuperacion.map((k, v) => MapEntry(k, [...v])),
         corrupta: corrupta,
+        demasiadoNueva: demasiadoNueva,
       );
 
   Map<String, dynamic> aJson() => {
-        'version': 1,
+        'version': versionBovedaActual,
         'cuentas': cuentas.map((c) => c.aJson()).toList(),
         'recuperacion': _recuperacion.map(
           (k, v) => MapEntry(
@@ -388,14 +453,46 @@ class Boveda {
         ),
       };
 
-  /// Lee una bóveda de JSON.
+  /// Lee una bóveda de JSON, **migrándola** si es de una versión anterior.
   ///
   /// Un registro que no cuadra se salta y el resto se carga. Antes de que existiera
   /// esto, una `try` alrededor de todo devolvía una bóveda vacía: importabas
   /// tu copia de seguridad y la app te decía que no tienes cuentas, sin decir
   /// que se ha leído mal. Ahora cada cuenta se lee por separado y solo se pierde la
   /// que está mal.
+  ///
+  /// ## Por qué la versión se lee, y no se asumía
+  /// Porque `version: 1` se escribía y **nunca se leía**. Eso no es un detalle:
+  /// el día que el formato cambie, una copia hecha con la versión anterior se
+  /// leería con los valores por defecto de cada campo, sin decir nada. Los
+  /// silencios son los que hacen que una copia deje de servir justo cuando se
+  /// necesita, y peor: sirven mientras la cuenta tiene menos campos y dejan de
+  /// servir cuando le añades uno.
+  ///
+  /// ## Por qué una migración por pasos y no «leer la actual»
+  /// Porque cuando la `v2` llegue, tener que escribir el lector de la `v1` y el
+  /// de la `v2` desde cero es justo el error que se quiere evitar. Con una
+  /// cadena, la `v2` solo tiene que saber pasar de `v1` a `v2`, y todo lo demás
+  /// se arrastra.
   static Boveda desdeJson(Map<String, dynamic> j) {
+    final version = (j['version'] as num?)?.toInt() ?? 1;
+    if (version > versionBovedaActual) {
+      // De un futuro que esta app no entiende. Se rechaza entero, con motivo,
+      // en vez de leerlo a medias: leer campos que no conoces produce una
+      // bóveda que parece buena y no lo es, que es peor que no tenerla.
+      throw const BovedaDeFuturo();
+    }
+    var datos = j;
+    // La cadena va de la más antigua a la actual, y cada paso deja el mapa en la
+    // versión siguiente.
+    for (final m in _migraciones) {
+      if (version >= m.hasta) continue;
+      datos = m.aplicar(datos);
+    }
+    return Boveda._desdeVersionActual(datos);
+  }
+
+  static Boveda _desdeVersionActual(Map<String, dynamic> j) {
     final cuentas = <Cuenta>[];
     for (final c in (j['cuentas'] as List? ?? const [])) {
       if (c is Map<String, dynamic>) {
@@ -498,6 +595,12 @@ class BovedaKeystore implements AlmacenBoveda {
       final j = jsonDecode(bruto);
       if (j is! Map<String, dynamic>) return Boveda(corrupta: true);
       return Boveda.desdeJson(j);
+    } on BovedaDeFuturo {
+      // El sobre es de una versión más nueva. **No** se marca como corrupto:
+      // el fichero está bien, lo que falla es que la app sea vieja. Tratarlo
+      // como corrupción haría que la pantalla dijera «no se puede leer» —que
+      // invita a borrar— cuando lo cierto es «actualiza Aegis».
+      return Boveda(corrupta: true, demasiadoNueva: true);
     } on FormatException {
       // No se sobrescribe: [Boveda.escribirEn] se niega cuando está corrupta, y
       // con eso cualquier cambio posterior —añadir, borrar— deja el sobre como

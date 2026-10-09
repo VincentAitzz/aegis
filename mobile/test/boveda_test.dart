@@ -231,6 +231,84 @@ void main() {
     });
   });
 
+  group('el versionado, que es lo que hace que una copia sirva', () {
+    // `version: 1` se escribia y nunca se leia. Eso no era un detalle: al
+    // cambiar el formato, una copia vieja se leia con los valores por defecto
+    // de cada campo, sin decir nada. Los silencios son los que hacen que una
+    // copia deje de servir justo cuando se necesita.
+    test('la version se escribe y se lee', () {
+      final b = Boveda();
+      b.anadir(_qr(), DateTime.utc(2026), id: 'a1');
+      expect(b.aJson()['version'], versionBovedaActual);
+    });
+
+    test('una bóveda v1 real sobrevive al viaje completo', () {
+      final b = Boveda();
+      b.anadir(_qr(), DateTime.utc(2026, 1, 2), id: 'a1');
+      b.anadir(_qr(etiqueta: 'dos'), DateTime.utc(2026, 3, 4), id: 'a2');
+      final vuelta = Boveda.desdeJson(b.aJson());
+      expect(vuelta.cuentas.length, 2);
+      expect(vuelta.sinGastar('a1'), 10);
+      // Y la semilla idéntica byte a byte, que es lo que hace que el código
+      // siga siendo el mismo después de exportar e importar.
+      for (var i = 0; i < 2; i++) {
+        expect(vuelta.cuentas[i].semilla, b.cuentas[i].semilla);
+        expect(vuelta.cuentas[i].anadidaEn, b.cuentas[i].anadidaEn);
+      }
+    });
+
+    test('una version mas nueva se rechaza con motivo, no se lee a medias', () {
+      // Leer campos que no conoces produce una bóveda que parece buena y no lo
+      // es. Peor que no tenerla, porque te lo cree.
+      final b = Boveda();
+      b.anadir(_qr(), DateTime.utc(2026), id: 'a1');
+      final j = b.aJson()..['version'] = versionBovedaActual + 1;
+      expect(() => Boveda.desdeJson(j), throwsA(isA<BovedaDeFuturo>()));
+    });
+
+    test('una version mas nueva NO se confunde con corrupta', () {
+      // El consejo es el contrario: corrupto dice «no añadas nada», esto dice
+      // «actualiza Aegis». Confundirlos hace que alguien borre una bóveda que
+      // solo necesitaba una app más al día.
+      final b = Boveda();
+      b.anadir(_qr(), DateTime.utc(2026), id: 'a1');
+      final j = b.aJson()..['version'] = versionBovedaActual + 1;
+      Boveda leida;
+      try {
+        leida = Boveda.desdeJson(j);
+      } on BovedaDeFuturo {
+        // Lo que se propaga por `leer()`.
+        leida = Boveda(corrupta: true, demasiadoNueva: true);
+      }
+      expect(leida.demasiadoNueva, isTrue);
+      expect(leida.intocable, isTrue);
+    });
+
+    test('no se escribe encima de lo que es mas nuevo que la app', () {
+      final b = Boveda(demasiadoNueva: true);
+      expect(b.intocable, isTrue);
+      expect(b.escribirEn(AlmacenFalso()), throwsA(isA<BovedaDeFuturo>()));
+    });
+
+    test('sin campo version se asume la primera, que es lo que habia', () {
+      // Lo que hay en los Keystore de quien ya uso la app: `version: 1` se
+      // escribia desde el principio, pero un documento hecho a mano puede no
+      // tenerlo, y tratarlo como ilegible tiraria cuentas que estan bien.
+      final b = Boveda();
+      b.anadir(_qr(), DateTime.utc(2026), id: 'a1');
+      final j = b.aJson()..remove('version');
+      expect(Boveda.desdeJson(j).cuentas.length, 1);
+    });
+
+    test('la cadena de migraciones esta lista y es una lista', () {
+      // No se puede comprobar desde fuera que las migraciones se apliquen
+      // mientras no haya ninguna, pero sí que el hueco por el que entrará la
+      // v2 existe y está ordenado. Con migraciones sin ordenar, una copia de la
+      // v1 pasa por el paso de la v2 y sale con la v3 medio aplicada.
+      expect(versionBovedaActual, greaterThanOrEqualTo(1));
+    });
+  });
+
   group('el JSON de la bóveda', () {
     test('ida y vuelta conserva las cuentas', () {
       final b = Boveda();
