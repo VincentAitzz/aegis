@@ -362,8 +362,8 @@ void main() {
     test('el texto dice que no devuelven el acceso', () {
       // Se mira solo el **texto de la app**, no el fichero entero: la frase
       // prohibida aparece en el comentario que explica por qué se quitó, y un
-      // test que la busca en todo el fichero tendría que，女孩 Prohibition。
-      // Y no la quitamos: explica el fallo.
+      // test que la busca en todo el fichero tendría que borrar ese comentario,
+      // que explica el fallo. Y no se borra.
       final fuente = File('lib/presentation/pages/claves_page.dart')
           .readAsStringSync();
       final soloTexto = fuente
