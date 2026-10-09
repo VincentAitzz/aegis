@@ -385,7 +385,9 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
       builder: (_) => const DialogoContrasena(
         titulo: 'Contraseña de la copia',
         explicacion: 'Cifra el fichero. Sin ella no se puede abrir, ni '
-            'siquiera desde Aegis. No se guarda en ningún sitio.',
+            'siquiera desde Aegis. No se guarda en ningún sitio.\n\n'
+            'Después Aegis te deja elegir **la carpeta**: ahí decides dónde '
+            'queda, y Aegis no lo sube a ningún sitio por su cuenta.',
       ),
     );
     if (contrasena == null || contrasena.isEmpty || !mounted) return;
@@ -395,29 +397,40 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
     final contenido = await cifrarBoveda(b, contrasena);
     if (!mounted) return;
 
-    final ruta = await guardarCopia(contenido);
+    // Primero una copia local, que es lo que salva si la bóveda se daña **en
+    // este móvil**. Silenciosa: no pide nada y no sale de aquí.
+    await guardarCopia(contenido);
     if (!mounted) return;
-    if (ruta == null) {
-      _error('No se ha podido guardar el fichero.');
+
+    // Y luego la que sale, que es la que salva si pierdes el móvil. Con SAF,
+    // porque la persona elige dónde y Android 11 no deja tocar `Android/data/`
+    // desde fuera: antes el fichero se escribía donde nadie podía llegar, que
+    // es una función de exportar que parece funcionar y no sirve para nada.
+    final motivo = await ref
+        .read(copiaNativaProvider)
+        .exportar(contenido, nombreCopiaConFecha());
+    if (!mounted) return;
+
+    if (motivo != null) {
+      _error('No se ha guardado la copia: $motivo');
       return;
     }
-    // El aviso dice **las dos** cosas: dónde está y qué le pasa al desinstalar.
-    //
-    // La segunda es la que importa. `Android/data/` se borra al desinstalar la
-    // app, y desinstalar es justo lo que hace la gente cuando recupera un
-    // móvil. Sin esta frase, el usuario cree que tiene una copia y la tiene
-    // hasta el día que la necesita.
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Copia guardada en $ruta · se borra si desinstalas Aegis',
-          style: const TextStyle(
-              fontFamily: AegisPalette.mono, fontSize: 11.5)),
-      backgroundColor: AegisPalette.bg2,
-      duration: const Duration(seconds: 6),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Copiada donde elegiste. Aegis no la ha subido a ningún sitio.',
+          style: TextStyle(fontFamily: AegisPalette.mono, fontSize: 11.5),
+        ),
+        backgroundColor: AegisPalette.bg2,
+      ),
+    );
   }
 
   Future<void> _importar() async {
-    final contenido = await leerCopia();
+    // Con SAF primero: es donde está la copia que alguien se llevó. La local
+    // de este móvil es el segundo intento, y solo si la primera se cancela.
+    var contenido = await ref.read(copiaNativaProvider).importar();
+    contenido ??= await leerCopia();
     if (contenido == null || !mounted) return;
 
     final contrasena = await showDialog<String>(

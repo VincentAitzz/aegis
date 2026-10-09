@@ -2,6 +2,7 @@ package com.aegis.aegis_console
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,12 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+
+    /** A quién responder cuando vuelva el selector de Android. */
+    private var pendienteCopia: MethodChannel.Result? = null
+
+    /** El texto que se va a escribir, guardado entre el «exportar» y el vuelta. */
+    private var pendingExport: String? = null
 
     /**
      * Al abrir la app, se reconcilia el aviso con lo que hay de verdad.
@@ -126,6 +133,90 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // El canal de las copias. El tercero, y va aparte por lo mismo que los
+        // otros dos: cada canal es **una cosa que la app puede hacer que la
+        // anterior no**, y el motivo tiene que poder leerse.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CopiaNativa.CANAL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // Lanza el selector de destino. Responde `null` si el intent
+                    // se lanzó, que **no** quiere decir que se haya guardado: el
+                    // desenlace llega después, por `onActivityResult`. Prometer
+                    // «guardado» aquí sería mentirle a Dart, igual que con el
+                    // instalador.
+                    "exportar" -> {
+                        val texto = call.argument<String>("texto")
+                        val nombre = call.argument<String>("nombre")
+                        if (texto.isNullOrEmpty() || nombre.isNullOrEmpty()) {
+                            result.error("sin_datos", "no me dijiste qué guardar", null)
+                        } else {
+                            pendienteCopia = result
+                            pendingExport = texto
+                            result.success(CopiaNativa.exportar(this, texto, nombre))
+                        }
+                    }
+
+                    // Abre el selector de fichero. El texto llega por
+                    // `onActivityResult`, así que aquí solo se responde con que
+                    // el selector se lanzó.
+                    "importar" -> {
+                        pendienteCopia = result
+                        result.success(CopiaNativa.pedirFichero(this))
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /**
+     * Lo que el selector de Android devolvió.
+     *
+     * ## Por qué guarda el `result` pendiente
+     * Un `MethodChannel` responde **una vez**, y el selector de destino es un
+     * diálogo del sistema que vuelve por `onActivityResult`, mucho después de
+     * que el canal ya contestara. Sin guardar el `result` entre medias, la
+     * escritura del fichero no tendría a quién responder y Dart se quedaría
+     * esperando para siempre —que es el mismo «preguntando para siempre» de
+     * A-105, por otro camino—.
+     *
+     * ## Por qué cancelado y fallado son respuestas distintas
+     * Cancelar es una decisión y se dice. Fallar al escribir es un problema del
+     * destino y se dice el motivo. Devolver «no se pudo guardar» para los dos
+     * hace que alguien que cambió de opinión piense que ha perdido algo.
+     */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val pendiente = pendienteCopia ?: return
+        if (requestCode != CopiaNativa.PEDIR_DESTINO && requestCode != CopiaNativa.PEDIR_FICHERO) {
+            return
+        }
+        pendienteCopia = null
+
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) {
+            // Cancelado. No es un fallo y no se dice que falló.
+            pendingExport = null
+            pendiente.success(null)
+            return
+        }
+
+        if (requestCode == CopiaNativa.PEDIR_FICHERO) {
+            pendingExport = null
+            pendiente.success(CopiaNativa.leer(this, uri))
+            return
+        }
+
+        // Exportar: el texto se guardó al lanzar el selector, y ahora se
+        // escribe donde la persona eligió.
+        val texto = pendingExport
+        pendingExport = null
+        if (texto == null) {
+            pendiente.success("no había nada que escribir")
+            return
+        }
+        pendiente.success(CopiaNativa.escribir(this, uri, texto))
     }
 
     override fun onRequestPermissionsResult(

@@ -45,6 +45,23 @@ import 'package:path_provider/path_provider.dart';
 /// mensaje que da «no has exportado nunca».
 const nombreCopia = 'aegis-claves.json';
 
+/// El nombre con el que **se propone** el fichero al guardar.
+///
+/// ## Por qué lleva fecha y hora
+/// Porque exportar dos veces sin querer **pisa** la copia anterior, y una copia
+/// que se sobrescribe sin preguntar no era una copia: era la última, y solo
+/// mientras no guardaras otra.
+///
+/// En local (`nombreCopia`) no lleva fecha porque solo hay una: es el
+/// automático que se regenera al exportar y del que no se pierde la cuenta.
+/// Fuera del móvil, cada exportación es una decisión y se queda registrada.
+String nombreCopiaConFecha([DateTime? ahora]) {
+  final t = ahora ?? DateTime.now();
+  String dos(int n) => n.toString().padLeft(2, '0');
+  return 'aegis-claves-${t.year}${dos(t.month)}${dos(t.day)}'
+      '-${dos(t.hour)}${dos(t.minute)}.json';
+}
+
 /// La carpeta de las copias, dentro del almacenamiento externo de la app.
 ///
 /// Un subdirectorio propio y no la raíz: el `FileProvider` declara `copias/`, y

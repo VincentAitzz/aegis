@@ -17,6 +17,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/boveda.dart';
+import '../../core/auth/copia_nativa.dart';
 import '../../core/auth/otpauth.dart';
 
 /// El reloj. Inyectable para que los tests no dependan del sistema.
@@ -24,6 +25,10 @@ final relojProvider = Provider<DateTime Function()>((ref) => DateTime.now);
 
 /// El almacén. También inyectable: en el host de pruebas no hay Keystore.
 final almacenBovedaProvider = Provider<AlmacenBoveda>((ref) => BovedaKeystore());
+
+/// El selector de archivos de Android. Inyectable por lo mismo: probarlo pide
+/// un emulador y un diálogo que hay que tocar.
+final copiaNativaProvider = Provider<CopiaNativa>((ref) => CopiaPorCanal());
 
 /// La bóveda en memoria, con el estado de carga.
 ///
