@@ -48,10 +48,32 @@ class _Piso(unittest.TestCase):
     depurar.
     """
 
+    ## Por qué un fichero propio y no `mobile/lib/app.dart`
+    ##
+    ## Porque la regla de reescritura **mide el fichero de verdad**: mira
+    ## cuántas líneas tiene hoy y las compara con las que llegarían. Usando un
+    ## fichero real del repo, el test dépendía de cuánto mide ese fichero, y
+    ## dejó de pasar el día que `app.dart` pasó de 121 líneas — sin que nadie
+    ## tocara este test. Un test que se rompe porque el código grew es un test
+    ## midiendo el código en vez de la regla.
+    ##
+    ## El fixture tiene tres líneas porque lo que se prueba es «una escritura
+    ## normal no es una reescritura», y eso tiene que ser cierto hoy y dentro de
+    ## un año.
+    _RUTA = "mobile/test/autonomia_fixture.dart"
+
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="aegis-autonomia-")
         self.a = autonomy._Almacen(Path(self.tmp) / "autonomia.sqlite3")
         autonomy.forgetting_tocados()
+        # Se escribe dentro del proyecto declarado, que es lo que la whitelist
+        # exige. Vive en el árbol de trabajo a propósito: la regla lo resuelve
+        # contra el disco, no contra un doble.
+        objetivo = Path(__file__).resolve().parents[2] / self._RUTA
+        objetivo.parent.mkdir(parents=True, exist_ok=True)
+        objetivo.write_text("// fixture de un test\n// una\n// dos\n")
+        self.addCleanup(objetivo.unlink, True)
+        self.addCleanup(autonomy.forgetting_tocados)
 
     def tearDown(self) -> None:
         autonomy.forgetting_tocados()
@@ -136,14 +158,14 @@ class TestModoSolo(_Piso):
 
     def test_escribir_esta_negocado_aunque_estea_marcado(self):
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a)
         self.assertFalse(d.ok)
         self.assertIn("solo", d.motivo)
         self.assertIsNone(d.peticion, "no debe abrir una peticion que va a negarse")
 
     def test_leer_si_se_puede(self):
-        d = autonomy.decide("aegis_read_file", {"path": "mobile/lib/app.dart"},
+        d = autonomy.decide("aegis_read_file", {"path": self._RUTA},
                             run_id="r1", paso=1, almacen_=self.a)
         self.assertTrue(d.ok)
 
@@ -153,7 +175,7 @@ class TestProyectoSinMarcar(_Piso):
 
     def test_escribir_en_no_marcado_no_pide_permiso_lo_dice(self):
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a)
         self.assertFalse(d.ok)
         self.assertIsNone(d.peticion,
@@ -163,14 +185,14 @@ class TestProyectoSinMarcar(_Piso):
     def test_leer_si_se_puede_siempre(self):
         """Leer el proyecto es parte de entenderlo, y una puerta que cierra la
         lectura solo produce resistencia sin."""
-        d = autonomy.decide("aegis_read_file", {"path": "mobile/lib/app.dart"},
+        d = autonomy.decide("aegis_read_file", {"path": self._RUTA},
                             run_id="r1", paso=1, almacen_=self.a)
         self.assertTrue(d.ok)
 
     def test_marcado_y_autorizado(self):
         self.a.marcar("aegis")
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a)
         # La primera vez sobre un fichero pide permiso, pero por ser la primera
         # vez: la peticion tiene que existir.
@@ -186,7 +208,7 @@ class TestProyectoSinMarcar(_Piso):
         sería dejarlo sin marcar, y la autonomía sería nominal.
         """
         self.a.marcar("aegis")
-        args = {"path": "mobile/lib/app.dart", "content": "x"}
+        args = {"path": self._RUTA, "content": "x"}
         primera = autonomy.decide("aegis_write_file", args, run_id="r1",
                                   paso=1, almacen_=self.a)
         self.assertFalse(primera.ok)
@@ -207,14 +229,14 @@ class TestProyectoSinMarcar(_Piso):
         visto, y eso es exactamente lo que la puerta tiene que impedir.
         """
         self.a.marcar("aegis")
-        args = {"path": "mobile/lib/app.dart", "content": "x"}
+        args = {"path": self._RUTA, "content": "x"}
         primera = autonomy.decide("aegis_write_file", args, run_id="r1",
                                   paso=1, almacen_=self.a)
         token = self.a.resolver(primera.peticion, "aprobar")["token"]
 
         # Otra tool con el mismo token.
         d1 = autonomy.decide("aegis_patch_file",
-                             {"path": "mobile/lib/app.dart", "old": "a", "new": "b"},
+                             {"path": self._RUTA, "old": "a", "new": "b"},
                              run_id="r1", paso=1, almacen_=self.a, token=token)
         self.assertFalse(d1.ok)
         self.assertIn("aegis_write_file", d1.motivo)
@@ -224,7 +246,7 @@ class TestProyectoSinMarcar(_Piso):
                              almacen_=self.a)
         t2 = self.a.resolver(p2.peticion, "aprobar")["token"]
         d2 = autonomy.decide("aegis_write_file",
-                             {"path": "mobile/lib/app.dart", "content": "otra"},
+                             {"path": self._RUTA, "content": "otra"},
                              run_id="r2", paso=1, almacen_=self.a, token=t2)
         self.assertFalse(d2.ok)
         self.assertIn("argumentos", d2.motivo)
@@ -238,7 +260,7 @@ class TestProyectoSinMarcar(_Piso):
         silencioso posible.
         """
         self.a.marcar("aegis")
-        args = {"path": "mobile/lib/app.dart", "content": "x"}
+        args = {"path": self._RUTA, "content": "x"}
         primera = autonomy.decide("aegis_write_file", args, run_id="run_viejo",
                                   paso=1, almacen_=self.a)
         token = self.a.resolver(primera.peticion, "aprobar")["token"]
@@ -249,7 +271,7 @@ class TestProyectoSinMarcar(_Piso):
     def test_un_token_inventado_no_abre_nada(self):
         self.a.marcar("aegis")
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a, token="inventado")
         self.assertFalse(d.ok)
         self.assertIn("ya se usó", d.motivo)
@@ -342,7 +364,7 @@ class TestBaseRoja(_Piso):
 
     def test_rojo_deteniene_la_escritura(self):
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a,
                             estado_base={"alias": "aegis", "rojo": True,
                                          "detalle": "3 tests rojos"})
@@ -351,7 +373,7 @@ class TestBaseRoja(_Piso):
 
     def test_verde_deja_pasar(self):
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a,
                             estado_base={"alias": "aegis", "rojo": False})
         self.assertIsNotNone(d.peticion)
@@ -362,7 +384,7 @@ class TestBaseRoja(_Piso):
         """Sin medida no hay veredicto. Un `rojo` supuesto frenaría a Aegis
         siempre, y un freno permanente es un freno que nadie mira."""
         d = autonomy.decide("aegis_write_file",
-                            {"path": "mobile/lib/app.dart", "content": "x"},
+                            {"path": self._RUTA, "content": "x"},
                             run_id="r1", paso=1, almacen_=self.a)
         self.assertIsNotNone(d.peticion)
         self.assertNotIn("verificador", d.motivo)
@@ -382,7 +404,7 @@ class TestEscrituraDestructiva(_Piso):
                  mock.patch.object(Path, "read_text", return_value="x\n" * 1000):
                 d = autonomy.decide(
                     "aegis_write_file",
-                    {"path": "mobile/lib/app.dart", "content": "y\n" * 10},
+                    {"path": self._RUTA, "content": "y\n" * 10},
                     run_id="r1", paso=1, almacen_=self.a)
         self.assertFalse(d.ok)
         self.assertIsNotNone(d.peticion)
@@ -397,7 +419,7 @@ class TestEscrituraDestructiva(_Piso):
                  mock.patch.object(Path, "read_text", return_value="x\n" * 100):
                 d = autonomy.decide(
                     "aegis_write_file",
-                    {"path": "mobile/lib/app.dart", "content": "y\n" * 99},
+                    {"path": self._RUTA, "content": "y\n" * 99},
                     run_id="r1", paso=1, almacen_=self.a)
         self.assertTrue(d.ok, d.motivo)
 
