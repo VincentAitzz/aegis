@@ -23,6 +23,7 @@ import '../../core/auth/copia.dart';
 import '../../core/auth/fichero_copia.dart';
 import '../../core/auth/otpauth.dart';
 import '../../core/theme/aegis_palette.dart';
+import '../../core/widgets/acciones.dart';
 import '../../core/widgets/aegis_scaffold.dart';
 import '../providers/boveda_providers.dart';
 import '../widgets/anillo_cuenta.dart';
@@ -119,13 +120,13 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
               alCopiar: () => _copiar(cuentas[i]),
               alBorrar: () => _confirmarBorrar(cuentas[i]),
               alRenombrar: () => _renombrar(cuentas[i]),
-              alCanjear: () => _canjear(),
+              alCanjear: _canjear,
             ),
           ),
         ),
         _BarraAcciones(
-          alEscanear: () => _escanear,
-          alTeclear: () => _teclar,
+          alEscanear: _escanear,
+          alTeclear: _teclar,
         ),
       ],
     );
@@ -171,8 +172,8 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
           ),
         ),
         _BarraAcciones(
-          alEscanear: () => _escanear,
-          alTeclear: () => _teclar,
+          alEscanear: _escanear,
+          alTeclear: _teclar,
         ),
       ],
     );
@@ -533,10 +534,10 @@ class _FichaCuenta extends StatelessWidget {
   final Cuenta cuenta;
   final DateTime ahora;
   final int sinGastar;
-  final VoidCallback alCopiar;
-  final VoidCallback alBorrar;
-  final VoidCallback alRenombrar;
-  final VoidCallback alCanjear;
+  final AccionAegis alCopiar;
+  final AccionAegis alBorrar;
+  final AccionAegis alRenombrar;
+  final AccionAegis alCanjear;
 
   @override
   Widget build(BuildContext context) {
@@ -680,7 +681,7 @@ class _Icono extends StatelessWidget {
   });
 
   final IconData icono;
-  final VoidCallback onTap;
+  final AccionAegis onTap;
   final String tooltip;
   final Color? color;
 
@@ -703,8 +704,8 @@ class _Icono extends StatelessWidget {
 class _BarraAcciones extends StatelessWidget {
   const _BarraAcciones({required this.alEscanear, required this.alTeclear});
 
-  final VoidCallback alEscanear;
-  final VoidCallback alTeclear;
+  final AccionAegis alEscanear;
+  final AccionAegis alTeclear;
 
   @override
   Widget build(BuildContext context) {

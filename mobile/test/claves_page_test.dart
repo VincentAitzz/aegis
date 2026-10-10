@@ -90,6 +90,42 @@ void main() {
     });
   });
 
+  group('los botones hacen algo cuando los tocas', () {
+    // ## Por qué este grupo existe, y no el anterior
+    //
+    // Los botones de esta pantalla **no hacían nada** y toda la puerta estaba
+    // en verde: 0 issues de analyze y todos los tests en verde. La causa era
+    // `alEscanear: () => _escanear`, que devuelve una *referencia* al método en
+    // vez de llamarlo, y Dart lo acepta sin quejarse porque el tipo de retorno
+    // `void` descarta cualquier valor.
+    //
+    // Los tests anteriores solo comprobaban `find.text('Escanear')`: que el
+    // botón **existe**. Este grupo comprueba que **responde**, que es lo que un
+    // usuario nota y lo que ningún test estaba mirando.
+    testWidgets('tocar Escanear abre el escáner', (t) async {
+      await montar(t);
+      expect(find.text('Escanear'), findsOneWidget);
+      await t.tap(find.text('Escanear'));
+      await asentar(t);
+      // Se comprueba algo **único** de la pantalla del escáner, no su título:
+      // el título también es «Escanear», así que buscarlo después daría verdad
+      // con la pantalla nueva y también sin haber cambiado de sitio.
+      expect(find.text('Pegar el enlace'), findsOneWidget,
+          reason: 'el escáner no se abrió: el botón no hizo nada');
+      // Y la de claves ya no está.
+      expect(find.text('Teclear'), findsNothing);
+    });
+
+    testWidgets('tocar Teclear abre el diálogo de teclear a mano', (t) async {
+      await montar(t);
+      await t.tap(find.text('Teclear'));
+      await asentar(t);
+      // El diálogo dice lo que hay que hacer, que es lo que se abre.
+      expect(find.text('Añadir a mano'), findsOneWidget,
+          reason: 'el diálogo no se abrió: el botón no hizo nada');
+    });
+  });
+
   group('con una cuenta', () {
     setUp(() async {
       await almacen.anadir(leerOtpauth(
