@@ -14,6 +14,7 @@ import 'package:aegis_console/app.dart';
 import 'package:aegis_console/presentation/providers/agent_providers.dart';
 
 import 'fake_repository.dart';
+import 'preguntados_de_fabrica.dart';
 
 void main() {
   /// Pump del arranque recogiendo **todos los textos que se han visto**.
@@ -29,8 +30,10 @@ void main() {
     final vistos = <String>[];
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [agentRepositoryProvider.overrideWithValue(repo)],
-        child: const AegisApp(),
+        overrides: [
+          agentRepositoryProvider.overrideWithValue(repo),
+        ],
+        child: AegisApp(yaPreguntados: yaPreguntados()),
       ),
     );
     // Pasos de 100 ms: más finos que los 320 ms por línea, así que ninguna línea

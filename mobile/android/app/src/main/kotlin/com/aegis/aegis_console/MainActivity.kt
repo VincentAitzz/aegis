@@ -72,12 +72,33 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "estado" -> result.success(concedePermiso())
                     "pedir" -> {
-                        pedirPermisoNotificaciones()
-                        // Se responde con el estado **de ahora**, que sigue siendo
-                        // `false`: el diálogo del sistema es asíncrono y el
-                        // resultado llega después, por `onRequestPermissionsResult`.
-                        // Prometer `true` aquí sería mentirle a Dart.
-                        result.success(concedePermiso())
+                        // ## Por qué aquí **no** se responde todavía
+                        // Porque `requestPermissions` solo **lanza** el diálogo: no
+                        // es su respuesta. Antes se hacía
+                        // `result.success(concedePermiso())` aquí, y eso devolvía
+                        // `false` de inmediato, así que Dart creía que ya tenía la
+                        // respuesta y seguía trabajando con ella.
+                        //
+                        // Se notó en el emulador: Aegis entró al shell con la
+                        // franja de «Avisos apagados» puesta, el usuario concedió
+                        // después, y la franja siguió ahí **con el permiso ya
+                        // dado** — porque nadie volvía a preguntar. El arreglo de
+                        // invalidar desde Dart tapaba el síntoma, pero la causa
+                        // es que la promesa se resolvía antes de la respuesta.
+                        //
+                        // Ahora el `Result` queda pendiente y se completa en
+                        // `onRequestPermissionsResult`, cuando ya hay veredicto.
+                        if (concedePermiso()) {
+                            result.success(true)
+                        } else if (pendienteNotificacion != null) {
+                            // Ya hay un diálogo en pantalla. Android no enseña
+                            // dos: esta llamada se resuelve con el estado real
+                            // en vez de quedarse colgada para siempre.
+                            result.success(concedePermiso())
+                        } else {
+                            pendienteNotificacion = result
+                            pedirPermisoNotificaciones()
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -226,6 +247,12 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == CODIGO_PERMISO) {
+            // La llamada de `pedir` se resuelve **aquí**, que es donde está la
+            // respuesta. Antes se respondía al lanzar el diálogo, y Dart
+            // seguía con un `false` viejo.
+            pendienteNotificacion?.success(concedePermiso())
+            pendienteNotificacion = null
+
             // Ha vuelto el permiso: se publica el aviso que quedó pendiente, si
             // había alguno. Sin esto habría que esperar al próximo despliegue para
             // enterarse de lo que ya pasó.
@@ -237,6 +264,14 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+    /**
+     * La llamada de `pedir` a la espera de que el usuario conteste.
+     *
+     * Vive aquí, y no como argumento, porque la respuesta llega en un callback
+     * del ciclo de vida que no sabe nada de la llamada que la pidió.
+     */
+    private var pendienteNotificacion: MethodChannel.Result? = null
 
     private fun concedePermiso(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true

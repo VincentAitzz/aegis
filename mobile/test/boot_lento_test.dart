@@ -23,6 +23,7 @@ import 'package:aegis_console/data/models/agent_models.dart';
 import 'package:aegis_console/presentation/providers/agent_providers.dart';
 
 import 'fake_repository.dart';
+import 'preguntados_de_fabrica.dart';
 
 /// El mismo repositorio, pero `health()` tarda como tarda de verdad.
 class _Lento extends FakeAgentRepository {
@@ -48,8 +49,10 @@ void main() {
         'termina', (tester) async {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [agentRepositoryProvider.overrideWithValue(_Lento(demora))],
-          child: const AegisApp(),
+          overrides: [
+          agentRepositoryProvider.overrideWithValue(_Lento(demora)),
+        ],
+          child: AegisApp(yaPreguntados: yaPreguntados()),
         ),
       );
       for (var i = 0; i < 80; i++) {
