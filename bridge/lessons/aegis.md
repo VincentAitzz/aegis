@@ -2787,7 +2787,7 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
 
 ## A-114 — Un `try` que cubre el parseo y no la lectura no cubre el fallo real
 
-> Aplica cuando: cuando un `try`gut wrap lo «que puede fallar» de una llamada.
+> Aplica cuando: cuando un `try` abraza lo «que puede fallar» de una llamada.
 
 - **Qué pasó**: la bóveda leía del Keystore dentro de un `try` que solo
   envolvía `jsonDecode`. Capturaba `FormatException`, y por eso el código parecía
@@ -2809,4 +2809,48 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
   **si el estado degradado es distinguible**. Aquí `Boveda.corrupta` es un valor,
   no una excepción, justamente para que la pantalla no pueda confundir «no tienes
   cuentas» con «no se pudo leer». Si el `try` degrada a la lista vacía, se
-  destroys el aviso.
+  destruye el aviso.
+
+## A-115 — Una promesa que se resuelve antes de la respuesta es una respuesta inventada
+
+> Aplica cuando: cuando un `Future`/canal marca «he preguntado» en lugar de
+> «sé lo que contestaste», o cuando el estado que se muestra depende de algo
+> asíncrono que aún no ha vuelto.
+
+- **Qué pasó**: el pase de permisos de la app funcionaba, concedía el permiso y
+  aun así Aegis se quedaba con el estado viejo: la franja de «Avisos apagados»
+  avisando **con el permiso ya concedido**. Medido en el emulador:
+  `POST_NOTIFICATIONS granted=true` y el aviso delante, al mismo tiempo.
+- **Por qué no bastaba con invalidar**: el canal nativo `pedir` respondía
+  `result.success(...)` en cuanto `requestPermissions` **lanzaba** el diálogo.
+  `requestPermissions` no es su respuesta: es su apertura. Dart resolvía el
+  `Future` con el estado de antes de preguntar, seguía trabajando con él, y no
+  había ninguna invalidación que lo arreglara: el dato nunca había llegado.
+  Invalidar desde Dart tapaba el síntoma, no la causa.
+- **La regla**: cuando una pregunta sale a un sistema externo —permisos, SAF,
+  biometría, un diálogo del sistema—, la promesa se resuelve **cuando hay
+  veredicto**, no cuando se lanza la pregunta. En Android eso significa
+  guardar el `MethodChannel.Result` y completarlo en
+  `onRequestPermissionsResult`. Un canal que responde al lanzar se puede
+  llamar «pedir», pero miente sobre lo que sabe.
+- **Y el estado que se muestra**: un `AsyncValue` cuya rama de carga significa
+  «entra igual» **escribe lo mismo que el éxito**, así que no se puede
+  distinguir «todavía no lo sé» de «lo sé y no toca». Esa versión pasó aquí
+  también: el pase no aparecía, no había ningún fallo visible, y los
+  tests de humo —que sembraban el marcador— pasaban. Arreglado pasando el
+  resultado ya resuelto a `AegisApp` (`main()` lee antes de `runApp`) y dejando
+  el provider solo para lo que cambia después.
+- **Y el test que no probaba nada**: el test que añadí para esto
+  (`la franja no aparece tras conceder`) pasaba **igual con la invalidación
+  quitada**: verde porque el shell se montaba después y leía bien, no porque
+  nada comprobara el momento. Se quitó en vez de dejarse: un test que no
+  discrimina entre el bug y su ausencia es peor que no tener test, porque
+  ocupa el sitio del que sí lo cazaría. Lo que quedó es un test de **orden**
+  (`anotado → preguntado → respondido → salido`), que sí falla al reordenar.
+  Y el bug nativo se verificó a mano en el emulador, con logcat, que es donde
+  se puede: un test de widgets con un doble en Dart habría dado verde en las dos
+  capas.
+- **El patrón general**: cuando algo se decide en dos momentos distintos
+  —«he lanzado la pregunta» y «ya sé la respuesta»— hay que nombrarlos por
+  separado en la API. Con un solo nombre, el segundo caso hereda el
+  comportamiento del primero y nadie se entera.
