@@ -5,6 +5,7 @@ que hacen que un run no se queme: comparar dos corridas, reconocer el mismo
 error dos veces, y negarse a dejar avanzar a quien no progresa.
 """
 
+from pathlib import Path
 import os
 import sys
 import unittest
@@ -131,7 +132,22 @@ class TestEjecutar(unittest.TestCase):
         self.assertIn("verificador desconocido", r.error)
 
     def test_proyecto_sin_ese_verificador_no_lanza(self):
-        r = ejecutar("trazeurs", "build")
+        """Un proyecto sin `build` declarado dice cuál le falta, no reventa.
+
+        Antes nombraba `trazeurs`, un proyecto del registro de quien escribió el
+        repo. Aquí se declara uno de mentira con `check` pero sin `build`, que es
+        exactamente el caso que el guardarraíl cubre.
+        """
+        import tempfile
+        from unittest import mock
+        from app import projects
+        from app.projects import Project
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Project(alias="sin-build", root=Path(tmp),
+                          verify={"check": ["true"]}, strategy="psql")
+            with mock.patch.dict(projects.PROJECTS, {"sin-build": cfg}, clear=True):
+                r = ejecutar("sin-build", "build")
+        self.assertFalse(r.ok)
         self.assertIn("no declara verificador", r.error)
 
     def test_binario_local_ausente_no_lanza(self):

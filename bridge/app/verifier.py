@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import entorno
 from .projects import PROJECTS
 
 # Una línea con esto es un problema. A propósito generoso: preferimos contar de
@@ -125,7 +126,13 @@ def entorno_verificador(proj: "Project") -> dict[str, str]:
     """
     env = dict(os.environ)
     env["PATH"] = f"{os.path.expanduser('~/.local/node/bin')}:{env.get('PATH', '')}"
-    env.setdefault("JAVA_HOME", "/RUTA/AL/JDK")
+    # `setdefault`, y solo si existe: Gradle no deduce el JDK del `PATH` y falla
+    # con un mensaje que no menciona la ruta. Ponerlo sin comprobarlo produce el
+    # peor de los dos mundos —un `JAVA_HOME` que apunta a un directorio vacío—,
+    # así que si no hay JDK, no se pone nada y el error lo dice el verificador.
+    java = entorno.java_home()
+    if java:
+        env.setdefault("JAVA_HOME", java)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(proj.root / "bridge"), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     return env

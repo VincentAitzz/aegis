@@ -355,6 +355,19 @@ ya tiene la última y no hay nada que probar. Detalle en `docs/runbook.md` §4.1
 
 ## 5. Operación (verificar antes de asumir)
 
+**Antes de nada, en una máquina nueva:**
+
+```bash
+bash infra/setup.sh              # venv, .env, y comprobaciones. Idempotente.
+```
+
+Dice lo que falta en vez de fallar con un error de Python, y se puede volver a
+ejecutar sin romper nada. Donde está el toolchain se decide en `bridge/app/entorno.py`
+—variable de entorno, luego `PATH`, luego las rutas estándar—, no en un literal:
+si añades una ruta de tu máquina a un fichero, el repo deja de arrancar en la de
+los demás. El CI lo comprueba: la suite del bridge corre **sin Flutter, sin JDK y
+sin SDK de Android**, a propósito.
+
 ```bash
 bash infra/stack.sh arrancar     # Ollama :11434 + gateway :8642 + bridge :8000
 bash infra/stack.sh estado       # salud de los tres + qué puede escribir Aegis
@@ -393,8 +406,8 @@ La app **se prueba en el emulador**. Tu teléfono solo se toca con la puerta
 completa (analyze + tests + humo en el emulador) y tu aprobación de un solo uso:
 `install_apk(target='telefono')`. Ver `docs/runbook.md` §4.
 
-Teléfono `galaxy-a17` (Tailscale `100.101.102.103`): el **puerto adb cambia** en
-cada reinicio. Las tools lo resuelven solas por mDNS; a mano:
+El teléfono (Tailscale `100.101.102.103`, que es un ejemplo): el **puerto adb
+cambia en cada reinicio**. Las tools lo resuelven solas por mDNS; a mano:
 `adb mdns services` → `adb connect <host>:<puerto>`. Tailscale del teléfono a
 veces está caído: el adb por mDNS funciona igual.
 
@@ -415,37 +428,39 @@ Ver las reglas globales en `~/.config/opencode/security.md`. Lo específico:
 - La clave de la API de operación se rota **por nombre versionado**
   (`AEGIS_API_KEY_V2` → `V3`): publicar la nueva, cambiar el cliente, verificar,
   recién ahí borrar la vieja.
-- PII de clientes (RUT, emails) vive en Postgres, **no** en la réplica local ni
-  en los logs. La réplica de `biz_cache` tiene allowlist de campos por entidad.
+- La PII de tus proyectos vive en sus bases, **no** en `bridge/data/` ni en los
+  logs, y no se versiona. `bridge/fichas-privadas/` existe exactamente para eso y
+  está fuera de git por construcción.
 
 ## 6.1 Las bases: de quién es cada una
 
 Aegis **gestiona** las bases de los proyectos; no es dueño de sus datos. La
-frontera se decidió el 2026-09-27 y está en `bridge/app/neon.py` (`PROJECTS`):
-
-| Base | Proyecto Neon | Qué contiene | Quién manda |
-|---|---|---|---|
-| de **Aegis** | `el-proyecto-de-neon-aegis` | cerebro y recursos internos. **Sin esquema todavía**: la memoria sigue local (Chroma + SQLiteGraph) | Aegis |
-| del **portafolio** | *(proyecto propio, pendiente de crear)* | el sistema de operación del negocio | el portafolio |
-| de **compra-unida** | `young-waterfall-ace5iynr` | su dominio, con sus 24 tablas | compra-unida |
+frontera se decidió el 2026-09-27 y está en `bridge/app/neon.py` y en
+`bridge/app/projects.py`.
 
 Tres reglas que no se negocian:
 
 1. **Producción jamás desde el Bridge.** Toda operación va contra la rama
-   registrada en `PROJECTS`, que es la de desarrollo. La URL de producción solo
+   registrada en el proyecto, que es la de desarrollo. La URL de producción solo
    aparece en un despliegue, con `wrangler secret put`.
 2. **Quien llama no elige base.** `db_migrate` y `neon_branch` reciben un alias
    del registro, nunca una URL, un host o un nombre de rama libre. El error
-   posible no es "aplicó a producción": es "no encontré esa migración".
+   posible no es «aplicó a producción»: es «no encontré esa migración».
 3. **Una sola credencial, ninguna contraseña duplicada.** `bridge/.env` tiene la
    `NEON_API_KEY`; las connection strings se piden a Neon por API en el momento
    de usarlas y se pasan a `psql` como variables `PG*`, nunca como argumento —
    en un argumento la contraseña aparece en `ps` para cualquiera de la máquina.
 
-Estado de habilitación por proyecto (2026-09-27): el portafolio puede leer y
-migrar; compra-unida **solo lee**, porque su journal de drizzle está vacío con 24
-tablas vivas y `db:migrate` intentaría recrearlas; la base de Aegis se lee pero no
-se migra con migraciones de proyecto.
+**Cada base se declara, no se supone.** Un proyecto dice qué motor usa (`neon`,
+`supabase`, `postgresql`…) en su `registro/{alias}.json`, y solo entonces se le
+puede dar un id de Neon: una base de otro motor no lleva id, y declararlo es un
+error, no un detalle. La base propia de Aegis **no se migra con migraciones de
+proyecto**, porque aún no tiene esquema: la memoria sigue siendo local.
+
+Y por qué el id no está en el código: es de una organización concreta y no
+significa nada en la máquina de nadie. Va en `bridge/.env`
+(`NEON_PROJECT_AEGIS=`). Un repositorio público que lleva dentro el id de Neon de
+alguien es un repositorio que ha enviado una credencial sin querer.
 
 ## 7. Verificación
 
@@ -453,13 +468,19 @@ No afirmes que algo funciona sin ejecutarlo:
 
 ```bash
 # El bridge (rápido, siempre)
-cd bridge && .venv/bin/python -m unittest discover -s tests -q   # 554 tests
+cd bridge && .venv/bin/python -m unittest discover -s tests -q   # ~700 tests
 cd bridge && .venv/bin/python bin/check-imports.py               # el verificador de `aegis`
 cd bridge && .venv/bin/python bin/medir-runs                     # reparto de estados del histórico
 cd bridge && bash bin/probe-toolcall.sh qwen2.5:7b    # capacidad de tool-calling
 # El proyecto que toca el agente
 node scripts/check-syntax.mjs <archivos>               # solo sintaxis
 ```
+
+En local, los tres comandos de `bridge/` tienen que estar en verde sin Flutter,
+sin JDK y sin SDK de Android. No es que «no se usen»: es que **si dependen del
+entorno, el CI no los puede correr** y el repo deja de ser verificable por quien
+no tiene esa máquina. El CI hace los dos trabajos: corre la suite sin toolchain y
+comprueba que, efectivamente, no lo hay.
 
 `bin/medir-runs` es el que **no** puede faltar cuando se toca `app/veredicto.py`
 o el bucle: sin él no hay forma de saber si un cambio mejoró o empeoró el
@@ -492,18 +513,21 @@ ahí y del registro `bridge/registro/*.json`, para que un proyecto nuevo sea un
 fichero y no un cambio de código. Cada proyecto necesita las dos cosas y un `bridge/lessons/{alias}.md`.
 Un archivo de lecciones que no existe se carga vacío; no es un error.
 
-| Alias | Ruta | `check` | `test` |
-|---|---|---|---|
-| `aegis` | este repo | `bridge/bin/check-imports.py` | `bridge/.venv/bin/python -m unittest discover -s bridge/tests -q` |
-| `portafolio` | `~/Workspace/web/portafolio` | `tsc --noEmit` | `vitest run` |
-| `trazeurs` | `~/Workspace/mobile/trazeurs` | `flutter analyze` | `flutter test` |
-| `compra-unida` | `~/Workspace/apps/compra-unida` | `tsc --noEmit` | `npm test` |
-| `recepcion-persa` | `~/Workspace/apps/recepcion_persa` | `compileall` | `pytest -q` |
-| `aegis_console` | `mobile/` | `flutter analyze` | `flutter test` |
+El repo **solo declara el suyo**:
 
-**`aegis_console` es la app, y su puerta es aparte.** No está en `PROJECTS`
-porque no es un proyecto que el agente opere: es el cliente. Pero es lo más
-grande de este repo por superficie, y por eso su puerta también es
+| Alias | Raíz | `check` | `test` |
+|---|---|---|---|
+| `aegis` | este repo, derivado de `app/entorno.py` | `bridge/bin/check-imports.py` | `bridge/.venv/bin/python -m unittest discover -s bridge/tests -q` |
+
+Los demás proyectos se dan de alta con `registro/{alias}.json` —ver
+`registro/_plantilla.json`—, que es un fichero y no una edición de Python. Antes
+había cinco entradas más aquí con rutas concretas; en un clon de otra persona
+apuntan a directorios que no existen, y un registro que miente hace creer a Aegis
+que puede operar algo que no.
+
+**`aegis_console` es la app, y su puerta es aparte.** Está en `mobile/` y no en
+`PROJECTS`, porque no es un proyecto que el agente opere: es el cliente. Pero es
+lo más grande de este repo por superficie, y por eso su puerta también es
 **completa**:
 
 ```bash
@@ -530,24 +554,54 @@ flutter build apk --debug --dart-define=API_HOST=10.0.2.2
   `PYTHONPATH=. bridge/.venv/bin/python -c "from pathlib import Path; from app.deploy import apk_desactualizado; print(apk_desactualizado(Path('mobile/build/app/outputs/flutter-apk/app-release-telefono.apk')))"`
   — y la respuesta vacía es la buena. El motivo de fondo está en A-112.
 
-**`trazeurs` tiene una base roja: 452 issues de `flutter analyze`**, casi todos del
-`test/widget_test.dart` de la plantilla. Antes de delegar ahí, el criterio de
-éxito no puede ser "analyze limpio": es "no más de N issues nuevos", y conviene
-sacar la cuenta exacta antes de empezar. Lo mismo aplica a cualquier proyecto que
-llegues con tests rojos: **mide la base, o el criterio de éxito no significa nada.**
+**Mide la base de cada proyecto antes de delegar en él.** Para `aegis_console`
+es **0 issues de `flutter analyze`** y verde, y el criterio de éxito es «cero
+nuevos».
 
-## 9. Reglas del sistema del portafolio
+Para cualquier otro proyecto que llegue con tests rojos, el criterio de éxito no
+puede ser «analyze limpio»: es «no más de N issues nuevos», y hay que sacar la
+cuenta exacta **antes** de empezar. Y hay que sacarla en la máquina donde se va a
+medir: una base tomada de otro sitio es peor que no tenerla, porque el «antes» y
+el «después» no son comparables.
 
-El otro repo tiene `AGENTS.md` propio y `docs/` con 12 documentos; el
-`modelo-datos.md` §2 manda sobre cualquier doc de comportamiento. Sus 21
-invariantes (§6) son **tests**, no afirmaciones. Al tocar su base:
+## 9. Proyectos que no son este repo
 
-```bash
-cd ~/Workspace/web/portafolio
-node scripts/neon-branch.mjs dev          # crea/reutiliza la rama dev y conecta
-psql "$DATABASE_DEV_URL" -f migrations/0001_init.sql
-```
+Este repo no declara los proyectos que Aegis opera: van en
+`registro/{alias}.json`, y sus reglas son las suyas, no las de aquí. El patrón es
+siempre el mismo, y aplica a cualquiera:
 
-**Producción no se toca sin que lo pidas explícitamente.** El desarrollo va
-contra la rama `dev`; la URL de producción solo se usa con
-`wrangler secret put` en un despliegue.
+- El proyecto tiene su propio `AGENTS.md` o documentación, y **manda sobre este
+  fichero** para todo lo que toque a ese proyecto.
+- Se mide su base antes de delegar en él (ver §8).
+- **Producción no se toca sin que lo pidas explícitamente.** El desarrollo va
+  contra la rama de desarrollo; la de producción solo aparece en un despliegue.
+- Sus connection strings no están aquí. Se piden en el momento de usarlas.
+
+Ese patrón es lo único que Aegis impone a un proyecto ajeno, y no es poco: es la
+diferencia entre un asistente que puede tocar tu base de datos y uno que no.
+
+## 10. Lo que no se versiona, y por qué
+
+Desde que el repo es público, la regla no es solo «no metas secretos»: es que
+hay cosas de la persona que lo usa que **no son del proyecto**, y por eso no
+viajan:
+
+| Qué | Por qué |
+|---|---|
+| `bridge/quien-eres.md` | Cómo quieres que te hable. Es tuyo; la plantilla sí está (`quien-eres.ejemplo.md`) y `infra/setup.sh` la copia. |
+| `bridge/fichas/{alias}.md` | Ficha técnica de tus proyectos: es información de tu negocio. Las plantillas y la de `aegis` sí viajan. |
+| `bridge/registro/*.json` | Los mismos proyectos por su nombre real. `_plantilla.json` sí viaja. |
+| `bridge/lessons/{alias}.md` | Lecciones de proyectos que no son este repo. `aegis.md` sí viaja. |
+| `bridge/fichas-privadas/` | La parte comercial: quién es el cliente y qué se le cobran. |
+| `bridge/.env`, `bridge/data/` | Secretos, logs, memoria y SQLite. |
+
+**El `.gitignore` es parte del diseño, no un convenience.** Es bidireccional: lo
+que hay dentro no se cuela, y lo que tiene que viajar (`aegis.md`,
+`_plantilla.json`) sigue versionado. Un `.gitignore` demasiado ancho se come
+código sin avisar —lección A-017— y uno demasiado estrecho manda tu `.env` a
+internet. Hay un job de CI que falla si alguien hace `git add -f` de lo primero,
+justamente porque la regla escrita sola no se aplica sola.
+
+Si añades un fichero nuevo y no sabes en qué columna va, la respuesta por defecto
+es que **no se versiona** y se pregunta.
+

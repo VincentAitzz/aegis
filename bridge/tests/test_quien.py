@@ -21,6 +21,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from app import quien
 
@@ -215,8 +216,16 @@ class TestNivelDeAutonomia(unittest.TestCase):
         self.assertIn("aegis_read_file", allowed_tools())
         self.assertEqual("libre", nivel_de("aegis_read_file"))
         self.assertNotIn("quien_eres", allowed_tools())
-        from app.quien import contexto
-        self.assertIn("aegis_read_file", contexto())
+        # La plantilla del repo, no `quien-eres.md`: ese fichero es de quien lo
+        # instala y está en `.gitignore`, así que en un clon recién hecho no
+        # existe. Un test que necesita el fichero personal de otra persona no
+        # mide el código: mide quién lo escribió (A-057).
+        with tempfile.TemporaryDirectory() as d:
+            perfil = Path(d) / "quien-eres.md"
+            shutil.copy(quien.PLANTILLA_PATH, perfil)
+            with mock.patch.object(quien, "QUIEN_PATH", perfil):
+                quien.limpiar_cache()
+                self.assertIn("aegis_read_file", quien.contexto())
 
     def test_escribir_pide_ok(self):
         from app.autonomy import REQUIERE_OK, nivel_de
@@ -225,6 +234,27 @@ class TestNivelDeAutonomia(unittest.TestCase):
 
 
 class TestElPromptLoLleva(unittest.TestCase):
+    """El bloque entra en el prompt **si hay perfil**.
+
+    Con `quien-eres.md` ausente —que es el estado de un clon recién hecho— Aegis
+    sigue arrancando sin el bloque, y eso es lo que se comprueba en
+    `TestSinPerfil`. Aquí se comprueba que, cuando existe, entra y no revienta
+    el presupuesto: por eso se usa la plantilla del repo y no el fichero real.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        perfil = Path(self._tmp.name) / "quien-eres.md"
+        shutil.copy(quien.PLANTILLA_PATH, perfil)
+        self._parche = mock.patch.object(quien, "QUIEN_PATH", perfil)
+        self._parche.start()
+        quien.limpiar_cache()
+
+    def tearDown(self):
+        self._parche.stop()
+        quien.limpiar_cache()
+        self._tmp.cleanup()
+
     def test_el_bloque_va_en_el_system_prompt(self):
         from app.autopilot import build_system_prompt
         p = build_system_prompt("", "aegis", "", encargo="una tarea cualquiera")
@@ -237,3 +267,22 @@ class TestElPromptLoLleva(unittest.TestCase):
         cotidiano es justamente cuando más lo necesitas."""
         from app.autopilot import build_system_prompt
         self.assertIn("CONTIGO", build_system_prompt())
+
+
+class TestSinPerfil(unittest.TestCase):
+    """Un clon recién hecho no tiene `quien-eres.md`. Eso no puede ser un error."""
+
+    def test_sin_perfil_el_prompt_construye_igual(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(quien, "QUIEN_PATH", Path(d) / "no-existe.md"):
+                quien.limpiar_cache()
+                self.assertEqual("", quien.resumen())
+                self.assertEqual("", quien.contexto())
+                from app.autopilot import build_system_prompt
+                prompt = build_system_prompt("", "aegis", "", encargo="x")
+        self.assertNotIn("CONTIGO", prompt)
+        self.assertIn("CÓMO TRABAJO", prompt)
+
+    def test_plantilla_viene_con_el_repo(self):
+        self.assertTrue(quien.PLANTILLA_PATH.is_file(),
+                        "sin la plantilla, nadie sabe cómo escribir su perfil")

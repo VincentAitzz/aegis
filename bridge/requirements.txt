@@ -1,13 +1,28 @@
-fastapi>=0.111
-uvicorn[standard]>=0.30
-httpx>=0.27
-pydantic>=2.7
-pydantic-settings>=2.3
+# Cotas por arriba, no solo por abajo.
+#
+# Sin techo, una actualización mayor rompe el bridge sin aviso. Ya pasó con
+# ChromaDB: el floor era `>=0.5` y se resolvió a 1.x, que no es la misma API. El
+# El techo no es tacanería: es la frontera dentro de la cual esto se ha probado.
+#
+# ## Por qué NO hay un `requirements.lock`
+# La cadena de ChromaDB son ~90 paquetes transitivos, y sus ruedas se compilan
+# distinto en Python 3.12 y 3.14 —el CI prueba las dos—. Un lock generado en
+# una de las dos versiones falla en la otra, y un lock que hay que regenerar cada
+# pocas semanas es peor que no tener: alguien lo regenera, lo sube, y nadie mira
+# qué cambió. El CI con las dos versiones **es** el control de compatibilidad, y
+# avisa en la PR en lugar de en la instalación.
+fastapi>=0.111,<1.0
+uvicorn[standard]>=0.30,<1.0
+httpx>=0.27,<1.0
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0
 
 # --- Memoria episódica (capa 3): vector store local embebido ---------------
 # ChromaDB corre in-process; embeddings los da Ollama en 127.0.0.1 (sin model
 # de torch/onnx en el venv). Modelo necesario en Ollama: nomic-embed-text.
-chromadb>=0.5
+#
+# El techo es <2 por lo mismo que arriba: 0.5 → 1.x ya cambió la API una vez.
+chromadb>=0.5,<2.0
 
 # --- Fase 2: servidor MCP de memoria para el agente -------------------------
 # Fijado a la API clásica: en mcp 2.x `FastMCP` se renombró a `MCPServer`.
@@ -21,7 +36,7 @@ mcp>=1.0,<2
 #
 # Sin esto, la única alternativa es subnet scanning desde el móvil, que es
 # peor en todos los sentidos que importan.
-zeroconf>=0.131
+zeroconf>=0.131,<1.0
 
 # --- Cerebro avanzado (grafo temporal con extracción LLM): opt-in -----------
 # graphiti-core>=0.8

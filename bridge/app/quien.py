@@ -33,6 +33,13 @@ que lo apruebas tú y queda el motivo en la traza.
 El canal privado por proyecto ya existía y sigue sin usarse:
 `fichas-privadas/{alias}.md`, con su «no lo nombres ni lo repitas». Para PII de
 clientes, esa sigue siendo la vía; este fichero es sobre cómo hablamos.
+
+**Y el fichero no viene en el repo.** `quien-eres.md` está en `.gitignore` porque
+es la respuesta a «quién eres», y esa respuesta es de quien lo instala, no del
+proyecto. El repo trae `quien-eres.ejemplo.md` y `infra/setup.sh` lo copia al
+arrancar. Si no está, este módulo devuelve `""` y Aegis sigue: el prompt se
+construye con `metodo.md`, las lecciones y el registro, que son las tres cosas
+que sí son del proyecto.
 """
 
 import re
@@ -40,6 +47,11 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 QUIEN_PATH = BASE / "quien-eres.md"
+
+#: La plantilla que sí viaja en el repo. `infra/setup.sh` la copia a
+#: `QUIEN_PATH` en el primer arranque, y `.gitignore` excluye el destino: lo que
+#: Aegis sabe de ti no es del proyecto, es tuyo.
+PLANTILLA_PATH = BASE / "quien-eres.ejemplo.md"
 
 #: La sección que se inyecta en todos los runs. Su **nombre** es el contrato:
 #: si alguien reordena el fichero, lo que se inyecta no cambia.

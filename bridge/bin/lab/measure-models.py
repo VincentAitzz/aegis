@@ -53,7 +53,10 @@ TAREA = {
     ),
     "archivo_correcto": "mobile/android/app/src/main/AndroidManifest.xml",
 }
-PREFIX_RAIZ = Path("/RUTA/AL/WORKSPACE/aegis")
+#: La raíz del repo, derivada de la posición de este fichero
+#: (`bridge/bin/lab/` → cuatro niveles arriba) y no escrita a mano. Antes era una
+#: ruta absoluta de una máquina, y el script solo servía en ella.
+PREFIX_RAIZ = Path(__file__).resolve().parents[3]
 
 
 def _post(url: str, payload: dict, timeout: int = 600) -> dict:

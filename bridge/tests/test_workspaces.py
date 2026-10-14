@@ -68,13 +68,22 @@ class TestRegisteredProjects(unittest.TestCase):
     def test_registered_project_without_manifest_still_shows(self):
         """El repo de Aegis no tiene manifiesto en la raíz, y aun así tiene que
         aparecer: si no, la lista escondería algo que Aegis puede operar."""
+        from app.projects import PROJECTS
         texto = describe_workspace()
-        self.assertIn("aegis", texto)
-        self.assertIn("portafolio", texto)
+        for alias in PROJECTS:
+            self.assertIn(alias, texto)
 
     def test_alias_lookup(self):
+        """Cada proyecto registrado se reconoce por su carpeta, y solo él.
+
+        Antes miraba `portafolio`, que en un clon ajeno no existe. Ahora recorre
+        el registro entero, que es la regla que importa: **todo** lo declarado
+        tiene que poder(se) identificar, no uno que-resulta-que-esté.
+        """
         from app.projects import PROJECTS
-        self.assertEqual(alias_de(PROJECTS["portafolio"].root), "portafolio")
+        for alias, cfg in PROJECTS.items():
+            with self.subTest(alias=alias):
+                self.assertEqual(alias_de(cfg.root), alias)
         self.assertEqual(alias_de(Path("/tmp")), "")
 
     def test_subproject_of_registered_is_not_a_candidate(self):
@@ -84,10 +93,23 @@ class TestRegisteredProjects(unittest.TestCase):
         self.assertNotIn(str(PROJECTS["aegis"].root / "bridge"), candidatos)
 
     def test_describe_says_what_a_project_can_do(self):
+        """Cada proyecto sale con su estado y con su base.
+
+        Que haya al menos uno «solo lectura» no se comprueba contra un nombre: se
+        comprueba que **el estado que se imprime es el que declara el registro**,
+        para todos. Un test que dice «`portafolio` es migrable» describe la
+        máquina; este describe el código.
+        """
+        from app.projects import PROJECTS
         texto = describe_workspace()
-        self.assertIn("migrable", texto)          # portafolio
-        self.assertIn("solo lectura", texto)      # compra-unida
         self.assertRegex(texto, r"registrados")
+        for alias, cfg in PROJECTS.items():
+            with self.subTest(alias=alias):
+                esperado = "migrable" if cfg.can_migrate else "solo lectura"
+                linea = next((l for l in texto.splitlines()
+                              if l.startswith(alias)), "")
+                self.assertIn(esperado, linea,
+                              f"{alias}: la línea no dice su estado real")
 
 
 if __name__ == "__main__":

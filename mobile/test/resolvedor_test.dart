@@ -20,6 +20,15 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   AppConfig compilado(String host) => AppConfig(apiHost: host, usesMeshHostname: true);
 
+  /// El host que estos tests dan por compilado, nombrado.
+  ///
+  /// Antes los tests de abajo distinguían «el candidato compilado» del resto
+  /// comparando `base.contains(hostCompilado)` — un prefijo de IP escrito a mano. Con
+  /// otro prefijo el distinguidor deja de distinguir, y el test pasa o falla por
+  /// el prefijo y no por lo que dice comprobar. Nombrar el host es lo que mantiene
+  /// la comparación con sentido cuando la IP cambia.
+  const hostCompilado = '100.101.102.100';
+
   /// Un bridge sano salvo donde se le diga lo contrario.
   Future<Map<String, dynamic>> sano(String _) async =>
       {'ok': true, 'hermes_ok': true, 'ollama_ok': true};
@@ -41,7 +50,7 @@ void main() {
       // conteste `{"status":"ok"}` —todo lo que el sondeo comprueba— se
       // convierte en el bridge y recibe el `X-Aegis-Token` en cada petición.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.50', puerto: 8000)],
         sondear: sano,
       );
@@ -64,17 +73,17 @@ void main() {
       // exactamente el fallo que hay que evitar: «no está el mío» no puede
       // significar «te pongo el de otro».
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.50', puerto: 8000)],
         sondear: (base) async =>
-            base.contains('100.101.102.100') ? throw StateError('sin respuesta') : sano(base),
+            base.contains(hostCompilado) ? throw StateError('sin respuesta') : sano(base),
       );
       expect(await r.resolver(), isNull);
     });
 
     test('es el compilado cuando no hay nada por mDNS', () async {
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [],
         sondear: sano,
       );
@@ -87,7 +96,7 @@ void main() {
       // un candidato muerto y dice que no hay nadie, con el bridge sano a la
       // vista.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.9', puerto: 8000)],
         sondear: (base) async =>
             base.contains('192.168.0.9') ? throw StateError('sin respuesta') : sano(base),
@@ -100,7 +109,7 @@ void main() {
       // routers. Un `throw` sin capturar aquí dejaría la app sin bridge y sin
       // decir por qué.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => throw StateError('multicast bloqueado'),
         sondear: sano,
       );
@@ -111,7 +120,7 @@ void main() {
   group('lo que se enseña cuando no hay nadie', () {
     test('devuelve null y no se queda con un candidato a medias', () async {
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.9', puerto: 8000)],
         sondear: (_) async => throw StateError('sin respuesta'),
       );
@@ -122,7 +131,7 @@ void main() {
       // Sin esto, «no encuentro el bridge» no dice cuál se probó, y no hay forma
       // de saber si es un problema de la app, del bridge o de la red.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.9', puerto: 8000)],
         sondear: (_) async => throw StateError('sin respuesta'),
       );
@@ -139,10 +148,10 @@ void main() {
       // Con el host pineado, lo que se afirma es que no se usa ese candidato —
       //y tampoco se recurre al anuncio de la red local para salir del paso.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [],
         sondear: (base) async =>
-            base.contains('100.84') ? {'ok': false, 'hermes_ok': false} : sano(base),
+            base.contains(hostCompilado) ? {'ok': false, 'hermes_ok': false} : sano(base),
       );
       expect(await r.resolver(), isNull);
     });
@@ -156,10 +165,10 @@ void main() {
       // siempre. Lo que faltaba no era un `if`: era leer el contrato del otro
       // lado antes de escribirlo.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [],
         // Un recorte fiel de lo que devuelve el bridge de verdad.
-        sondear: (base) async => base.contains('100.84')
+        sondear: (base) async => base.contains(hostCompilado)
             ? {
                 'status': 'ok',
                 'bridge': {'host': 'aegis', 'bind': '0.0.0.0', 'port': 8000},
@@ -174,10 +183,10 @@ void main() {
     test('un body vacío tampoco cuenta como vivo', () async {
       // Un puerto abierto que devuelve cualquier cosa no es un bridge.
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [],
         sondear: (base) async =>
-            base.contains('100.84') ? const {} : sano(base),
+            base.contains(hostCompilado) ? const {} : sano(base),
       );
       expect(await r.resolver(), isNull);
     });
@@ -186,7 +195,7 @@ void main() {
   group('el orden de los candidatos', () {
     test('mDNS antes que compilado antes que loopback', () async {
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.50', puerto: 8000)],
         sondear: sano,
       );
@@ -210,7 +219,7 @@ void main() {
       // añade información y duplica la espera.
       var sondeadas = 0;
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () async => const [
           BridgeEncontrado(host: '192.168.0.50', puerto: 8000),
           BridgeEncontrado(host: '192.168.0.50', puerto: 8000),
@@ -231,7 +240,7 @@ void main() {
     // nada, así que no había error que mirar en ninguna parte.
     test('no arrastra a la resolución, y se prueban los candidatos de siempre', () async {
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () => Completer<List<BridgeEncontrado>>().future,
         sondear: sano,
       );
@@ -240,7 +249,7 @@ void main() {
 
     test('y si no hay nadie en ninguna parte, devuelve null en vez de colgar', () async {
       final r = Resolvedor(
-        config: compilado('100.101.102.100'),
+        config: compilado(hostCompilado),
         buscar: () => Completer<List<BridgeEncontrado>>().future,
         sondear: (_) async => throw StateError('sin respuesta'),
       );

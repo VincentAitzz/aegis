@@ -27,13 +27,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-SDK = os.environ.get("ANDROID_SDK_ROOT",
-                     os.environ.get("ANDROID_HOME",
-                                    os.path.expanduser("~/Android/Sdk")))
-ADB = f"{SDK}/platform-tools/adb"
-FLUTTER = os.path.expanduser("~/development/flutter/bin")
-JAVA_HOME = os.path.expanduser("~/jdk")
-EMULATOR_SCRIPT = os.path.expanduser("~/Workspace/aegis/infra/mobile/emulador.sh")
+from . import entorno
+
+#: El SDK, Flutter, el JDK y el script del emulador: todo se resuelve en
+#: `app/entorno.py`. Aquí solo se reexporta, porque quien importa este módulo
+#: usa `ADB` y `FLUTTER` por su cuenta y no debería tener que saber de dónde salen.
+ADB = entorno.adb()
+FLUTTER = entorno.flutter()
+JAVA_HOME = entorno.java_home()
+EMULATOR_SCRIPT = str(entorno.RAIZ / "infra" / "mobile" / "emulador.sh")
 
 #: Serial del emulador de Aegis. Es el que crea `infra/mobile/emulador.sh`.
 EMULATOR_SERIAL = os.environ.get("AEGIS_EMULATOR_SERIAL", "emulator-5554")
@@ -103,13 +105,45 @@ def shell_quote(texto: str) -> str:
     return "'" + str(texto).replace("'", "'\\''") + "'"
 
 
+def adb_ausente() -> str:
+    """El motivo por el que no hay `adb`, o `""` si sí lo hay.
+
+    Existe como función aparte porque es una comprobación que se hace en varios
+    sitios y **cada uno necesita el mismo texto**. Si dos sitios redactaran su
+    propia versión, un día uno diría «instala adb» y el otro «no se encuentra
+    adb», y el que va al móvil sería el menos claro de los dos.
+
+    ## Por qué hace falta en absoluto
+    Sin `adb` en la máquina, `subprocess.run([""])` lanza `PermissionError:
+    [Errno 13] Permission denied: ''`. No es un `FileNotFoundError` —con una
+    cadena vacía el `exec` falla antes, al validar— así que el `except
+    FileNotFoundError` que de natural se escribiría no lo pilla. El síntoma es un
+    traceback que no menciona adb ni dice cómo arreglarlo, en una función cuyo
+    comentario dice «un dispositivo inalcanzable no rompe la tool: avisa».
+
+    Eso estaba latente porque `ADB` era una constante escrita a mano que en la
+    máquina de quien lo escribió siempre existió. En un clon limpio no.
+    """
+    if not entorno.adb():
+        return ("no encuentro adb en esta máquina. Instala el SDK de Android, o "
+                "pon AEGIS_ADB=<ruta>/platform-tools o ANDROID_SDK_ROOT=<ruta> "
+                "en bridge/.env.")
+    return ""
+
+
 def _adb(args: list[str], timeout: int = 60,
          serial: str = "") -> tuple[int, str]:
     """Ejecuta adb. Un dispositivo inalcanzable no rompe la tool: avisa."""
+    falta = adb_ausente()
+    if falta:
+        return 127, falta
     env = dict(os.environ)
-    env["PATH"] = os.pathsep.join([f"{JAVA_HOME}/bin", FLUTTER, f"{SDK}/platform-tools",
-                                   env.get("PATH", "")])
-    cmd = [ADB] + (["-s", serial] if serial else []) + args
+    # Resuelto aquí y no al importar: quien clone esto puede tener Flutter en otro
+    # sitio, y un `PATH` con una ruta que no existe no es un error visible.
+    directorios = [entorno.java_home() + "/bin", entorno.flutter_dir(),
+                   entorno.adb_dir()]
+    env["PATH"] = os.pathsep.join([d for d in directorios if d] + [env.get("PATH", "")])
+    cmd = [entorno.adb()] + (["-s", serial] if serial else []) + args
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               env=env, timeout=timeout)
@@ -492,7 +526,7 @@ def apk_para(base: str, perfil: str = "release") -> Path:
     """
     if perfil not in ("debug", "release"):
         raise ValueError(f"perfil inválido: {perfil!r}. Usa debug o release.")
-    return Path(os.path.expanduser("~/Workspace/aegis/mobile")) / (
+    return entorno.MOBILE / (
         f"build/app/outputs/flutter-apk/app-{perfil}-{base}.apk")
 
 
@@ -504,7 +538,7 @@ def _aapt() -> Path | None:
     uno viejo, `dump badging` no reconoce el manifiesto y devuelve una cadena
     vacía, que es el peor resultado: `int("")` revienta y parece un bug del APK.
     """
-    raiz = Path(SDK) / "build-tools"
+    raiz = Path(entorno.android_sdk()) / "build-tools"
     if not raiz.is_dir():
         return None
     # Orden inverso de texto: `36.0.0` > `35.0.1` porque compara como número.

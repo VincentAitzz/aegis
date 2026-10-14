@@ -1,7 +1,9 @@
 """Servidor MCP "aegis-ops": tools de build e instalación del móvil en el HOST.
 
 El sandbox docker del agente NO tiene Flutter/JDK/adb, así que estas tools
-ejecutan el toolchain real del host (usuario demo) vía subprocess:
+ejecutan el toolchain real del host vía subprocess. Dónde está ese toolchain no
+lo decide este fichero: lo busca `app/entorno.py`, que mira las variables de
+entorno, el `PATH` y las rutas estándar.
 
   * aegis_read_file / aegis_write_file / aegis_patch_file  — edición SEGURA del repo en el host.
   * build_apk(api_host)      — valida el cambio de tema y compila el APK debug.
@@ -33,12 +35,13 @@ log = logging.getLogger("aegis.bridge.mcp_ops")
 #: del MCP, que es **distinto** del bridge: la clave llega por su propia variable
 #: de entorno, y leerla de la configuración del otro proceso daría vacío sin
 #: avisar —y un APK sin token que solo falla en 401 (A-038).
+from . import entorno
 from .config import get_settings
 
 settings = get_settings()
 
-ROOT = Path("/RUTA/AL/WORKSPACE/aegis")
-MOBILE = ROOT / "mobile"
+ROOT = entorno.RAIZ
+MOBILE = entorno.MOBILE
 # `QUIEN_PATH_NAME` se borro en la Fase 1: una sola aparicion en todo el repo
 # (su propia definicion). `app/quien.py` calcula la ruta por su cuenta, y tener el
 # nombre en dos sitios es que uno se mueva y el otro no.
@@ -67,9 +70,9 @@ APK = MOBILE / "build/app/outputs/flutter-apk/app-debug.apk"
 # La raíz del repo de Aegis. Las demás raíces y los verificadores por proyecto
 # viven en `app/projects.py`: un solo registro, y agregar un proyecto es una fila.
 
-ADB = "/RUTA/AL/SDK-ANDROID/platform-tools"
-JAVA = "/RUTA/AL/JDK/bin"
-FLUTTER = "/RUTA/A/FLUTTER/bin"
+ADB = entorno.adb_dir()
+JAVA = entorno.java_home()
+FLUTTER = entorno.flutter_dir()
 
 # `DEFAULT_MESH_*` se borraron en la Fase 1: la IP y el puerto del telefono estan
 # **hardcodeados en un solo sitio**, `app/dispositivos.py`, que los descubre por
@@ -195,9 +198,22 @@ mcp = FastMCP("aegis-ops")
 
 
 def _env() -> dict[str, str]:
+    """El entorno de las tools que compilan: JDK, Flutter y adb resolubles.
+
+    Los directorios se resuelven **en el momento**, no al importar el módulo, y
+    los vacíos no entran al `PATH`: una entrada `PATH=""` no rompe nada, pero
+    `JAVA_HOME` sí —Gradle falla con un mensaje que no menciona la ruta—, así
+    que solo se pone si de verdad existe un JDK.
+    """
     env = dict(os.environ)
-    env["JAVA_HOME"] = "/RUTA/AL/JDK"
-    env["PATH"] = ":".join([JAVA, FLUTTER, ADB, env.get("PATH", "")])
+    java = entorno.java_home()
+    if java:
+        env["JAVA_HOME"] = java
+    # `filter` quita los vacíos: un `PATH` con `:` de más no molesta, pero uno
+    # con `/dart` de un Flutter que no existe sí confunde a `shutil.which`.
+    directorios = [java + "/bin" if java else "",
+                   entorno.flutter_dir(), entorno.adb_dir()]
+    env["PATH"] = ":".join([d for d in directorios if d] + [env.get("PATH", "")])
     return env
 
 
@@ -837,11 +853,31 @@ def _python_ok(path: Path) -> tuple[bool, str]:
 def _syntax_ok(path: Path) -> tuple[bool, str]:
     """Valida la sintaxis de un fuente. Dart con `dart format`, TS con la API de
     TypeScript: ambos soncheap, no escriben nada y no exigen que el proyecto
-    entero typecheque todavía."""
+    entero typecheque todavía.
+
+    ## Sin el comprobador, se deja pasar
+    Las dos ramas hacen lo mismo cuando no hay tool (`dart` sin Flutter, `node`
+    sin `check-syntax.mjs`): devuelven «ok» y lo dicen en el log. No bloquean.
+
+    La razón es que el guardarraíl existe para atrapar un archivo **roto**, no
+    para exigir un toolchain. En una máquina sin Flutter, bloquear toda escritura
+    en Dart dejaría a Aegis sin poder trabajar en el móvil sin avisar de por qué,
+    y eso se manifestaría como «las escrituras fallan» en lugar de «no tienes
+    Dart». Un guardarraíl que se calla y uno que grita cosas falsas se distinguen;
+    uno que se niega sin explicar, no.
+    """
     if path.suffix == ".dart":
+        dart = f"{entorno.flutter_dir()}/dart" if entorno.flutter_dir() else ""
+        if not dart or not Path(dart).is_file():
+            log.info("sin dart: no se valida la sintaxis de %s (pon Flutter en "
+                     "el PATH o AEGIS_FLUTTER_BIN)", path)
+            return True, ""
         try:
-            proc = _run([str(FLUTTER + "/dart"), "format", "--output=none", str(path)], timeout=60)
+            proc = _run([dart, "format", "--output=none", str(path)], timeout=60)
         except subprocess.TimeoutExpired:
+            return True, ""
+        except OSError as exc:
+            log.warning("no pude ejecutar dart: %s", exc)
             return True, ""
         if proc.returncode == 0:
             return True, ""
@@ -880,9 +916,9 @@ def _root_of_script(name: str) -> Path | None:
 def _sugerir_ruta(target: Path, roots: list[Path]) -> str:
     """Deduce la ruta correcta cuando parece que se olvidó un segmento.
 
-    El error real que se repite es `/RUTA/AL/REPO/...` en vez de
-    `/RUTA/AL/REPO/...`: el alias es cierto, falta el segmento de
-    en medio. Un "ruta no permitida" sin más deja al agente reintentando lo mismo;
+    El error real que se repite es una ruta **a la que le falta un segmento**:
+    el alias del proyecto es cierto, pero se escribió un nivel más abajo de donde
+    está. Un «ruta no permitida» a secas deja al agente reintentando lo mismo;
     con la ruta buena a la vista, se recupera en un paso.
     """
     t, mejor = list(target.parts), ""
@@ -910,7 +946,7 @@ def _quarantine(target: Path, content: str, detail: str) -> str:
     """
     import time
 
-    base = ROOT / "bridge" / "data" / "quarantine"
+    base = entorno.datos("quarantine")
     try:
         base.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1158,9 +1194,15 @@ def build_apk(target: str = "emulador", force: bool = False,
         )
     if not MOBILE.exists():
         return f"No existe el proyecto en {MOBILE}"
+    # Sin toolchain el `subprocess` falla con `No such file or directory` y una
+    # ruta a `/bin/false`, que no dice qué instalar. Aquí se dice.
+    faltan = entorno.faltan()
+    if faltan:
+        return "NO COMPILADO: falta el toolchain en esta máquina.\n" + "".join(
+            f"  - {falta}\n" for falta in faltan)
     perfil = "release" if release else "debug"
     cmd = [
-        str(FLUTTER + "/flutter"), "build", "apk", f"--{perfil}",
+        entorno.flutter(), "build", "apk", f"--{perfil}",
         f"--dart-define=API_HOST={api_host}",
         f"--dart-define=AEGIS_ORIGIN={base}",
     ]
@@ -1314,9 +1356,19 @@ def adb_devices() -> str:
 
 
 def _adb(args: list[str], timeout: int = 60) -> tuple[int, str]:
-    """Ejecuta adb tolerando timeouts: un teléfono offline no debe romper la tool."""
+    """Ejecuta adb tolerando timeouts: un teléfono offline no debe romper la tool.
+
+    Y tolerando su ausencia: sin adb, `subprocess.run([""])` lanza
+    `PermissionError`, no `FileNotFoundError`. El motivo lo redacta
+    `dispositivos.adb_ausente()`, que es el mismo texto que usan las rutas de
+    despliegue — una sola explicación para el mismo problema.
+    """
+    from . import dispositivos as disp
+    falta = disp.adb_ausente()
+    if falta:
+        return 127, falta
     try:
-        proc = _run([ADB + "/adb", *args], timeout=timeout)
+        proc = _run([entorno.adb(), *args], timeout=timeout)
     except subprocess.TimeoutExpired:
         return 124, f"adb {args[0]} agotó {timeout}s (dispositivo inalcanzable)"
     return proc.returncode, (proc.stdout.strip() or proc.stderr.strip())
@@ -1408,7 +1460,12 @@ def _puertos_mdns() -> list[tuple[str, str]]:
     privada se anuncia con su IP de LAN; si está fuera, con la de Tailscale. Se
     prueban los dos, y el orden no importa porque `adb connect` dice cuál aceptó.
     """
-    proc = _run([ADB + "/adb", "mdns", "services"], timeout=20)
+    from . import dispositivos as disp
+    falta = disp.adb_ausente()
+    if falta:
+        log.warning("mDNS ignorado: %s", falta)
+        return []
+    proc = _run([entorno.adb(), "mdns", "services"], timeout=20)
     vistos: set[tuple[str, str]] = set()
     for line in (proc.stdout or "").splitlines():
         if "_adb-tls-connect" not in line or ":" not in line:

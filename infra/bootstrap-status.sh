@@ -5,19 +5,48 @@
 # (pasos con sudo que requieren intervención del usuario).
 # =============================================================================
 echo "╔═══════════════════════════════════════════════════════════════════╗"
-echo "║  AEGIS — Estado de provisión (CachyOS)                            ║"
+echo "║  AEGIS — Estado de provisión                                     ║"
 echo "╚═══════════════════════════════════════════════════════════════════╝"
 
 echo ""
 echo "1️⃣  Herramientas instaladas (espacio de usuario, sin root):"
-echo "   ✔ Flutter   ~/development/flutter  ($(/RUTA/A/FLUTTER/bin/flutter --version 2>/dev/null | head -1))"
-echo "   ✔ Ollama    ~/.local/bin/ollama     ($(/RUTA/A/BIN/ollama --version 2>&1 | tail -1))"
-echo "   ✔ Hermes    ~/.local/bin/hermes     ($(/RUTA/A/BIN/hermes --version 2>/dev/null | head -1 | cut -c1-50))"
-echo "   ✔ uv        ~/.local/bin/uv         ($(/RUTA/A/BIN/uv --version 2>/dev/null | head -1))"
+# Cada herramienta se busca en el PATH y se dice **dónde** está, o se marca como
+# ausente. Antes las rutas eran las de una máquina concreta, así que este resumen
+# daba «✔» sobre herramientas que en la máquina de quien lo ejecutara no estaban.
+# Las rutas estándar que la documentación de Flutter y del SDK ya usan, porque
+# `command -v` solo mira el PATH y mucha gente instala Flutter fuera de él.
+resolver() {
+  local bin="$1"; shift
+  command -v "$bin" 2>/dev/null && return 0
+  for dir in "$@"; do
+    [[ -x "$dir/$bin" ]] && echo "$dir/$bin" && return 0
+  done
+  return 1
+}
+
+FLUTTER_BIN="$(resolver flutter "$HOME/development/flutter/bin" "$HOME/flutter/bin" \
+                        "$HOME/.local/share/flutter/bin" || true)"
+OLLAMA_BIN="$(resolver ollama "$HOME/.local/bin" "$HOME/.ollama/bin" || true)"
+HERMES_BIN="$(resolver hermes "$HOME/.local/bin" || true)"
+UV_BIN="$(resolver uv "$HOME/.local/bin" || true)"
+
+version_de() { "$1" --version 2>/dev/null | head -1 || echo "(sin versión)"; }
+donde()     { [[ -n "$1" ]] && echo "$1" || echo "NO INSTALADO"; }
+
+printf '   %s Flutter   %s\n' "$([[ -n "$FLUTTER_BIN" ]] && echo '✔' || echo '⬜')" "$(donde "$FLUTTER_BIN")"
+printf '   %s Ollama    %s\n' "$([[ -n "$OLLAMA_BIN" ]] && echo '✔' || echo '⬜')" "$(donde "$OLLAMA_BIN")"
+printf '   %s Hermes    %s\n' "$([[ -n "$HERMES_BIN" ]] && echo '✔' || echo '⬜')" "$(donde "$HERMES_BIN")"
+printf '   %s uv        %s\n' "$([[ -n "$UV_BIN" ]] && echo '✔' || echo '⬜')" "$(donde "$UV_BIN")"
+
+# Las versiones aparte, para que la tabla de arriba no crezca.
+[[ -n "$FLUTTER_BIN" ]] && echo "        flutter: $(version_de "$FLUTTER_BIN")"
+[[ -n "$OLLAMA_BIN" ]]  && echo "        ollama:  $(version_de "$OLLAMA_BIN")"
+[[ -n "$HERMES_BIN" ]]  && echo "        hermes:  $(version_de "$HERMES_BIN")"
+[[ -n "$UV_BIN" ]]      && echo "        uv:      $(version_de "$UV_BIN")"
 
 echo ""
 echo "2️⃣  Estado de servicios:"
-echo "   ✔ Ollama  serve  @ 127.0.0.1:11434  (64k ctx, CUDA RTX 3050)"
+echo "   ✔ Ollama  serve  @ 127.0.0.1:11434  (64k ctx)"
 echo "   ✔ Hermes  gateway @ 127.0.0.1:8642  (API server con rutas worker/orchestrator)"
 echo "   ⬜ Tailscale      NO unida aún (requiere sudo)"
 

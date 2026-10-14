@@ -236,8 +236,20 @@ class TestNingunFicheroSeQuedaFuera(unittest.TestCase):
                          "prompt: " + ", ".join(vacios))
 
     def test_el_prefijo_no_descarta_lecciones(self):
-        """El título es lo que el autor escribió; el prefijo no lo invalida."""
-        for alias in ("aegis", "portafolio"):
-            with self.subTest(alias=alias):
-                self.assertTrue(mod.cargar(alias),
-                                f"{alias} no carga ninguna lección")
+        """El título es lo que el autor escribió; el prefijo no lo invalida.
+
+        Solo comprueba `aegis`: las lecciones de un proyecto son suyas, y en un
+        clon público `lessons/` solo trae las de Aegis (`.gitignore` excluye las
+        demás). Un test que recorre «los proyectos que connuece quien lo escribió»
+        falla en la máquina de cualquiera que contribuya (A-057).
+        """
+        self.assertTrue(mod.cargar("aegis"), "aegis no carga ninguna lección")
+
+    def test_un_alias_sin_lecciones_da_vacio_y_no_excepcion(self):
+        """Un proyecto sin `lessons/{alias}.md` carga vacío, no revienta.
+
+        Es el caso de todo proyecto nuevo, así que tiene que ser la ruta normal
+        y no un error: Aegis no puede negarse a trabajar porque falte un fichero
+        opcional.
+        """
+        self.assertEqual((), mod.cargar("no-existe-este"))

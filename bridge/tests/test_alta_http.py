@@ -52,7 +52,76 @@ class TestLaPuertaDelAlta(_Cliente):
         self.assertEqual(401, r.status_code)
 
 
-class TestLasRutasExisten(_Cliente):
+class _ClienteConProyecto(_Cliente):
+    """Un proyecto de prueba, creado por la misma ruta que usa el móvil.
+
+    ## Por qué no se usa uno real
+    Estas pruebas leían `/fichas/recepcion-persa`, una ficha de cliente que
+    estaba en el repo. En un clon público no existe: el test falla con un 404 que
+    no tiene nada que ver con lo que comprueba (A-057). Ahora el proyecto lo crea
+    el propio test por `/proyectos`, que además es **más** fiel: comprueba que
+    lo que el móvil pide existe después de un alta real, no que existe en el
+    disco de otra persona.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        from app import alta as alta_mod, fichas, projects
+        import shutil
+        import tempfile
+        from pathlib import Path
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.registro = self.tmp / "registro"
+        self.registro.mkdir(parents=True)
+        for mod, attr, valor in (
+            (alta_mod, "REGISTRO_DIR", self.registro),
+            # `projects.REGISTRO_DIR` también: es el que lee `reload()` después
+            # del alta. Sin parcharlo, el alta escribe en el tmp y el registro
+            # se lee del repo, y el proyecto recién creado no entra en la
+            # whitelist — un 404 que no tiene nada que ver con lo que se prueba.
+            (projects, "REGISTRO_DIR", self.registro),
+            (fichas, "FICHAS_DIR", self.tmp / "fichas"),
+            (fichas, "PRIVADAS_DIR", self.tmp / "priv"),
+        ):
+            parche = mock.patch.object(mod, attr, valor)
+            parche.start()
+            self.addCleanup(parche.stop)
+        ajuste = mock.patch(
+            "app.config.get_settings",
+            return_value=mock.Mock(workspace_dir=str(self.tmp),
+                                   workspace_areas="apps,web,mobile"))
+        ajuste.start()
+        self.addCleanup(ajuste.stop)
+        self._restaurar_registro(projects)
+
+        # El alta por la ruta real, no un fichero escrito a mano.
+        r = self.c.post("/proyectos", headers=self.headers, json={
+            "alias": "proyecto-de-prueba", "area": "apps", "kind": "encargo",
+            "nombre": "Proyecto de prueba", "alcance": "Solo para estos tests.",
+        })
+        assert r.status_code == 200, r.text
+        # El alta escribe en disco; `reload()` es lo que lo mete en la whitelist
+        # sin reiniciar el bridge. Es el mismo camino que sigue la app real.
+        projects.reload()
+        self.assertIn("proyecto-de-prueba", projects.PROJECTS)
+
+    def _restaurar_registro(self, projects) -> None:
+        codigo = dict(projects.PROJECTS)
+        datos = set(projects._DATOS)
+        for alias in list(projects._DATOS):
+            projects.PROJECTS.pop(alias, None)
+        projects._DATOS.clear()
+
+        def _restaurar() -> None:
+            projects.PROJECTS.clear()
+            projects.PROJECTS.update(codigo)
+            projects._DATOS.clear()
+            projects._DATOS.update(datos)
+        self.addCleanup(_restaurar)
+
+
+class TestLasRutasExisten(_ClienteConProyecto):
     """Los nombres exactos que la app va a pedir. Un 404 aquí es un 404 en el móvil."""
 
     def test_get_proyectos_sigue_siendo_lectura_abierta(self) -> None:
@@ -68,13 +137,13 @@ class TestLasRutasExisten(_Cliente):
         interpretaría como parte del alias y la respuesta sería la ficha pública
         —que es justo lo contrario de lo que se pidió, y sin error visible.
         """
-        r = self.c.get("/fichas/recepcion-persa/privada", headers=self.headers)
+        r = self.c.get("/fichas/proyecto-de-prueba/privada", headers=self.headers)
         self.assertEqual(200, r.status_code)
         cuerpo = r.json()
         self.assertIn("texto", cuerpo)
-        self.assertEqual("recepcion-persa", cuerpo["alias"])
+        self.assertEqual("proyecto-de-prueba", cuerpo["alias"])
         self.assertNotEqual(
-            self.c.get("/fichas/recepcion-persa", headers=self.headers).json()["texto"],
+            self.c.get("/fichas/proyecto-de-prueba", headers=self.headers).json()["texto"],
             cuerpo["texto"],
             "la ruta privada devolvió la ficha pública")
 
@@ -316,11 +385,11 @@ class TestPlantillasDeFicha(_Cliente):
         self.assertEqual(401, r.status_code)
 
 
-class TestSeccionesParseadas(_Cliente):
+class TestSeccionesParseadas(_ClienteConProyecto):
     """El mapa de secciones, que es lo que permite prellenar el formulario."""
 
     def test_la_ficha_publica_trae_sus_secciones(self) -> None:
-        r = self.c.get("/fichas/recepcion-persa", headers=self.headers)
+        r = self.c.get("/fichas/proyecto-de-prueba", headers=self.headers)
         self.assertEqual(200, r.status_code, r.text)
         d = r.json()
         self.assertIn("Qué problema resuelve", d["secciones"])
@@ -330,7 +399,7 @@ class TestSeccionesParseadas(_Cliente):
                          msg="«escritas» debe ser el complement exacto de «faltan»")
 
     def test_la_privada_trae_sus_secciones_tambien(self) -> None:
-        r = self.c.get("/fichas/recepcion-persa/privada", headers=self.headers)
+        r = self.c.get("/fichas/proyecto-de-prueba/privada", headers=self.headers)
         self.assertEqual(200, r.status_code, r.text)
         d = r.json()
         self.assertIn("Cliente y contacto", d["secciones"],

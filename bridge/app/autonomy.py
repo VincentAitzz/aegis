@@ -69,6 +69,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from . import entorno
+
 log = __import__("logging").getLogger("aegis.bridge.autonomy")
 
 #: Herramientas que no cambian nada. Se ejecutan sin preguntar y sin avisar.
@@ -236,7 +238,7 @@ class _Almacen:
     def __init__(self, ruta: Optional[Path] = None) -> None:
         base = ruta or Path(os.environ.get(
             "AEGIS_AUTONOMIA_DB",
-            os.path.expanduser("~/Workspace/aegis/bridge/data/aegis/autonomia.sqlite3")))
+            str(entorno.datos("aegis", "autonomia.sqlite3"))))
         self.ruta = Path(base)
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
         import sqlite3

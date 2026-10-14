@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     # Workspace donde viven los proyectos. Es la única raíz desde la que se
     # puede dar de alta un proyecto nuevo: la de un alta siempre se DERIVA de
     # área + alias, nunca se escribe a mano en el registro (ver app/projects.py).
-    workspace_dir: str = "/RUTA/AL/WORKSPACE"
+    #
+    # `~/Workspace` y no una ruta absoluta: es una convención de organización,
+    # no una propiedad de la instalación. Quien clone esto puede tener sus
+    # proyectos en otro sitio —y quien solo quiera correr el bridge, en ninguno—,
+    # así que se cambia en `bridge/.env` (`WORKSPACE_DIR=...`) y no en el código.
+    workspace_dir: str = "~/Workspace"
     #: Áreas donde Aegis puede crear un proyecto. Refleja la organización real.
     workspace_areas: str = "apps,web,mobile"
 

@@ -1,0 +1,195 @@
+# Verificación de Aegis en cada PR.
+#
+# ## Por qué el bridge corre SIN Flutter, sin JDK y sin SDK de Android
+# Porque esa es exactamente la comprobación de que el repo no depende de la
+# máquina de nadie. La suite del bridge tiene ~700 tests y todos tienen que pasar
+# con un `PATH` que solo tiene Python; los que de verdad necesitan `dart` o `adb`
+# **se saltan** en vez de fingir.
+#
+# En la máquina de quien lo escribió todo estaba instalado, así que esa condición
+# no se veía. Publicar el repo la pone a prueba en el primer minuto, y por eso
+# ahora es un job: si alguien reintroduce una ruta absoluta o una dependencia del
+# entorno, el CI lo dice en la PR y no cuando a otra persona le falle en su
+# portátil.
+name: verificar
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancela ejecuciones anteriores de la misma rama: si hay cinco pushes seguidos,
+# solo importa el último.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: bridge (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # El mínimo declarado en el README y el que se usa en desarrollo. Un
+        # proyecto que solo funciona en la última versión no es soportable.
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: bridge/requirements.txt
+
+      - name: Dependencias
+        working-directory: bridge
+        run: |
+          python -m pip install --upgrade pip
+          pip install --requirement requirements.txt
+
+      # Sin esto, el runner no tiene ni `/home/USUARIO` ni un SDK de Android, que
+      # es justo lo que queremos comprobar.
+      - name: El entorno no tiene toolchain móvil
+        run: |
+          set -euo pipefail
+          ! command -v flutter   # tiene que estar AUSENTE
+          ! command -v adb
+          ! command -v java
+          echo "OK: sin Flutter, sin adb, sin JDK. Esta es la condición que se quiere probar."
+
+      - name: Los módulos importan
+        working-directory: bridge
+        run: python bin/check-imports.py
+
+      - name: Suite de tests
+        working-directory: bridge
+        run: python -m unittest discover -s tests -q
+
+      - name: Comprobar que el perfil personal no está en el repo
+        # El invariante «lo tuyo no viaja» depende de que nadie haga `git add -f`.
+        run: |
+          set -euo pipefail
+          if git ls-files --error-unmatch bridge/quien-eres.md >/dev/null 2>&1; then
+            echo "::error::bridge/quien-eres.md está versionado y no debe estarlo"
+            exit 1
+          fi
+          if git ls-files 'bridge/fichas-privadas/*' | grep -q .; then
+            echo "::error::hay fichas privadas versionadas"
+            exit 1
+          fi
+          echo "OK: el material personal no está versionado"
+
+  movil:
+    name: móvil (flutter analyze + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Los tests del móvil necesitan JDK, Flutter y el SDK de Android: son varios
+      # minutos que no sirven para un cambio que no toca Dart. El filtro va **dentro**
+      # del job, y no como `if:` del job entero, porque un `if:` que depende de otro
+      # job deja el primero como «skipped» y se pierde de vista cuál de los dos
+      # rompió. Aquí el job corre siempre, dice por qué no hizo nada, y eso se ve.
+      - uses: dorny/paths-filter@v3
+        id: cambios
+        with:
+          filters: |
+            movil:
+              - 'mobile/**'
+              - '.github/workflows/verificar.yml'
+      - name: ¿Toca el móvil?
+        run: |
+          if [ "${{ steps.cambios.outputs.movil }}" != "true" ]; then
+            echo "::notice::El PR no toca mobile/: se omiten analyze y tests del móvil."
+            echo "FALTA_CHECK_MOVIL=si" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "FALTA_CHECK_MOVIL=no" >> "$GITHUB_ENV"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.35.0"
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Dependencias
+        if: env.FALTA_CHECK_MOVIL == 'no'
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Analyze
+        if: env.FALTA_CHECK_MOVIL == 'no'
+        working-directory: mobile
+        # La base es CERO issues. No es «no más de N»: se midió antes de empezar
+        # y era cero, así que cualquier issue nuevo es de este cambio.
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub | tee /tmp/analyze.txt
+          if grep -qE 'issues? found' /tmp/analyze.txt; then
+            echo "::error::flutter analyze encontró issues. La base es cero."
+            exit 1
+          fi
+
+      - name: Tests unitarios
+        if: env.FALTA_CHECK_MOVIL == 'no'
+        working-directory: mobile
+        # Los `integration_test/` NO corren aquí: necesitan un emulador, y eso es
+        # otra máquina y otro minuto. Ver `infra/mobile/emulador.sh` y el AGENTS.md.
+        run: flutter test --no-pub test/
+
+  hygiene:
+    name: higiene del repo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # para que el escaneo vea el historial, no solo HEAD
+
+      - name: Sin secretos en el código
+        run: |
+          set -euo pipefail
+          # Solo patrones de **formato**: claves que en la práctica empiezan por
+          # sk-/ghp_/nhc_ y connection strings con contraseña. Un `grep` de
+          # "API_KEY" no sirve: este repo documenta variables sin parar.
+          if git grep -nIE \
+            '(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|nhc_[A-Za-z0-9]{20,}|postgres(ql)?://[^[:space:]]+:[^[:space:]@]+@)' \
+            -- . ':!*.lock'; then
+            echo "::error::posible secreto en el árbol de trabajo"
+            exit 1
+          fi
+          echo "OK: sin secretos de formato reconocible"
+
+      - name: La licencia está
+        run: |
+          set -euo pipefail
+          test -f LICENSE || { echo "::error::falta LICENSE"; exit 1; }
+          grep -q 'GNU AFFERO GENERAL PUBLIC LICENSE' LICENSE \
+            || { echo "::error::LICENSE no es la AGPL-3.0"; exit 1; }
+
+      - name: La documentación no miente
+        # Lo que dice el README tiene que existir: un README que describe un
+        # fichero que ya no está es un defecto, no una errata.
+        run: |
+          set -euo pipefail
+          for doc in docs/hardware.md docs/vision.md docs/architecture.md \
+                     docs/runbook.md README.en.md CONTRIBUTING.md SECURITY.md; do
+            test -f "$doc" || { echo "::error::el README enlaza a $doc y no existe"; exit 1; }
+          done
+          # Y lo que el README afirma del motor tiene que ser verdad: Hermes ya
+          # no es un motor, y volvió a aparecer en un README por error una vez.
+          if grep -qE 'POST /tasks' README.md README.en.md; then
+            echo "::error::el README vuelve a documentar POST /tasks, que ya no existe"
+            exit 1
+          fi
+          echo "OK: los enlaces del README existen y el README no documenta APIs muertas"

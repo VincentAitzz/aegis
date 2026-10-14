@@ -35,6 +35,30 @@ logs/
 *.db
 *.sqlite*
 
+# --- Aegis personal (Fase «abrir a la comunidad», 2026-10-13) ----------------
+# Esto no es «información sensible de una máquina», es información personal y
+# comercial que no es del proyecto. Va en tu disco, no en un repositorio público.
+#
+# `quien-eres.md`: cómo quieres que te hable. Lo escribe Aegis con tu OK
+# (`quien_eres_actualiza`) o tú con un editor. La plantilla sí está versionada.
+/bridge/quien-eres.md
+
+# Las fichas de tus proyectos. Las plantillas (`_plantilla-*.md`) y la ficha
+# técnica del propio Aegis (`aegis.md`) sí viajan: son conocimiento de ingeniería
+# y le sirven a todo el mundo.
+/bridge/fichas/*.md
+!/bridge/fichas/_plantilla-*.md
+!/bridge/fichas/aegis.md
+
+# El registro de proyectos que operas. `_plantilla.json` sí viaja.
+/bridge/registro/*.json
+!/bridge/registro/_plantilla.json
+
+# Las lecciones de proyectos que no son este repo. `aegis.md` sí viaja: es la
+# memoria técnica de Aegis sobre sí mismo.
+/bridge/lessons/*.md
+!/bridge/lessons/aegis.md
+
 # OS/editor
 .DS_Store
 Thumbs.db

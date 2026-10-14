@@ -1,0 +1,14 @@
+{
+  "_comentario": "Plantilla. Cópiala como `registro/{alias}.json` y rellénala. Los ficheros que empiezan por `_` NO se cargan (ver `_cargar_registro` en app/projects.py), así que esta plantilla puede vivir en el repo sin dar de alta nada.",
+
+  "alias": "mi-proyecto",
+  "area": "apps",
+  "kind": "encargo",
+
+  "carpeta": "mi_proyecto",
+
+  "note": "Next.js + Flutter. Sin verificador todavía.",
+
+  "db": null,
+  "nota_db": "Sin base de datos en el repo: un contrato Mobile->Server por WebSocket. Confirmado sobre el código."
+}

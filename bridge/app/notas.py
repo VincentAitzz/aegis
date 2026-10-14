@@ -32,6 +32,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from . import entorno
+
 #: Estados de una tarea. `hecha` no se borra: es el registro de que pasó.
 ESTADOS = ("pendiente", "hecha", "descartada", "aplazada")
 
@@ -78,8 +80,7 @@ class Agenda:
 
     def __init__(self, ruta: Optional[Path] = None) -> None:
         base = ruta or Path(os.environ.get(
-            "AEGIS_AGENDA_DB",
-            os.path.expanduser("~/Workspace/aegis/bridge/data/aegis/notas.sqlite3")))
+            "AEGIS_AGENDA_DB", str(entorno.datos("aegis", "notas.sqlite3"))))
         self.ruta = Path(base)
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
         self._c = sqlite3.connect(self.ruta, check_same_thread=False)

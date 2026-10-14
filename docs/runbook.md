@@ -1,7 +1,17 @@
 # Runbook
 
 Guía de operación del backend Aegis (post-reinicio), pruebas y resolución de
-problemas. Máquina: CachyOS (Arch), usuario `demo`, sin sudo automático.
+problemas.
+
+## Sobre esta guía
+
+Está escrita para **Linux con `systemd`** y verificada en una máquina con CachyOS
+(Arch), sin sudo automático. Donde el comando no sea el de tu distribución, lo
+importante es **qué comprueba cada script**, no el nombre del gestor de servicios:
+`infra/stack.sh` es el sitio donde se ajusta.
+
+Las direcciones IP y los seriales que aparecen son **de ejemplo**. Las tuyas las
+sabes con `tailscale ip -4`, `ip -4 addr` y `adb devices -l`.
 
 ## 1. Arranque tras un reinicio
 
@@ -41,7 +51,7 @@ env OLLAMA_HOST=127.0.0.1 OLLAMA_CONTEXT_LENGTH=64000 ~/.local/bin/ollama serve 
 setsid nohup ~/.local/bin/hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 < /dev/null &
 
 # 3) Bridge Aegis
-cd /RUTA/AL/REPO/bridge
+cd bridge                                # o donde clonaste el repo
 ( env BRIDGE_BIND=0.0.0.0 BRIDGE_PORT=8000 PYTHONPATH=app \
     .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 \
     > ~/.local/bridge.log 2>&1 & )
@@ -558,7 +568,7 @@ comando del server. Ya está registrado en `~/.hermes/config.yaml`:
 ```yaml
 mcp_servers:
   aegis-memory:
-    command: "/RUTA/AL/REPO/bridge/bin/mcp-memory.sh"
+    command: "/RUTA/ABSOLUTA/AL/REPO/bridge/bin/mcp-memory.sh"   # absoluta: mcpd no
     args: []
     enabled: true
 ```

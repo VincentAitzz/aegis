@@ -28,6 +28,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app import entorno  # noqa: E402
 from app import autonomy  # noqa: E402
 from app.autonomy import AutonomiaError, Decision  # noqa: E402
 from app.main import exigir_token  # noqa: E402
@@ -399,7 +400,11 @@ class TestEscrituraDestructiva(_Piso):
         ruta = Path(self.tmp)
         with mock.patch("app.autonomy.tocado_alguna_vez", return_value=True), \
              mock.patch("app.mcp_ops._safe_resolve") as res:
-            res.return_value = Path("/RUTA/AL/REPO/mobile/lib/app.dart")
+            # La ruta del objetivo sale del repo donde se ejecuta el test, no de
+            # la máquina donde se escribió. `decide` la resuelve a proyecto para
+            # comprobar que está marcado, así que una ruta de otro sitio da
+            # «sin marcar» y el test falla por un motivo que no es el suyo.
+            res.return_value = entorno.RAIZ / "mobile" / "lib" / "app.dart"
             with mock.patch.object(Path, "exists", return_value=True), \
                  mock.patch.object(Path, "read_text", return_value="x\n" * 1000):
                 d = autonomy.decide(
@@ -414,7 +419,11 @@ class TestEscrituraDestructiva(_Piso):
         self.a.marcar("aegis")
         with mock.patch("app.autonomy.tocado_alguna_vez", return_value=True), \
              mock.patch("app.mcp_ops._safe_resolve") as res:
-            res.return_value = Path("/RUTA/AL/REPO/mobile/lib/app.dart")
+            # La ruta del objetivo sale del repo donde se ejecuta el test, no de
+            # la máquina donde se escribió. `decide` la resuelve a proyecto para
+            # comprobar que está marcado, así que una ruta de otro sitio da
+            # «sin marcar» y el test falla por un motivo que no es el suyo.
+            res.return_value = entorno.RAIZ / "mobile" / "lib" / "app.dart"
             with mock.patch.object(Path, "exists", return_value=True), \
                  mock.patch.object(Path, "read_text", return_value="x\n" * 100):
                 d = autonomy.decide(
@@ -948,9 +957,22 @@ class TestBaseMedida(_Piso):
 
         Confundirlos frenaría a Aegis de forma permanente y sin causa. Un freno
         permanente es un freno que nadie mira.
+
+        El proyecto se declara aquí, sin verificador y con el registro vacío:
+        antes se usaba `data-sending`, que en un clon ajeno no existe y daba
+        «no está en el registro» — un motivo distinto del que se quiere probar.
         """
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from app import projects
+        from app.projects import Project
         from app.autonomy import medir_base
-        m = medir_base("data-sending")
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Project(alias="sin-verificador", root=Path(tmp), strategy="psql")
+            with mock.patch.dict(projects.PROJECTS, {"sin-verificador": cfg},
+                                 clear=True):
+                m = medir_base("sin-verificador")
         self.assertIsNone(m["rojo"])
         self.assertIn("verificador", m["detalle"])
 
@@ -1295,7 +1317,14 @@ class TestAdbConnectDiceLaVerdad(unittest.TestCase):
             "adb-SERIAL1234567-tkpktJ\t_adb-tls-connect._tcp\t192.168.0.5:46119\n"
         )
         proc = mock.Mock(stdout=salida, returncode=0, stderr="")
-        with mock.patch.object(mcp_ops, "_run", return_value=proc):
+        from app import dispositivos as disp
+        # La salida está simulada, así que el `adb` real no hace falta: lo que se
+        # comprueba aquí es el parseo y la deduplicación, no que la máquina tenga
+        # un SDK de Android instalado. Sin este parche, en una máquina sin SDK
+        # `_puertos_mdns` devuelve `[]` antes de mirar la salida, y el test falla
+        # por la ausencia de la herramienta en vez de por su motivo.
+        with mock.patch.object(mcp_ops, "_run", return_value=proc), \
+             mock.patch.object(disp, "adb_ausente", return_value=""):
             puertos = mcp_ops._puertos_mdns()
         self.assertEqual(puertos, [("192.168.0.5", "46119")])
 

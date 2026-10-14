@@ -166,15 +166,22 @@ def _dart_parseable(texto: str) -> bool:
     usen la misma respuesta. Un test con su propio criterio pasa mientras el
     guardarraíl usa otro, que es un test que no mide lo que dice medir.
     """
-    from app.mcp_ops import FLUTTER, _run
+    from app import entorno
+    from app.mcp_ops import _run
 
+    dart = f"{entorno.flutter_dir()}/dart" if entorno.flutter_dir() else ""
+    if not dart or not Path(dart).is_file():
+        raise unittest.SkipTest(
+            "sin `dart`: este test **necesita** el comprobador. No se salta el "
+            "guardarraíl y se dice «ok» —eso sería probar que no hace nada—. "
+            "Sin Flutter, la comprobación de que el guardarraíl atrapa un Dart "
+            "roto no se puede hacer, y se dice en voz alta.")
     with tempfile.NamedTemporaryFile("w", suffix=".dart", delete=False,
                                      encoding="utf-8") as fh:
         fh.write(texto)
         ruta = Path(fh.name)
     try:
-        proc = _run([str(FLUTTER + "/dart"), "format", "--output=none", str(ruta)],
-                    timeout=60)
+        proc = _run([dart, "format", "--output=none", str(ruta)], timeout=60)
         return proc.returncode == 0
     finally:
         ruta.unlink(missing_ok=True)
@@ -182,7 +189,18 @@ def _dart_parseable(texto: str) -> bool:
 
 class TestSyntaxGuard(unittest.TestCase):
     def test_broken_dart_edit_is_rejected_and_reverted(self):
+        """El guardarraíl atrapa un Dart roto y **revierte**, y no toca el repo.
+
+        ## Por qué se salta en vez de degradar
+        La otra mitad de este comportamiento —«sin `dart`, `_syntax_ok` dice que
+        está bien»— sí se prueba en todas partes, porque es lo que tiene que
+        pasar en una máquina sin toolchain. Aquí lo que se prueba es lo
+        contrario: que **con** comprobador el rollback ocurre. Sin comprobador
+        no hay nada que probar, y un test que pasara porque no hizo nada sería
+        peor que uno que se salta y lo dice.
+        """
         from app.mcp_ops import _safe_resolve, _syntax_ok
+        _dart_parseable("void main() {}")   # salta aquí si no hay Dart
 
         path = _safe_resolve("mobile/lib/core/theme/aegis_palette.dart")
         antes = path.read_text()

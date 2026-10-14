@@ -238,8 +238,16 @@ class TestElAgenteVeLoQueFalta(unittest.TestCase):
     """Un proyecto sin ficha tiene que ser visible, o el agente no sabe qué hacer.
 
     Regresión real: `registry_list` solo miraba `registro/*.json`, así que los
-    proyectos declarados en Python —compra-unida, portafolio, trazeurs— no
-    aparecían nunca. Tres fichas que no existían, invisibles.
+    proyectos declarados en Python no aparecían nunca. Fichas que no existían,
+    invisibles.
+
+    ## Por qué el proyecto del test es `aegis`
+    Antes estos tests usaban los proyectos de la máquina de quien escribió el
+    repo (`compra-unida`, `portafolio`). Eso ataba la suite a un registro que no
+    viaja en el clon: en la máquina de cualquiera que contributing, el proyecto
+    no existe, `context_for` devuelve `""` y el test falla **sin que haya roto
+    nada**. Un test que depende de tu disco no es un test: es unameasurement de
+    tu setup. Ahora el único proyecto declarado de serie es el propio repo.
     """
 
     def test_resumen_abarca_todos_los_registrados(self) -> None:
@@ -251,19 +259,27 @@ class TestElAgenteVeLoQueFalta(unittest.TestCase):
                 self.assertIn(alias, texto, f"{alias} no aparece en el resumen")
 
     def test_el_resumen_dice_el_estado_de_cada_ficha(self) -> None:
-        from app import alta as alta_mod
-        texto = alta_mod.resumen_registro().lower()
+        """El resumen nombra el estado de cada ficha, y lo dice **en palabras**.
+
+        Con la ficha de `aegis` presente el estado es `completa`; sin ella, el
+        resumen tiene que decir «sin ficha» en vez de callarse — porque quien lo
+        lee es el agente, y un estado que no aparece es un estado que no sabe.
+        """
+        from app import alta as alta_mod, fichas
+        import tempfile
+        with mock.patch.object(fichas, "FICHAS_DIR", Path(tempfile.mkdtemp())):
+            texto = alta_mod.resumen_registro().lower()
         self.assertIn("sin ficha", texto)
-        self.assertIn("completa", texto)
+        self.assertIn("aegis", texto)
 
     def test_context_for_avisa_si_no_hay_ficha(self) -> None:
         """Devolver cadena vacía hace que Aegis no sepa ni que el proyecto existe."""
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(fichas, "FICHAS_DIR", Path(d)):
-                ctx = fichas.context_for("compra-unida")
+                ctx = fichas.context_for("aegis")
         self.assertTrue(ctx, "un proyecto sin ficha debe producir contexto, no vacío")
         self.assertIn("ficha", ctx.lower())
-        self.assertIn("compra-unida", ctx)
+        self.assertIn("aegis", ctx)
 
     def test_un_alias_desconocido_sigue_dando_vacio(self) -> None:
         """Un alias que no es proyecto no debe inventarse contexto."""
@@ -275,9 +291,9 @@ class TestElAgenteVeLoQueFalta(unittest.TestCase):
         # Proyecto real, ficha ausente: tiene que explicar qué hace falta.
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(fichas, "FICHAS_DIR", Path(d)):
-                salida = fichas.leer_para_agente("compra-unida")
+                salida = fichas.leer_para_agente("aegis")
         self.assertIn("no tiene ficha", salida.lower())
-        self.assertIn("compra-unida", salida)
+        self.assertIn("aegis", salida)
 
     def test_leer_un_alias_que_no_es_proyecto_lo_dice(self) -> None:
         salida = fichas.leer_para_agente("no-existe-este")
@@ -334,15 +350,15 @@ class TestEscrituraDeFichaSinModelo(unittest.TestCase):
                                     headers=cabeceras)
 
     def test_escribe_byte_exacto_incluido_el_frontmatter(self) -> None:
-        texto = "---\nkind: producto\n---\n\n# Trazeurs\n\n## Que es\n\naplicacion\n"
-        r = self._post("compra-unida", texto)
+        texto = "---\nkind: producto\n---\n\n# Proyecto\n\n## Que es\n\naplicacion\n"
+        r = self._post("aegis", texto)
         self.assertEqual(r.status_code, 200, r.text)
-        escrito = (self.tmp / "compra-unida.md").read_text(encoding="utf-8")
+        escrito = (self.tmp / "aegis.md").read_text(encoding="utf-8")
         self.assertEqual(escrito, texto)
-        self.assertEqual(fichas.parse("compra-unida", escrito).kind, "producto")
+        self.assertEqual(fichas.parse("aegis", escrito).kind, "producto")
 
     def test_devuelve_el_estado_calculado(self) -> None:
-        r = self._post("compra-unida", "---\nkind: producto\n---\n\n## Que es\n\nx\n")
+        r = self._post("aegis", "---\nkind: producto\n---\n\n## Que es\n\nx\n")
         self.assertTrue(r.json()["escrito"])
         self.assertEqual(r.json()["estado"], "incompleta")
         self.assertIn("Próximo paso", r.json()["faltan"])
@@ -353,7 +369,7 @@ class TestEscrituraDeFichaSinModelo(unittest.TestCase):
     def test_un_secreto_es_400_y_no_Deja_archivo(self) -> None:
         """Un 500 escondería que el rechazo fue correcto, no un fallo."""
         r = self._post(
-            "compra-unida",
+            "aegis",
             "---\nkind: producto\n---\n\nAPI_KEY=sk-live-abcdef1234567890abcdef\n")
         self.assertEqual(r.status_code, 400)
         self.assertNotIn("sk-live", r.text, "el valor filtrado no debe aparecer en la respuesta")

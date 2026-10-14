@@ -56,8 +56,9 @@ import httpx
 from pathlib import Path
 
 from . import dispositivos as disp
+from . import entorno
 
-MOBILE = Path(os.path.expanduser("~/Workspace/aegis/mobile"))
+MOBILE = entorno.MOBILE
 #: El APK que se prueba en el emulador. El del teléfono es otro binario, con la
 #: IP de la tailnet en vez de localhost, y vive en `APK_TELEFONO`.
 APK = disp.apk_para("emulador")
@@ -351,7 +352,7 @@ class _Estado:
     importar de verdad, este es el único sitio que hay que cambiar.
     """
 
-    RUTA = Path(os.path.expanduser("~/Workspace/aegis/bridge/data/deploy.json"))
+    RUTA = entorno.datos("deploy.json")
 
     def __init__(self) -> None:
         self.RUTA.parent.mkdir(parents=True, exist_ok=True)

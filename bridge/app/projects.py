@@ -1,8 +1,11 @@
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import entorno
 
 log = logging.getLogger("aegis.bridge.projects")
 
@@ -25,9 +28,27 @@ class Project:
     db_provider: str = ''
 
 PROJECTS: dict[str, Project] = {
+    # El propio repo de Aegis es el único proyecto que el repo declara de serie,
+    # y por dos razones que no son de conveniencia:
+    #
+    # 1. Su raíz es **este repo**, derivado de `entorno.RAIZ`. No es una ruta
+    #    escrita a mano, así que donde clonen el código, vale.
+    # 2. Es el único con verificador que todos los demás necesitan: sin él, Aegis
+    #    no puede ni escribirse a sí mismo (ver docs/vision.md §autonomía).
+    #
+    # Los demás proyectos —los que alguien opera con Aegis— **no** se declaran
+    # aquí: van en `registro/{alias}.json`, que es un fichero y no una edición de
+    # Python. Ver `_cargar_registro` más abajo y `registro/_plantilla.json`.
+    #
+    # ## Por qué se quitaron los que estaban
+    # Eran las rutas y los ids de Neon de la máquina de quien escribió esto. En
+    # un clon de otra persona apuntan a directorios que no existen y a proyectos
+    # de otra organización, y `repo_verify` sobre ellos sale en rojo con un
+    # `FileNotFoundError` que no dice nada útil. Un registro que miente es peor
+    # que un registro vacío: hace creer que Aegis sabe operar algo que no.
     'aegis': Project(
         alias='aegis',
-        root=Path('/RUTA/AL/WORKSPACE/aegis'),
+        root=entorno.RAIZ,
         # No hay typechecker, pero sí un chequeo que vale: importar el paquete.
         # Sin esto el agente escribe Python sin que nada le diga que un símbolo
         # sin importar solo falla al importar, no al escribir.
@@ -36,72 +57,18 @@ PROJECTS: dict[str, Project] = {
             'test': ['bridge/.venv/bin/python', '-m', 'unittest', 'discover',
                       '-s', 'bridge/tests', '-q'],
         },
-        neon_project='el-proyecto-de-neon-aegis',
+        # El id de Neon **no** va aquí. Es de una organización concreta y no
+        # significa nada en la máquina de nadie: se declara en `bridge/.env`
+        # (`NEON_PROJECT_AEGIS=`) si la base propia de Aegis existe.
+        neon_project=os.environ.get('NEON_PROJECT_AEGIS', ''),
         neon_branch='dev',
         strategy='psql',
         can_read=True,
+        # Sin esquema propio: la memoria sigue siendo local (Chroma + SQLite).
         can_migrate=False,
         can_branch=False,
         note='base propia de Aegis. Sin esquema: la memoria sigue local.'
     ),
-    'portafolio': Project(
-        alias='portafolio',
-        root=Path('/RUTA/AL/WORKSPACE/web/portafolio/'),
-        verify={
-            'check': ['node_modules/.bin/tsc', '--noEmit', '-p', 'tsconfig.json'],
-            'test': ['node_modules/.bin/vitest', 'run'],
-            'build': ['node_modules/.bin/astro', 'build']
-        },
-        neon_project='el-proyecto-de-neon-aegis',
-        neon_branch='dev',
-        strategy='psql',
-        can_read=True,
-        can_migrate=True,
-        can_branch=True,
-    ),
-    'compra-unida': Project(
-        alias='compra-unida',
-        root=Path('/RUTA/AL/WORKSPACE/apps//compra-unida'),
-        verify={
-            'check': ['node_modules/.bin/tsc', '--noEmit'],
-            'test': ['npm test']
-        },
-        neon_project='el-proyecto-de-neon-del-cliente',
-        neon_branch='dev',
-        strategy='drizzle',
-        can_read=True,
-        can_migrate=False,
-        can_branch=True,
-        note='journal de drizzle vacío con 24 tablas con datos en production y dev: db:migrate intentaría recrearlas.'
-    ),
-    'trazeurs': Project(
-        alias='trazeurs',
-        root=Path('/RUTA/AL/WORKSPACE/mobile//trazeurs'),
-        verify={
-            'check': ['/RUTA/A/FLUTTER/bin/flutter', 'analyze', '--no-pub'],
-            'test': ['/RUTA/A/FLUTTER/bin/flutter', 'test', '--no-pub']
-        },
-        neon_project='',
-        neon_branch='dev',
-        strategy='psql',
-        can_read=True,
-        can_migrate=False,
-        can_branch=False,
-    ),
-    'recepcion-persa': Project(
-        alias='recepcion-persa',
-        root=Path('/RUTA/AL/WORKSPACE/apps//recepcion_persa'),
-        verify={
-            'check': ['python3', '-m', 'compileall', '-q', '.'],
-            'test': ['python3', '-m', 'pytest', '-q']
-        },
-        neon_project='',
-        neon_branch='dev',
-        strategy='psql',
-        can_read=True,
-        can_migrate=False,
-        can_branch=False,
-    )
 }
 
 #: Registros que viven en disco (`registro/*.json`), superpuestos a los de arriba.
@@ -134,7 +101,7 @@ def areas() -> list[str]:
 
 def workspace() -> Path:
     from .config import get_settings
-    return Path(get_settings().workspace_dir).resolve()
+    return Path(get_settings().workspace_dir).expanduser().resolve()
 
 
 _CARPETA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$")

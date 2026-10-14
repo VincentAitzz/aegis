@@ -36,7 +36,22 @@ def _tiene_manifiesto(carpeta: Path) -> bool:
     return any((carpeta / m).is_file() for m in MANIFIESTOS)
 
 
-def workspace_candidates(workspace: str = "/RUTA/AL/WORKSPACE") -> list[Path]:
+def _raiz(workspace: str) -> Path:
+    """El workspace declarado, o el de `Settings.workspace_dir`.
+
+    Antes el default era un literal (`/ruta/al/workspace`) en la firma de las
+    dos funciones. Eso obliga a quien lo clone a tener un workspace con esa
+    estructura exacta, y hace imposible probarlo con otro. Ahora el default sale
+    de la configuración —`WORKSPACE_DIR` en `bridge/.env`— y quien quiera otro
+    lo dice.
+    """
+    if workspace:
+        return Path(workspace)
+    from .config import get_settings
+    return Path(get_settings().workspace_dir).expanduser()
+
+
+def workspace_candidates(workspace: str = "") -> list[Path]:
     """Carpetas que parecen proyecto: tienen un archivo de manifiesto.
 
     El workspace **no es plano**: sus proyectos viven un nivel más adentro
@@ -44,7 +59,7 @@ def workspace_candidates(workspace: str = "/RUTA/AL/WORKSPACE") -> list[Path]:
     hay alguno suelto. Se revisan los dos niveles, y se descartan los
     subdirectorios de un proyecto que ya está registrado.
     """
-    raiz = Path(workspace)
+    raiz = _raiz(workspace)
     if not raiz.is_dir():
         return []
     encontradas: list[Path] = []
@@ -70,13 +85,13 @@ def alias_de(carpeta: Path) -> str:
     return ""
 
 
-def describe_workspace(workspace: str = "/RUTA/AL/WORKSPACE") -> str:
+def describe_workspace(workspace: str = "") -> str:
     """Todo lo que Aegis puede operar, y lo que hay en el disco sin registrar.
 
     Incluye los proyectos registrados aunque no tengan manifiesto (el repo de
     Aegis no lo tiene), para que la lista nunca esconda algo operativo.
     """
-    raiz = Path(workspace)
+    raiz = _raiz(workspace)
     candidatos = workspace_candidates(workspace)
     vistos = {c.resolve() for c in candidatos}
     lineas = []

@@ -188,7 +188,7 @@ porque esta memoria es por proyecto, y un error no debería repetirse en otro.
 > Aplica cuando: cuando vas a repetir una llamada que ya ha fallado dos veces
 
 - **Qué pasó**: el segundo intento escribió 7 veces `aegis_write_file` con la
-  misma ruta equivocada (`/RUTA/AL/REPO/...`: armó la ruta a mano y perdió el
+  misma ruta equivocada (`/ruta/al/repo/...`: armó la ruta a mano y perdió el
   segmento `Workspace`), en 19 pasos, sin cambiar nunca de estrategia.
 - **La lección A-011 estaba inyectada** y no evitó nada: la lección hablaba de
   reescribir tras un rechazo, y este modelo ni siquiera estava en el caso que

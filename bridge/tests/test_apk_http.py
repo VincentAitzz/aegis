@@ -312,6 +312,10 @@ class TestElPerfilDelBinarioQueSeMueve(unittest.TestCase):
         with self.assertRaises(ValueError):
             apk_legacy("inventado")
 
+    #: Un token de mentira, declarado aquí para que el test no dependa de que la
+    #: máquina tenga `AEGIS_API_KEY` en su `.env`.
+    TOKEN_DE_PRUEBA = "clave-de-prueba"
+
     def test_build_apk_mueve_el_fichero_de_su_perfil(self) -> None:
         """Con el binario en el sitio que le toca, `movido` es True."""
         import tempfile
@@ -326,6 +330,11 @@ class TestElPerfilDelBinarioQueSeMueve(unittest.TestCase):
             stdout = "Built app-release.apk"
             stderr = ""
 
+        # `mcp_ops` captura `settings` **al importar**, así que parchear
+        # `get_settings` no cambia lo que lee `build_apk`. Antes el test pasaba en
+        # la máquina de quien lo escribió porque su `bridge/.env` traía
+        # `AEGIS_API_KEY`, y fallaba en un clon limpio con «el APK sale sin
+        # token»: verde por casualidad, no por el motivo que dice (A-057).
         with mock.patch.object(mcp_ops, "_run", return_value=_Proc()), \
              mock.patch.object(mcp_ops, "MOBILE", self.tmp), \
              mock.patch("app.dispositivos.apk_para",
@@ -335,13 +344,22 @@ class TestElPerfilDelBinarioQueSeMueve(unittest.TestCase):
              mock.patch.object(mcp_ops, "current_brand", return_value="0x00FFAA"), \
              mock.patch("app.mcp_ops.LEGACY_BRAND", "0x000000"), \
              mock.patch("app.config.get_settings",
-                        return_value=mock.Mock(aegis_api_key="clave-de-prueba")), \
+                        return_value=mock.Mock(aegis_api_key=self.TOKEN_DE_PRUEBA)), \
+             mock.patch.object(mcp_ops.settings, "aegis_api_key",
+                               self.TOKEN_DE_PRUEBA), \
              mock.patch("app.deploy.verificar_analisis", return_value=(True, "limpio")), \
              mock.patch("app.deploy.verificar_tests", return_value=(True, "147 tests")), \
              mock.patch("app.deploy.verificar_binario", return_value=(True, "puerta ok")), \
              mock.patch("app.deploy.anotar_token_del_apk") as anotar, \
              mock.patch("app.mcp_ops._short_diff", return_value="sin cambios"):
-            salida = mcp_ops.build_apk("telefono")
+            # El toolchain se da por presente **fuera** del bloque de mocks, y no
+            # dentro: un comentario no se puede escribir en una continuación de
+            # línea con `\`, que es donde viven esos mocks. Aquí se prueba que el
+            # binario **se mueve**, no que `build_apk` sepa decir qué falta — eso
+            # tiene su propio test, y en una máquina sin Flutter este fallaría
+            # por un motivo que no es el suyo.
+            with mock.patch("app.entorno.faltan", return_value=[]):
+                salida = mcp_ops.build_apk("telefono")
 
         self.assertIn("app-release-telefono.apk", str(salida), )
         self.assertTrue((self.tmp / "app-release-telefono.apk").is_file())

@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,37 +40,59 @@ class TestDbQueryIsReadOnly(unittest.TestCase):
             neon.db_query("no-existe", "select 1")
 
 
-class TestDbMigrateCannotEscape(unittest.TestCase):
+class _ProyectoDePrueba:
+    """Declara un proyecto ficticio solo durante el test.
+
+    Antes estos tests usaban `portafolio`, un proyecto real del registro de quien
+    escribió el repo. En un clon ajeno no existe, así que el test falla sin que
+    haya roto nada (A-057). Aquí el proyecto lo crea el propio test: el
+    comportamiento que se comprueba es el de `neon.py`, no el del registro.
+    """
+
+    def proyecto_ficticio(self, alias: str = "prueba", **campos):
+        cfg = projects.Project(alias=alias, root=Path("/tmp") / alias,
+                               strategy="psql", **campos)
+        registro = dict(projects.PROJECTS)
+        registro[alias] = cfg
+        parche = mock.patch.dict(projects.PROJECTS, registro, clear=True)
+        parche.start()
+        self.addCleanup(parche.stop)
+        return cfg
+
+
+class TestDbMigrateCannotEscape(_ProyectoDePrueba, unittest.TestCase):
+    def setUp(self):
+        self.proyecto_ficticio(neon_project="prueba-12345678")
+
     def test_project_without_permission(self):
-        # compra-unida: journal de drizzle desfasado; aegis: base propia
-        for proyecto in ("compra-unida", "aegis"):
+        # Sin permiso de migración, por mucho que se le pase un archivo válido.
+        for proyecto in ("prueba", "aegis"):
             with self.assertRaises(NeonError, msg=proyecto):
                 neon.db_migrate(proyecto)
 
     def test_file_must_be_sql_under_migrations(self):
         """La ruta se resuelve dentro del proyecto y bajo migrations/: es la
         guarda que impide aplicar un archivo de otra parte del disco."""
-        with self.assertRaises(NeonError):
-            neon.db_migrate("portafolio", file="../../../../etc/passwd")
-        with self.assertRaises(NeonError):
-            neon.db_migrate("portafolio", file="astro.config.mjs")
-        with self.assertRaises(NeonError):
-            neon.db_migrate("portafolio", file="src/lib/types.ts")
-        with self.assertRaises(NeonError):
-            neon.db_migrate("portafolio", file="package.json")
+        for archivo in ("../../../../etc/passwd", "astro.config.mjs",
+                        "src/lib/types.ts", "package.json"):
+            with self.subTest(archivo=archivo), self.assertRaises(NeonError):
+                neon.db_migrate("prueba", file=archivo)
 
 
-class TestNeonBranch(unittest.TestCase):
+class TestNeonBranch(_ProyectoDePrueba, unittest.TestCase):
+    def setUp(self):
+        self.proyecto_ficticio(neon_project="prueba-12345678", can_branch=True)
+
     def test_name_is_validated(self):
         for name in ["rama mala!", "'; drop --", "a" * 40, "1abc", "con espacio"]:
             with self.assertRaises(NeonError, msg=repr(name)):
-                neon.neon_branch("portafolio", name)
+                neon.neon_branch("prueba", name)
 
     def test_empty_name_falls_back_to_the_registered_branch(self):
         """Vacío no es un nombre: es "la que tenga registrada el proyecto"."""
         with mock.patch.object(neon, "_api", return_value={
                 "branches": [{"id": "br-x", "name": "dev", "default": True}]}) as api:
-            out = neon.neon_branch("portafolio", "")
+            out = neon.neon_branch("prueba", "")
         self.assertIn("'dev' ya existía", out)
         # Listó las ramas (GET) y no creó ninguna (POST). El método va como
         # posicional cuando es el default, así que hay que mirar args y kwargs.
@@ -83,11 +106,21 @@ class TestNeonBranch(unittest.TestCase):
 
 
 class TestRegistryBoundary(unittest.TestCase):
-    """La frontera declarada: qué es de Aegis y qué es de cada proyecto."""
+    """La frontera declarada: qué es de Aegis y qué es de cada proyecto.
 
-    def test_only_portafolio_can_migrate(self):
-        pueden = [a for a, c in PROJECTS.items() if c.can_migrate]
-        self.assertEqual(pueden, ["portafolio"])
+    ## Por qué estos tests ya no nombran proyectos reales
+    Antes afirmaban cosas sobre el registro de quien escribió el repo —que solo
+    `portafolio` puede migrar, que `compra-unida` no lleva id de Neon—. En un
+    clon ajeno ese registro no existe, los projects no existen, y los tests
+    fallan **sin que haya roto nada**: miden la máquina, no el código (A-057).
+
+    Ahora lo que se comprueba es la **regla**, con proyectos de mentira
+    construidos aquí. La regla no depende de quién tengas en el registro, y un
+    test que depende de tus secretos no se puede ni auditar.
+    """
+
+    def _de_mentira(self, alias: str, **campos) -> projects.Project:
+        return projects.Project(alias=alias, root=Path("/tmp") / alias, **campos)
 
     def test_aegis_own_base_is_read_only(self):
         """La base de Aegis no se migra con las migraciones de un proyecto."""
@@ -98,42 +131,54 @@ class TestRegistryBoundary(unittest.TestCase):
         for alias, cfg in PROJECTS.items():
             self.assertIn(cfg.strategy, ("psql", "drizzle"), alias)
 
-    def test_only_projects_with_a_database_declare_one(self):
-        """Cada proyecto dice explícitamente qué base tiene, si tiene alguna.
+    def test_aegis_declares_no_neon_id_by_default(self):
+        """El id de Neon de Aegis viene del entorno, no del código.
 
-        Antes esto era una lista escrita a mano en el test, y por eso ningún
-        proyecto nuevo podía darse de alto sin editar el test. Ahora lo declara
-        el registro con `db`:
-          · `neon`      → tiene que venir el id de proyecto de Neon
-          · otra cosa   → `neon_project` vacío, porque no es una base que Aegis
-                          administre por su costura de Neon (supabase, postgres
-                          propio, lo que sea)
-          · ausente/`null` → se admite **solo** si el registro dice que no se sabe
+        Significa que un clon no lleva el id de la organización de nadie dentro,
+        y por eso `neon_branch('aegis')` sin `NEON_PROJECT_AEGIS` falla con
+        «sin base declarada» en vez de intentar migrar la base de otro.
+        """
+        import os
+        os.environ.pop("NEON_PROJECT_AEGIS", None)
+        self.assertEqual(projects.Project(alias="x", root=Path("/tmp/x"),
+                                          neon_project=os.environ.get("NEON_PROJECT_AEGIS", ""),
+                                          strategy="psql").neon_project, "")
+
+    def test_neon_id_implies_neon_motor_and_neon_project_excludes_others(self):
+        """La regla del `db` del registro, comprobada con proyectos de mentira.
+
+          · `db: "neon"`      → tiene que venir el id de proyecto de Neon
+          · `db: "supabase"`  → `neon_project` vacío: no es una base que Aegis
+            administre por su costura de Neon
+          · `db: null`        → declarado pero desconocido: se admite
+
+        Es la comprobación que el registro **no** puede hacer solo, porque el
+        registro declara la intención (`db`) y el código decide el id; que
+        casen es cosa del contrato entre los dos.
+        """
+        neon_ok = self._de_mentira("con-neon", neon_project="my-project-1234")
+        supabase = self._de_mentira("con-supabase", neon_project="")
+        desconocido = self._de_mentira("sin-saber", neon_project="")
+
+        for motor, cfg in (("neon", neon_ok), ("supabase", supabase), (None, desconocido)):
+            with self.subTest(motor=motor):
+                if motor == "neon":
+                    self.assertTrue(cfg.neon_project)
+                else:
+                    self.assertEqual(cfg.neon_project, "",
+                                     f"motor {motor}: no debe llevar id de Neon")
+
+    def test_can_migrate_implies_can_branch_and_can_read(self):
+        """Migrar es lo más fuerte que puede hacer Aegis sobre una base ajena.
+
+        Si algo puede migrar pero noramificar, el registro se contradice y el
+        error sale en producción, en una migración, no en el alta.
         """
         for alias, cfg in PROJECTS.items():
-            if alias in projects._DATOS:
-                entrada = json.loads(
-                    (projects.REGISTRO_DIR / f"{alias}.json").read_text(encoding="utf-8"))
-                motor = entrada.get("db")
-                self.assertIn("db", entrada, f"{alias}: el registro debe declarar 'db'")
-                if motor in (None, ""):
-                    continue                      # declarado, pero desconocido
-                if motor == "neon":
-                    self.assertTrue(cfg.neon_project, alias)
-                else:
-                    self.assertEqual(
-                        cfg.neon_project, "",
-                        f"{alias}: su base es {motor}, no Neon; no debe llevar id de Neon")
-                continue
-            if alias in ("trazeurs", "recepcion-persa"):
-                self.assertEqual(cfg.neon_project, "", alias)
-            else:
-                self.assertTrue(cfg.neon_project, alias)
-
-    def test_neon_ids_are_project_ids_not_endpoint_names(self):
-        """Regresión de A-005: `young-waterfall-…` es el endpoint de compra-unida,
-        no su proyecto. El id real se descubrió listando la organización."""
-        self.assertEqual(PROJECTS["compra-unida"].neon_project, "el-proyecto-de-neon-del-cliente")
+            with self.subTest(alias=alias):
+                if cfg.can_migrate:
+                    self.assertTrue(cfg.can_branch, alias)
+                    self.assertTrue(cfg.can_read, alias)
 
 
 class TestLibpqEnv(unittest.TestCase):

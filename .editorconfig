@@ -1,0 +1,42 @@
+# Formato y espacios, para que un diff sea legible.
+#
+# Sin esto, dos personas con editores distintos se pelean por los espacios y el
+# diff mezcla el cambio real con el ruido. Aquí se fija para los ficheros que el
+# CI comprueba de verdad (Python, YAML, Markdown, shell).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 96
+
+[*.{yml,yaml,json}]
+indent_style = space
+indent_size = 2
+
+[*.{md,markdown}]
+# `trim_trailing_whitespace` se queda, pero los dos espacios de un salto de línea
+# sí se conservan: en Markdown **son** un salto de línea, y borrarlos junta los
+# párrafos sin que nadie lo note.
+trim_trailing_whitespace = false
+
+[*.sh]
+indent_style = space
+indent_size = 2
+
+[{Makefile,makefile}]
+indent_style = tab
+
+# Los ficheros generados o que son de Flutter no se tocan a mano.
+[mobile/pubspec.lock]
+insert_final_newline = unset
+
+[mobile/assets/**]
+insert_final_newline = unset
+trim_trailing_whitespace = unset

@@ -259,12 +259,29 @@ class TestCargaDelRegistro(_WorkspaceTemporal):
         self.assertNotIn("incompleto", projects.PROJECTS)
 
     def test_un_json_no_puede_pisar_al_codigo(self) -> None:
-        # `aegis` está declarado en Python con sus verificadores y su base. El
-        # disco no puede sustituirlo por una entrada vacía.
+        """Un `registro/aegis.json` no puede sustituir la entrada de Python.
+
+        ## Por qué se compara con `entorno.RAIZ` y no con una ruta literal
+        Antes comparaba contra `/ruta/al/repo`, la ruta de la
+        máquina donde se escribió. En un clon en otro sitio fallaba con un
+        `PosixPath(...) != PosixPath('/home/usuario/...')` que no dice nada del
+        comportamiento que se quiere comprobar (A-057). Lo que importa no es la
+        ruta, es que el registro no la cambie.
+        """
+        from app import entorno
+        raiz_antes = projects.PROJECTS["aegis"].root
+        verif_antes = dict(projects.PROJECTS["aegis"].verify)
+
         self.escribir("aegis", {"alias": "aegis", "area": "apps", "kind": "encargo"})
         reload()
-        self.assertEqual(projects.PROJECTS["aegis"].root,
-                         Path("/RUTA/AL/WORKSPACE/aegis"))
+
+        self.assertEqual(projects.PROJECTS["aegis"].root, raiz_antes)
+        self.assertEqual(projects.PROJECTS["aegis"].root, entorno.RAIZ,
+                         "la raíz del repo se deriva del propio repo")
+        self.assertEqual(projects.PROJECTS["aegis"].verify, verif_antes,
+                         "el registro no puede quitarle el verificador a un "
+                         "proyecto declarado en Python: sin verificador no hay "
+                         "autonomía, y eso se decide en el código")
 
     def test_reload_olvida_lo_que_se_borro(self) -> None:
         self.escribir("temporal", {"alias": "temporal", "area": "apps", "kind": "encargo"})
@@ -310,7 +327,19 @@ class TestEstadoParaElMovil(unittest.TestCase):
                 self.assertIsInstance(salida.faltan, list)
 
     def test_un_proyecto_sin_tipo_no_inventa_tipo(self) -> None:
-        from app.fichas import secciones_que_faltan
-        tipo, legible, _ = secciones_que_faltan("compra-unida")
+        """Sin ficha, tampoco hay tipo: y el motivo sale escrito.
+
+        El tipo viene del frontmatter de la ficha. Si no hay ficha, inventar un
+        tipo sería fabricar un dato —y el móvil lo muestra como si fuera verdad.
+        Se usa `aegis` con la ruta de fichas vacía, así que el resultado no
+        depende de qué proyectos tenga registrados quien ejecuta la suite.
+        """
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from app import fichas
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(fichas, "FICHAS_DIR", Path(d)):
+                tipo, legible, _ = fichas.secciones_que_faltan("aegis")
         self.assertEqual(tipo, "")
         self.assertEqual(legible, "no tiene ficha")
