@@ -80,6 +80,12 @@ LIBRES = frozenset({
     "registry_list",
     "ficha_read",
     "repo_verify",
+    # Preguntar por la memoria no cambia nada del disco: es lo mismo que
+    # `ficha_read`. Y hasta el 2026-10-14 la memoria no se podía preguntar
+    # **en absoluto** —solo entraba inyectada en el prompt, y solo con
+    # `project`—, así que leerla era, de hecho, lo más parecido que había a una
+    # operación de solo lectura que Aegis pudiera hacer por su cuenta.
+    "memoria",
     "db_query",
     "adb_devices",
     "deploy_estado",

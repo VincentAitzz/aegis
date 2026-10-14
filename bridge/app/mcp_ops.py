@@ -460,6 +460,76 @@ def quien_eres_actualiza(seccion: str, texto: str) -> str:
 
 
 @mcp.tool()
+def memoria(consulta: str = "", limite: int = 3) -> str:
+    """Lo que Aegis recuerda de antes, sobre un tema. **Se pide, no se empuja.**
+
+    ## Por qué existe esta tool y no un bloque en el prompt
+    Porque hasta ahora la memoria solo entraba **inyectada**: hasta 1 800 chars,
+    tres episodios de 280, y **solo si el encargo trae `project`**. Tres
+    problemas, y el tercero es el que la hace necesaria:
+
+    1. **No se podía preguntar.** El modelo recibía lo que el bridge eligiera
+       antes de empezar el run, y no había forma de pedir otra cosa.
+    2. **Sin proyecto no había memoria.** `if project` en `main.py`. En modo
+       escucha, donde casi siempre se habla de lo que acabas de hacer, no hay
+       proyecto: el sistema olvidaba la conversación anterior.
+    3. **Cuesta prompt aunque no sirva.** Medido: un prompt más grande no cambió
+       el comportamiento que describía (A-014 lo repitió 3 de 3 con y sin), pero
+       sí la latencia.
+
+    ## Qué devuelve
+    Solo episodios **resueltos**, nunca fallos: un fallo presentado como solución
+    es instrucción contraria y el 7B lo copia. Si no hay nada que decir, lo dice
+    —que es una respuesta, y además la única honesta.
+
+    ## Por qué lleva `consulta` obligatoria
+    Sin ella la tool sería `memoria()`, que devuelve «lo que hay», y eso es un
+    volcado, no una respuesta. Con ella, la búsqueda es semántica sobre lo que
+    vas a hacer: «lo que salió en el verificador la última vez».
+    """
+    import asyncio as _asyncio
+    from .memory import get_memory as _mem
+
+    if not (consulta or "").strip():
+        return ("Dime sobre qué quieres que recuerde, en palabras tuyas. "
+                "Por ejemplo: «lo que salió en el verificador la última vez» o "
+                "«qué hice con el proyecto X».")
+
+    mem = _mem()
+    if mem is None:
+        return "La memoria no está inicializada en este proceso."
+
+    limite = max(1, min(int(limite or 3), 8))
+
+    async def _buscar() -> dict:
+        return await mem.recall(consulta, k=limite * 3)
+
+    try:
+        crudos = _asyncio.run(_buscar())
+    except Exception as exc:  # noqa: BLE001 — la memoria jamás tumba un run
+        return f"No pude consultar la memoria: {type(exc).__name__}: {exc}"
+
+    filas = crudos.get("episodes") or []
+    # El filtro vive **aquí**, no solo en el renderizador. Dos sitios filtrando
+    # es la forma de que uno cambie y el otro no se entere: `render_context`
+    # está escrito para no confiar en nadie, y esta tool también.
+    limpios = [f for f in filas
+               if (f.get("metadata") or {}).get("outcome") == "success"]
+    if not limpios:
+        return (f"Sobre «{consulta}» no tengo nada resuelto guardado. Busqué "
+                f"{len(filas)} episodio(s) y ninguno pasó el filtro de «resuelto "
+                f"de verdad». No te invento un recuerdo: si crees que debería "
+                f"haberlo, se escribe.")
+
+    # Se reutiliza el renderizador del prompt **con un tope propio y más
+    # alto**: aquí el texto no se paga en cada paso de cada run, se pide una
+    # vez, así que puede trayerse más sin que cueste. Y es el mismo filtro, que
+    # es justo lo que no queremos reimplementar.
+    return (mem.render_context({"episodes": limpios[:limite]}, max_chars=4000)
+            or "No hay nada que contar.")
+
+
+@mcp.tool()
 def registry_list() -> str:
     """Qué proyectos puede operar Aegis y qué ficha tiene cada uno.
 
