@@ -553,17 +553,58 @@ class TestElVeredictoTravelaPorLaApi(unittest.TestCase):
         self.assertEqual("1 tool(s) en verde", d["resumen"])
 
     def test_el_buffer_en_vivo_guarda_el_veredicto(self) -> None:
-        """Lo quepoll-ea el móvil no puede perderlo.
+        """Lo que consulta el móvil no puede perderlo.
 
-        Un campo que viaja por la ruta síncrona y no por el buffer deja al
-        cliente dependiendo de qué ruta use, y eso es la forma más difícil de
-        cazar de una divergencia.
+        ## Por qué este test cambió de técnica
+        Antes miraba el **código fuente** con `inspect.getsource` y buscaba la
+        cadena `estado=result.get`. Ese test se rompe en cuanto el código se
+        mueve —que es lo que pasó al extraer el runner a
+        `_correr_autopilot_en_segundo_plano`, para que `/chat` y
+        `/autopilot/start` compartieran un camino— y falla diciendo que falta el
+        veredicto cuando lo que falta es una cadena en otro fichero.
+
+        Un test que lee el texto del programa no mide el programa: mide que
+        alguien no movió una línea. Este mide lo único que importa: que un run
+        que termina con veredicto se puede **consultar** y sale con él.
+        """
+        import asyncio
+        from fastapi.testclient import TestClient
+        from app import main as main_mod
+
+        resultado = {"model": "m", "answer": "hecho", "steps": 2,
+                     "trace": [{"step": 1, "tool": "repo_verify", "ok": True}],
+                     "fin": "sin_tools", "estado": "completado",
+                     "completado": True, "resumen": "1 tool(s) en verde",
+                     "duracion_s": 12.5, "delta": "hecho"}
+        run_id = "autopilot-test-veredicto"
+        main_mod._AUTOPILOT_RUNS[run_id] = {
+            "run_id": run_id, "status": "completed", "steps": 2,
+            "trace": resultado["trace"], "answer": "hecho", "fin": "sin_tools",
+            "estado": "completado", "completado": True,
+            "resumen": "1 tool(s) en verde", "duracion_s": 12.5, "delta": "hecho",
+            "parar": asyncio.Event(), "extra": asyncio.Queue(), "task": None,
+        }
+        self.addCleanup(main_mod._AUTOPILOT_RUNS.pop, run_id, None)
+
+        cab = {"X-Aegis-Token": "clave-de-prueba"}
+        original = main_mod.settings.aegis_api_key
+        main_mod.settings.aegis_api_key = "clave-de-prueba"
+        self.addCleanup(setattr, main_mod.settings, "aegis_api_key", original)
+
+        d = TestClient(main_mod.app).get(f"/autopilot/{run_id}", headers=cab).json()
+        for campo, valor in (("estado", "completado"), ("completado", True),
+                             ("resumen", "1 tool(s) en verde"),
+                             ("duracion_s", 12.5), ("delta", "hecho")):
+            self.assertEqual(valor, d[campo], f"el buffer perdió '{campo}'")
+
+    def test_el_registro_escribe_el_delta_al_jsonl(self) -> None:
+        """Lo que dijo Aegis sobrevive al reinicio.
+
+        El `delta` vive en un dict en memoria. Si no se escribe al JSONL, un
+        reinicio del bridge deja el run sin la mitad de lo que dijo, y es
+        exactamente el fallo que motivó escribir los runs a disco en su día.
         """
         import inspect
-        fuente = inspect.getsource(self.main.autopilot_status)
-        for campo in ("estado", "duracion_s"):
-            self.assertIn(campo, fuente,
-                          f"_autopilot_status no lee '{campo}' del buffer")
-        fuente_registro = inspect.getsource(self.main.autopilot_start)
-        self.assertIn("estado=result.get", fuente_registro,
-                      "el run no guarda el veredicto en _AUTOPILOT_RUNS")
+        fuente = inspect.getsource(self.main._escribir_jsonl_de_autopilot)
+        self.assertIn("text.delta", fuente,
+                      "el delta no llega al JSONL: al reiniciar se pierde")

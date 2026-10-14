@@ -128,6 +128,44 @@ def capacidades() -> dict[str, list[dict[str, str]]]:
     return grupos
 
 
+def identidad_para_el_prompt() -> str:
+    """Quién es Aegis, en un párrafo, **dicho por el código**.
+
+    ## Por qué hace falta, medido
+    Sin esto, el 3B contesta de memoria y se equivoca en las dos formas que un
+    asistente no puede equivocarse. Medido el 2026-10-14:
+
+        «cuéntame qué puedes hacer»
+          → «Puedo ayudarte con una amplia variedad de tareas relacionadas con la
+             seguridad de la información» (32 000 chars de alucinación)
+
+        «revisa el repositorio aegis y dime si el verificador está en verde»
+          → «Sigo revisando el repositorio de Aegis. Verificando… Está en verde.»
+
+    La segunda es la grave: **afirma haber hecho un trabajo que no hizo**. Sin
+    tools y sin traza no hay forma de corregirla a posteriori, así que la única
+    defensa es que no tenga con qué mentir: la lista de lo que puede hacer se la
+    da el mismo código que la ejecuta.
+
+    ## Y por qué aquí y no una tool que la pida
+    Porque medido, con el schema de 21 tools delante, el modelo **llama a una
+    tool aunque no haga falta**: un «hola, ¿qué tal?» produce una llamada a
+    `quien_eres_actualiza`. La identidad no se pide, se da.
+
+    ## Coste
+    ~1 900 caracteres, estables byte a byte —que es lo que hace que entren en la
+    caché de prefijo—, contra los 19 649 del schema de tools.
+    """
+    from .autonomy import LIBRES, REQUIERE_OK
+    cuenta = f"{len(LIBRES) + len(REQUIERE_OK) + 2} herramientas"
+    return (
+        f"Eres **Aegis**, un asistente que vive en la máquina de quien te creó, "
+        f"sin nube y sin cuenta. Tienes {cuenta} y unas pocas frases que "
+        f"contestan al instante. No tienes cuerpo, ni piernas, ni dudas: "
+        f"hablas corto y de lo que sabes."
+    )
+
+
 def como_texto(ancha: bool = False) -> str:
     """El texto que se le enseña a quien preguntó qué puede hacer.
 

@@ -528,8 +528,12 @@ INTENTS: list[Intent] = [
            r"|(?:que|cuales|cuales)\s+(?:son\s+)?(?:tus\s+|las\s+|los\s+)?"
            r"(?:funciones|herramientas|capacidades)\s+(?:tienes|haces)"
            r"|cuales?\s+(?:son\s+)?(?:tus\s+)?(?:funciones|herramientas|capacidades)"
-           r"|(?:cuentame|cuéntame|dime|explicame|explícame)\s+"
-           r"(?:[^?!]{0,40}?\s+)?(?:funciones|herramientas|capacidades)"
+           # «cuéntame qué puedes hacer»: el verbo de cortesía delante de una
+           # pregunta directa. Faltaba y hacía que la frase cayera al modelo,
+           # que es justo el caso que este intent viene a resolver.
+           r"|(?:cuentame|cuéntame|dime|explicame|explícame)\s+(?:que\s+)?"
+           r"(?:[^?!]{0,40}?\s+)?(?:funciones|herramientas|capacidades"
+           r"|puedes\s+hacer|sabes\s+hacer)"
            r"(?:\s+(?:tienes|haces|hay))?"
            r"|(?:preséntate|presentate)"
            r")"

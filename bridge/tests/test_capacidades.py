@@ -129,6 +129,63 @@ class TestNingunaToolQuedaSinDescribir(unittest.TestCase):
             self.assertNotEqual(d.lower(), t["nombre"].lower())
 
 
+class TestLaIdentidadVieneDelCodigo(unittest.TestCase):
+    """Lo que Aegis dice de sí mismo no sale de su memoria.
+
+    ## Por qué esto tiene su propio test
+    Sin identidad en el prompt, el 3B contesta de memoria, y se equivoca en las
+    dos formas que un asistente no puede equivocarse. Medido el 2026-10-14 por
+    HTTP contra `/chat`:
+
+        «cuéntame qué puedes hacer»
+          → «tareas relacionadas con la seguridad de la información»
+
+        «revisa el repositorio aegis y dime si el verificador está en verde»
+          → «Verificando… Está en verde.»   ← se lo acaba de inventar
+
+    La segunda es A-016 con otro traje: afirmar un trabajo sin haberlo hecho. En el
+    autopilot lo delata la traza; en una charla **no hay traza que lo delate**, así
+    que la única defensa es que el modelo no tenga con qué mentir.
+    """
+
+    def test_la_identidad_dice_cuantas_herramientas_hay(self) -> None:
+        from app.autonomy import CON_PERMISO, LIBRES, REQUIERE_OK
+        real = len(LIBRES) + len(CON_PERMISO) + len(REQUIERE_OK)
+        self.assertIn(f"{real} herramientas",
+                      capacidades.identidad_para_el_prompt(),
+                      "la identidad dice un número de herramientas que no es el real")
+
+    def test_la_identidad_no_crece_con_cada_tool(self) -> None:
+        """Debe ser un párrafo, no un inventario.
+
+        Va en el prompt de **cada** turno de conversación. Si crece con el
+        schema, vuelve a costarnos lo que el schema costaba — que es lo que
+        motivó quitar las lecciones.
+        """
+        texto = capacidades.identidad_para_el_prompt()
+        self.assertLess(len(texto), 600,
+                        f"la identidad pesa {len(texto)} chars: se paga en cada turno")
+        self.assertNotIn("`", texto, "no debe listar tools una a una")
+
+    def test_el_prompt_de_chat_dice_que_no_tiene_herramientas(self) -> None:
+        """La frase que evita que afirme haber hecho un trabajo.
+
+        Se comprueba sobre el **código** que compone el prompt, no sobre el
+        resultado de una llamada al modelo: un test que depende del 3B es un
+        test que falla cuando el modelo cambia de humor, y no cuando el código
+        deja de decirlo.
+        """
+        import inspect
+        from app import main as main_mod
+        fuente = inspect.getsource(main_mod.chat)
+        self.assertIn("no has hecho nada", fuente,
+                      "sin esta advertencia el modelo afirma trabajos que no hizo")
+        self.assertIn("identidad_para_el_prompt", fuente,
+                      "el prompt de chat debe llevar la identidad del código")
+        self.assertIn("como_texto()", fuente,
+                      "el prompt de chat debe llevar la lista real de capacidades")
+
+
 class TestLaPreguntaLlegaPorElCaminoRapido(unittest.TestCase):
     """La frase **real** que alguien le dice a un asistente tiene que entrar.
 
@@ -144,6 +201,11 @@ class TestLaPreguntaLlegaPorElCaminoRapido(unittest.TestCase):
         for frase in (
             "qué puedes hacer?",
             "qué puedes hacer",
+            # La forma con verbo de cortesía delante. Se añadió después de medir
+            # que «cuéntame qué puedes hacer» **no** cogía y por eso esa frase
+            # —la más natural de todas— gastaba un turno entero de modelo.
+            "cuéntame qué puedes hacer",
+            "dime qué puedes hacer",
             "para qué sirves",
             "qué herramientas tienes",
             "cuáles son tus funciones",

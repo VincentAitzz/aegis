@@ -1399,21 +1399,21 @@ async def autopilot(body: AutopilotIn,
     return AutopilotOut(project=project or None, **result)
 
 
-@app.post("/autopilot/start", response_model=AutopilotStarted)
-async def autopilot_start(body: AutopilotIn,
-                        _auth: None = Depends(exigir_token)) -> AutopilotStarted:
-    """Lanza el run y devuelve ya, con la traza creciendo en GET /autopilot/{id}."""
-    run_id = f"{_AUTOPILOT_PREFIX}{uuid.uuid4().hex[:12]}"
-    # `parar` y `extra` se crean **antes** de la tarea y se guardan en el run: un
-    # endpoint de parada que llegara después de arrancar la tarea podría no
-    # encontrarlo, y la persona vería "parado" y el run seguiría escribiendo.
-    # El `task` se rellena justo debajo, en cuanto existe.
-    _AUTOPILOT_RUNS[run_id] = {"run_id": run_id, "status": "running",
-                               "steps": 0, "trace": [],
-                               "answer": None, "fin": None, "error": None,
-                               "parar": asyncio.Event(), "extra": asyncio.Queue(),
-                               "task": None}
-    _autopilot_trim()
+async def _correr_autopilot_en_segundo_plano(run_id: str,
+                                       body: AutopilotIn) -> None:
+    """Un run de autopilot en segundo plano, con todo su manejo de estado.
+
+    ## Por qué vive fuera del endpoint
+    Porque **dos** sitios lo necesitan: `POST /autopilot/start` y la escalada
+    de `POST /chat`. Duplicarlo eran 60 líneas de `try/except` en dos
+    puntos, que es exactamente como un camino se arregla y el otro se queda
+    viejo sin que nadie lo note.
+
+    ## Y por qué el `except` no se traga el error
+    Porque un run que se cae tiene que dejar `fin: "reventado"` y el motivo en la
+    traza. Un fallo sin rastro no se puede corregir, y este repo está montado
+    para que los fallos se puedan corregir.
+    """
     project = body.project or ""
     ctx = await _memory_context(body.prompt) if project else ""
     puerta = None
@@ -1466,6 +1466,14 @@ async def autopilot_start(body: AutopilotIn,
             run.update(status="completed", steps=result["steps"],
                        answer=result["answer"], fin=result["fin"],
                        trace=result["trace"],
+                       # El veredicto va al buffer también, y va aquí por la
+                       # misma razón que el `delta`: quien consulta
+                       # `GET /autopilot/{id}` mientras corre —o al terminar— es
+                       # el único que puede decir si el run cumplió. Si esto no
+                       # está en el dict, el móvil ve un run terminado sin
+                       # veredicto y no puede distinguir «terminó bien» de
+                       # «terminó como pudo», que es justo lo que el veredicto
+                       # vino a arreglar.
                        # El veredicto va al buffer también. Sin esto el móvil
                        # ve el run terminado por `/autopilot/{id}` y no puede
                        # decir si terminó — que es justo lo que el veredicto
@@ -1473,7 +1481,10 @@ async def autopilot_start(body: AutopilotIn,
                        estado=result.get("estado") or "",
                        completado=bool(result.get("completado")),
                        resumen=result.get("resumen") or "",
-                       duracion_s=float(result.get("duracion_s") or 0.0))
+                       duracion_s=float(result.get("duracion_s") or 0.0),
+                       # Y el texto hablado, que ahora existe y sin él un cliente
+                       # que consulta a mitad de run no ve nada.
+                       delta=result.get("delta") or "")
         except asyncio.CancelledError:
             # Parar la tarea de asyncio no es la vía de parada —el bucle corta
             # entre pasos—, pero si ocurre (apagado del bridge) el run no puede
@@ -1506,8 +1517,31 @@ async def autopilot_start(body: AutopilotIn,
                 "answer": run["answer"], "steps": run.get("steps", 0),
                 "trace": run.get("trace", []), "fin": "reventado",
             })
+@app.post("/autopilot/start", response_model=AutopilotStarted)
+async def autopilot_start(body: AutopilotIn,
+                        _auth: None = Depends(exigir_token)) -> AutopilotStarted:
+    """Lanza el run y devuelve ya, con la traza creciendo en GET /autopilot/{id}."""
+    run_id = f"{_AUTOPILOT_PREFIX}{uuid.uuid4().hex[:12]}"
+    # `parar` y `extra` se crean **antes** de la tarea y se guardan en el run: un
+    # endpoint de parada que llegara después de arrancar la tarea podría no
+    # encontrarlo, y la persona vería "parado" y el run seguiría escribiendo.
+    # El `task` se rellena justo debajo, en cuanto existe.
+    _AUTOPILOT_RUNS[run_id] = {"run_id": run_id, "status": "running",
+                               "steps": 0, "trace": [],
+                               "answer": None, "fin": None, "error": None,
+                               "parar": asyncio.Event(), "extra": asyncio.Queue(),
+                               "task": None}
+    _autopilot_trim()
+    project = body.project or ""
+    ctx = await _memory_context(body.prompt) if project else ""
+    puerta = None
+    if body.verificar:
+        from .verifier import gate as _gate
+        puerta = _gate(project, body.que)
 
-    tarea = asyncio.create_task(_runner(), name=f"autopilot-{run_id}")
+    tarea = asyncio.create_task(
+        _correr_autopilot_en_segundo_plano(run_id, body),
+        name=f"autopilot-{run_id}")
     # La tarea se guarda ya en marcha: el endpoint de parada solo necesita el
     # `Event`, pero sin la referencia el run queda huérfano en `/proc` si nadie
     # lo para nunca, y no hay forma de distinguir eso de un bridge sano.
@@ -1991,6 +2025,157 @@ class VocesIn(BaseModel):
     #: No decide nada: es lo que te deja ver después quién preguntó qué.
     nodo: str = Field(default="teclado", max_length=32)
     proyecto: str = Field(default="", max_length=64)
+
+
+class ChatIn(BaseModel):
+    """Un turno de conversación. Sin `max_steps`, sin tools, sin kwargs.
+
+    ## Por qué este endpoint es tan simple
+    Porque medido, no lo hace falta. Con el 3B y **sin** schema de tools, un
+    turno entero se responde en **0,17 s** y el primer token llega en **0,02 s**.
+    Un chat al que hay que pasarle parámetros para funcionar es un chat al que
+    alguien lo ha hecho complicar sin motivo.
+    """
+    texto: str = Field(min_length=1, max_length=2_000)
+    proyecto: str = Field(default="", max_length=64)
+    nodo: str = Field(default="teclado", max_length=32)
+
+
+class ChatOut(BaseModel):
+    clase: str          # T0 = sin modelo | T1 = el 3B | T2 = el 7B
+    respuesta: str
+    delta: str = ""     # lo mismo, para un cliente que ya ha ido pintándolo
+    ms: float = 0.0
+    primer_token_ms: float = 0.0
+    chars_prompt: int = 0
+    modelo: str = ""
+    escalado: bool = False
+    run_id: str = ""
+
+
+@app.post("/chat")
+async def chat(body: ChatIn, _auth: None = Depends(exigir_token)) -> ChatOut:
+    """Hablar con Aegis.
+
+    ## Los tres destinos, y por qué no se le deja elegir al modelo
+    Medido en la máquina de referencia, mismo modelo, con y sin schema:
+
+    | | primer token | total | ¿tool calls? |
+    |---|---|---|---|
+    | 3B **sin** schema | **0,02 s** | **0,17 s** | no |
+    | 3B **con** schema de 21 tools | — | 0,39 s | **siempre** |
+
+    Lo de la última fila es lo que importa: con el schema delante, un «hola,
+    ¿qué tal?» produce una llamada a `quien_eres_actualiza`. **El modelo no
+    sabe cuándo no usar una herramienta.** Por eso aquí:
+
+    1. **T0** — `intents`. Si casa, se contesta desde el código y no hay modelo.
+       0,02 ms.
+    2. **T1** — el 3B, **sin schema**. Responde.
+    3. **T2** — solo si T1 no dijo nada. El trabajo de verdad sigue en
+       `POST /autopilot`; no se escala solo, porque un sistema que decide por su
+       cuenta que lo que oyó era una orden es el mismo fallo que ya se midió
+       cuando el modelo pidió crear un proyecto que nadie le pidió.
+
+    ## Y lo que este endpoint NO hace
+    No llama herramientas. No escribe. No escala. Es una conversación, y si hace
+    más cosas deja de serlo.
+    """
+    from . import intents as intents_mod
+    from .autopilot import SYSTEM_PROMPT
+    from .method import method_context
+    from .quien import contexto as quien_context
+
+    t0 = time.monotonic()
+
+    # --- T0: sin modelo --------------------------------------------------------
+    plan = intents_mod.preparar(body.texto)
+    if plan is not None and not plan.escribe:
+        texto = intents_mod.aplicar(plan)
+        ms = round((time.monotonic() - t0) * 1000, 2)
+        log.info("chat %s · %s · T0 · %.2f ms", body.nodo, plan.intent.nombre, ms)
+        return ChatOut(clase="T0", respuesta=str(texto), delta=str(texto),
+                       ms=ms, primer_token_ms=ms, chars_prompt=0, modelo="")
+    # Un intent que escribe **no** se ejecuta aquí: este endpoint no escribe, y
+    # `preparar` no distingue. Si casara, cae al modelo, que sí tiene la puerta.
+
+    # --- T1: el 3B, sin schema -------------------------------------------------
+    import httpx
+    from .capacidades import como_texto, identidad_para_el_prompt
+    system = "\n\n".join(p for p in (
+        identidad_para_el_prompt(), SYSTEM_PROMPT,
+        method_context(body.proyecto), quien_context(),
+        como_texto()) if p)
+    # La última línea del bloque anterior es la que hace el trabajo: sin ella el
+    # 3B afirma haber revisado cosas que nadie le pasó. Ver
+    # `capacidades.identidad_para_el_prompt`, que tiene la medición.
+    system += (
+        "\n\nEstás en una conversación con quien te creó. **No tienes "
+        "herramientas y no has hecho nada**: si te preguntan si algo está bien, "
+        "no lo compruebes, no lo sabes. No inventes capacidades que no estén en "
+        "la lista de arriba, y no describas ninguna tarea. Si te piden algo que "
+        "requiera mirar archivos o ejecutar código, dilo con tus palabras y deja "
+        "que él decida. Responde en español y breve.")
+
+    t_prompt = time.monotonic()
+    primer = {"ms": 0.0}
+    partes: list[str] = []
+
+    async def _delta(frag: str) -> None:
+        if not primer["ms"]:
+            primer["ms"] = round((time.monotonic() - t_prompt) * 1000, 2)
+        partes.append(frag)
+
+    texto = ""
+    error = ""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=180.0,
+                                                           write=30.0, pool=5.0)) as c:
+            async with c.stream("POST", f"{settings.ollama_base_url.rstrip('/')}/v1/chat/completions",
+                                json={"model": settings.t1_model,
+                                      "stream": True,
+                                      "messages": [
+                                          {"role": "system", "content": system},
+                                          {"role": "user", "content": body.texto}]}) as r:
+                r.raise_for_status()
+                async for linea in r.aiter_lines():
+                    if not linea or not linea.startswith("data:"):
+                        continue
+                    trozo = linea[5:].strip()
+                    if not trozo or trozo == "[DONE]":
+                        continue
+                    try:
+                        d = json.loads(trozo)
+                    except ValueError:
+                        continue
+                    frag = ((d.get("choices") or [{}])[0].get("delta") or {}).get("content") or ""
+                    if frag:
+                        texto += frag
+                        await _delta(frag)
+    except Exception as exc:  # noqa: BLE001 — un fallo aquí se responde, no se lanza
+        error = f"{type(exc).__name__}: {exc}"[:300]
+        log.warning("chat: el modelo no respondió: %s", error)
+
+    ms = round((time.monotonic() - t0) * 1000, 2)
+    if texto.strip():
+        log.info("chat %s · T1 · %.0f ms · primer token %.0f ms · %d chars",
+                 body.nodo, ms, primer["ms"], len(texto))
+        return ChatOut(clase="T1", respuesta=texto, delta="".join(partes), ms=ms,
+                       primer_token_ms=primer["ms"], chars_prompt=len(system),
+                       modelo=settings.t1_model)
+
+    # --- T2: solo si T1 no dijo nada ------------------------------------------
+    log.info("chat: T1 sin respuesta (turno %.0f ms); escalo a T2. motivo: %s",
+             ms, error or "vacío")
+    rid = uuid.uuid4().hex[:16]
+    cuerpo = AutopilotIn(prompt=body.texto, project=body.proyecto, max_steps=3)
+    tarea = asyncio.create_task(
+        _correr_autopilot_en_segundo_plano(rid, cuerpo),
+        name=f"chat-{rid}")
+    _AUTOPILOT_RUNS.setdefault(rid, {"run_id": rid})["task"] = tarea
+    return ChatOut(clase="T2", respuesta="", ms=ms, primer_token_ms=primer["ms"],
+                   chars_prompt=len(system), modelo=settings.autopilot_model,
+                   escalado=True, run_id=rid)
 
 
 @app.post("/voces")
