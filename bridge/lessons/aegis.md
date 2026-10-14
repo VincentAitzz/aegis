@@ -3024,3 +3024,107 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
   'package:dio/dio.dart'`, un `print` con una semilla y un `HttpClient`, y cada
   uno tiene que **cazar el test que toca**. Un guardarraíl solo ejecutado sobre
   el caso bueno no está probado (A-115).
+
+## A-122 — Un fichero de `--replace-text` no admite comentarios, y no avisa
+
+> Aplica cuando: Uses `git filter-repo`, o cualquier script que lea un fichero
+> de reglas por línea.
+
+- **Qué pasó** (2026-10-14): reescribiendo el historial para corregir el correo
+  del autor, `git-filter-repo` convirtió **cada almohadilla de comentario del
+  repositorio entero** —código, Markdown, YAML, scripts— en `***REMOVED***`.
+  Cinco ficheros. Incluidos los que nadie había tocado en meses.
+
+- **Por qué no se dice**: termina con `New history written` y código de salida
+  `0`. No hay error, no hay aviso, y el exit code es el de un filtro que hizo
+  lo que se le pidió. Como reescribe el historial, el daño solo se ve si después
+  buscas `***REMOVED***` **a mano**.
+
+- **La causa**: una línea del fichero de reglas que empieza por `#` se ejecuta
+  como la regla «busca literalmente `#`, sustituye por `***REMOVED***`». Basta con
+  que empiece por `# ` — un separador decorativo como `# ---` ya la dispara.
+  Lo que hace el parser es tomar el **primer token** de la línea como el patrón.
+
+- **El mismo fallo, dos veces**: la primera vez se sospechó de las líneas que
+  eran exactamente `#` y se quitaron. El fallo siguió, porque bastaba `# `.
+  Se tardó dos reescrituras completas del historial en aislarlo, y el aislarlo
+  necesitó un bisect con repos de prueba —**uno limpio por iteración**, porque
+  `git-filter-repo` conserva estado en `.git/filter-repo/` entre ejecuciones y
+  el primer bisect dio un culpable falso.
+
+- **Cómo se hace**: el fichero de reglas son **solo reglas**. La explicación va
+  en un `.md` de al lado. Y antes de confiar en el resultado, los dos que se
+  pueden comprobar en un segundo:
+
+  ```
+  git grep -l '\*\*\*REMOVED\*\*\*' HEAD    # 0
+  git log -p --all | grep -c '<tu-ruta>'   # 0
+  ```
+
+  Un filtro que «ha funcionado» sin comprobar nada es peor que no filtrar: da
+  la misma sensación.
+
+## A-123 — El recurso que se agota no suele ser el evidente
+
+> Aplica cuando: Ajustes algo para «no carga la máquina» sin mirar cuál es.
+
+- **Qué pasó** (2026-10-14): se diagnosticó «la máquina no aguanta dos modelos»
+  mirando la **VRAM** —6 GB, uno de 7B— cuando el recurso que faltaba era la
+  **RAM**: 15 GB con dos `llama-server` de 6 GB, y sin swap en disco.
+
+  Y en mitad del arreglo se cometió el error opuesto: se afirmó «cero swap» sin
+  haberlo comprobado a mano, cuando `/dev/zram0` llevaba **15,3 GB de zstd**
+  compressing a ~4:1 desde el arranque.
+
+- **La lección**: **el recurso que se agota casi nunca es el que se está
+  mirando**, porque el que se mira es el que tiene un número visible. La VRAM
+  tiene un número en `nvidia-smi`; la RAM y el swap tienen que ir a buscarlos.
+
+  ```
+  free -h ; swapon --show ; ps -eo rss,comm --sort=-rss | head
+  ```
+
+  Y una corrección de un diagnóstico vale más que el diagnóstico: escribir
+  «no hay swap» cuando hay 15 GB de zram hace que la siguiente persona (y la
+  siguiente uno) tome la decisión sobre un número falso.
+
+- **Lo que sí estaba bien** (y por eso no se deshace nada): con dos modelos
+  resident el consumo real era de 6,71 GB de 15. El diagnóstico de la
+  **inestabilidad** era correcto; el de la **causa** apuntaba al sitio
+  equivocado. La corrección —un solo modelo— salió igual, pero por un motivo que
+  se podía defender.
+
+## A-124 — Una comprobación que no suena nunca parece que pasa
+
+> Aplica cuando: Escribas un detector de algo que «no debería pasar».
+
+- **Qué pasó** (2026-10-14): un regex de rutas de fichero llevaba el cierre
+  `(?![\w/.-])`. El `.` de la frase final está en ese conjunto, así que
+  **ninguna ruta al final de una frase se encontraba jamás**:
+
+  ```
+  "He revisado app/puerta_http.py."   →   {}      (vacío)
+  ```
+
+  El detector era correcto, estaba bien escrito, y tenía tests. Y no detectaba
+  nada, porque nunca se activaba.
+
+- **Por qué importa más que un falso positivo**: un detector con falsos
+  positivos se ve —se queja de más, y se corrige bajando la sensibilidad. Un
+  detector que **nunca se activa no se ve nunca**, y su informe de «0
+  incidencias» se lee como «todo bien». Peor: un test que solo comprueba que no
+  salta sobre el caso bueno pasa en verde.
+
+- **Cómo se cazó**: un test escrito para otra cosa —la respuesta usándose a sí
+  misma como prueba— metió la frase exacta y devolvió vacío. **Los tests que
+  miran el resultado de un detector necesitan una frase que debería detectarse,
+  no solo una que no debería.** Un detector sin un positivo conocido no está
+  probado: está escrito.
+
+- **Y el hermano malo**, en el mismo módulo: la regla de verificador daba **3
+  falsos positivos y 0 detecciones** sobre 220 runs. Los tres eran texto
+  citado (una lección que dice «en verde NO es una entrega completa», un índice
+  de lecciones). Se arregló exigiendo que la afirmación fuera **suelta y corta**,
+  y se comprobó que el recorte quitara los tres. Un detector que solo se acepta
+  cuando no da falsos positivos sobre datos de verdad es un detector; hasta
+  entonces es una conjetura.

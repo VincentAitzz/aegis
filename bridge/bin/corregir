@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Revisar y corregir las conversaciones, para que sirvan como dataset.
+
+La pregunta «¿puedo entrenar un modelo propio?» no la bloquea la GPU: el 7B en
+QLoRA cabe en 6 GB y son ~2 h por época. La bloquean los datos —~100 ejemplos
+utilizables frente a los 3.000 que haría falta—. Esto es lo que los rellena.
+
+Y lo que rellena no es un «esto está bien», sino el par **respuesta mala +
+motivo**: el motivo es lo que dice qué se esperaba, y es lo único que no se
+puede deducir de la respuesta.
+
+    bin/corregir resumen                  cómo va el dataset
+    bin/corregir listar                   lo que falta por revisar
+    bin/corregir ver <id>                 una conversación entera
+    bin/corregir mala <id> -m "inventa el número de proyectos"
+    bin/corregir buena <id>
+    bin/corregir corregir <id> "Lo que Aegis tenía que decir: hay 4 proyectos."
+
+Todo es local. El fichero es un JSONL y se puede leer con `jq` sin este script:
+`tail -f bridge/data/conversaciones.jsonl | jq .`
+
+## Por qué no hay nada más
+
+No borra, no edita respuestas, noTraining anything. Solo pone un veredicto y un
+motivo, porque son las dos únicas operaciones que cambian lo que un modelo
+aprende. Un editor de dataset con «editar la respuesta» es un editor de
+respuestas, y en cuanto existe uno, el dataset deja de ser un registro de lo que
+pasó y pasa a ser lo que quisiéramos que hubiera pasado. Que es exactamente el
+modo de fallo de A-016, en un fichero.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+RAIZ = Path(__file__).resolve().parent.parent
+
+
+def _reejecutar_en_el_venv() -> None:
+    """Se vuelve a lanzar con el intérprete del venv, si no lo es ya.
+
+    `app.conversaciones` acaba tirando de `app.config`, que necesita
+    `pydantic_settings`. Sin esto, `./bin/corregir resumen` con el
+    `python3` del sistema dice «ModuleNotFoundError» por una dependencia que
+    sí está instalada — y en el venv de al lado. `bin/medir-runs` no lo
+    necesita porque `veredicto` no lee la configuracion; este sí.
+
+    Se comprueba **por importación**, no por ruta: si el intérprete actual ya
+    puede importar lo que hace falta, no se relanza nada, y el script funciona
+    igual con el venv activatedo que sin él.
+    """
+    try:
+        import pydantic_settings  # noqa: F401
+        return
+    except ImportError:
+        pass
+    venv = RAIZ / ".venv" / "bin" / "python"
+    # **Sin `.resolve()`**: el `python` del venv es un symlink a
+    # `/usr/bin/python3`, así que resolver las dos rutas da el mismo
+    # resultado y la comparación siempre es falsa —que es exactamente lo que
+    # pasó: el reexec no se ejecutaba nunca y el script fallaba igual.
+    if venv.exists() and Path(sys.executable) != venv:
+        os.execv(str(venv), [str(venv), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_reejecutar_en_el_venv()
+sys.path.insert(0, str(RAIZ))
+
+from app.conversaciones import dataset  # noqa: E402
+
+
+def _ds(args):
+    return dataset(args.fichero) if args.fichero else dataset()
+
+
+def cmd_resumen(args) -> int:
+    r = _ds(args).resumen()
+    total = max(r["total"], 1)
+    print(f"conversaciones: {r['total']}")
+    if r["primera"]:
+        print(f"  desde {r['primera']}   hasta {r['ultima']}")
+    print(f"  revisadas: {r['buenas'] + r['malas']} "
+          f"({(r['buenas'] + r['malas']) * 100 // total} %)")
+    print(f"    buenas  {r['buenas']}")
+    print(f"    malas   {r['malas']}"
+          + (f"   (de ellas {r['malas_sin_motivo']} sin motivo: cuentan pero "
+             f"no enseñan)" if r["malas_sin_motivo"] else ""))
+    print(f"  con respuesta corregida: {r['corregidas']}")
+    print(f"  pendientes: {r['sin_etiquetar']}")
+    if r["clases"]:
+        print("  por clase: " + "  ".join(f"{k} {v}" for k, v in
+                                          r["clases"].items()))
+    lo_que_hace_falta = 3_000 - (r["buenas"] + r["malas"] - r["malas_sin_motivo"])
+    print(f"\npara entrenar hacen falta ~3.000 ejemplos con motivo. Faltan "
+          f"{max(lo_que_hace_falta, 0)}.")
+    return 0
+
+
+def cmd_listar(args) -> int:
+    pend = _ds(args).sin_etiquetar(args.limite)
+    if not pend:
+        print("no queda nada sin revisar.")
+        return 0
+    for c in pend:
+        marca = "!" if c.evidencia.get("sin_respaldo") else " "
+        print(f"\n{marca} {c.id}  [{c.clase or '?'}] {c.ms:.0f} ms")
+        print(f"  pregunta:    {c.turno[:160]}")
+        print(f"  respuesta:   {c.respuesta[:200]}")
+        for d in (c.evidencia.get("detalle") or []):
+            print(f"  SIN RESPALDO {d}")
+        print(f"  → bin/corregir {'mala' if marca.strip() else 'buena'} {c.id}"
+              f" -m \"...\"")
+    return 0
+
+
+def cmd_ver(args) -> int:
+    c = _ds(args).leer().get(args.id)
+    if c is None:
+        print(f"no encontré la conversación {args.id}", file=sys.stderr)
+        return 1
+    print(f"id          {c.id}")
+    print(f"clase       {c.clase}   modelo {c.modelo}   {c.ms:.0f} ms "
+          f"(1er token {c.primer_token_ms:.0f} ms)")
+    print(f"pregunta    {c.turno}")
+    print(f"respuesta   {c.respuesta}")
+    if c.run_id:
+        print(f"run         {c.run_id}   →  GET /autopilot/{c.run_id}")
+    if c.evidencia:
+        print(f"evidencia   {c.evidencia.get('afirmaciones')} afirmación(es), "
+              f"{c.evidencia.get('sin_respaldo')} sin respaldo")
+        for d in c.evidencia.get("detalle") or []:
+            print(f"            · {d}")
+    if c.tools:
+        print(f"tools       {', '.join(c.tools)}")
+    print(f"veredicto   {c.veredicto}")
+    if c.motivo:
+        print(f"motivo      {c.motivo}")
+    if c.corregido:
+        print(f"corregido   {c.corregido}")
+    return 0
+
+
+def _corregir(args, veredicto: str) -> int:
+    ds = _ds(args)
+    if not ds.corregir(args.id, veredicto, args.motivo or "", args.texto or ""):
+        print(f"no encontré la conversación {args.id}", file=sys.stderr)
+        return 1
+    print(f"{args.id} → {veredicto}")
+    if veredicto == "mala" and not (args.motivo or "").strip():
+        print("  sin motivo. Cuenta como mala, pero no se puede corregir con "
+              "un ejemplo: el motivo es lo que dice qué se esperaba.")
+    return 0
+
+
+def cmd_mala(args) -> int:
+    return _corregir(args, "mala")
+
+
+def cmd_buena(args) -> int:
+    return _corregir(args, "buena")
+
+
+def cmd_corregir(args) -> int:
+    if not args.texto:
+        print("falta el texto: qué debería haber dicho Aegis.", file=sys.stderr)
+        return 2
+    return _corregir(args, "mala")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--fichero", default="",
+                    help="otro JSONL (por defecto bridge/data/conversaciones.jsonl)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("resumen", help="cómo va el dataset").set_defaults(fn=cmd_resumen)
+
+    p_list = sub.add_parser("listar", help="lo pendiente de revisar")
+    p_list.add_argument("--limite", type=int, default=20)
+    p_list.set_defaults(fn=cmd_listar)
+
+    p_ver = sub.add_parser("ver", help="una conversación entera")
+    p_ver.add_argument("id")
+    p_ver.set_defaults(fn=cmd_ver)
+
+    p_mala = sub.add_parser("mala", help="la respuesta está mal")
+    p_mala.add_argument("id")
+    p_mala.add_argument("-m", "--motivo", default="",
+                        help="por qué — es la parte que enseña")
+    p_mala.set_defaults(fn=cmd_mala)
+
+    p_buena = sub.add_parser("buena", help="la respuesta está bien")
+    p_buena.add_argument("id")
+    p_buena.add_argument("-m", "--motivo", default="")
+    p_buena.set_defaults(fn=cmd_buena)
+
+    p_cor = sub.add_parser("corregir", help="mal, con la respuesta correcta")
+    p_cor.add_argument("id")
+    p_cor.add_argument("texto", help="qué debería haber dicho Aegis")
+    p_cor.add_argument("-m", "--motivo", default="")
+    p_cor.set_defaults(fn=cmd_corregir)
+
+    args = ap.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -33,6 +33,54 @@ un timer que llama a `infra/stack.sh estado` cada 30 s.
 | parar todo | `systemctl --user stop aegis-bridge aegis-gateway aegis-ollama` |
 | quitarlo | `bash infra/systemd/instalar.sh --desinstalar` |
 
+### Si Aegis va lento: mira la memoria, no la GPU
+
+Lo que se agota en esta máquina es la **RAM**, no la VRAM. La VRAM tiene un
+número a un `nvidia-smi` de distancia; la RAM hay que ir a buscarla, y ese es el
+error que ya se cometió una vez (A-123).
+
+```bash
+free -h                              # 'available' es la columna que importa
+swapon --show                        # en esta máquina: /dev/zram0, 15,3 GB, zstd
+ps -eo rss,comm --sort=-rss | head  # quién se está comiendo la RAM
+```
+
+**Hay swap, y no es de disco.** `/dev/zram0` son 15,3 GB comprimidos con zstd
+(~4:1), creados en cada arranque por `zram-generator`, que es un *systemd
+generator* y no un servicio: se mantiene solo. No hay swap en disco, y esa es la
+parte que queda, porque zram es RAM comprimida — holgura, no seguro. Si la RAM
+se agota, el OOM sigue pudiendo matar.
+
+Lo que evita llegar ahí no es crear un swapfile, es **no pedir más memoria de la
+que hace falta**:
+
+|Ajuste | Valor | Por qué |
+|---|---|---|
+| `OLLAMA_NUM_PARALLEL` | `1` | el bucle de tools es secuencial; en paralelo se duplica el KV |
+| `OLLAMA_MAX_LOADED_MODELS` | `2` | el 7B y el de embeddings. Con tope 1, cada búsqueda en memoria expulsaría al modelo del trabajo |
+| `OLLAMA_CONTEXT_LENGTH` | `32768` | el prompt real son 1.602 tokens; los 64.000 eran requisito de Hermes, que ya no es motor |
+| `OLLAMA_FLASH_ATTENTION` | `1` | menos KV y más rápido, sin contrapartida medible |
+
+Están en `infra/ollama/start-ollama.sh`, que es lo que invocan tanto
+`stack.sh` como la unit de systemd. Con el cambio puesto, el modelo resident
+ocupa **2,94 GB de RAM** en vez de 6,07.
+
+Si aun así se queda corto, la siguiente palanca es
+`OLLAMA_KV_CACHE_TYPE=q8_0`: reduce el KV a la mitad y **degrada la calidad en
+silencio**. Está en el script, comentado, a propósito.
+
+### Qué hacer si matan tu editor
+
+Es la señal de que algo crece sin techo. Mira quién:
+
+```bash
+ps -eo rss,comm --sort=-rss | head -5
+```
+
+Cosas que ya se han dado: tener los dos modelos resident a la vez (arreglado), y
+`VS Code` con muchas extensiones abierto mientras Aegis entrena o genera. Un
+swapfile de 8 GB en disco **no** arregla el segundo caso; solo mueve el problema.
+
 ### Por qué de usuario y no de sistema
 
 Porque **Aegis no es punto único de falla**. Si el negocio dependiera de un

@@ -232,6 +232,109 @@ A-001…A-078 de 121. Se pagaba el 100 % del coste para enseñar el 65 %.
 
 ---
 
+## 7. Un modelo, y qué se comprueba de lo que dice
+
+2026-10-14. Decisiones en `docs/decisiones/003`.
+
+### 7a. Un modelo en vez de dos
+
+| | dos modelos | uno |
+|---|---|---|
+| primer token en conversación | 261 ms | **269–381 ms** |
+| intercambio por petición de trabajo | 6–15 s | **0** |
+| RAM del modelo resident | 6,07 GB | **2,94 GB** |
+
+La penalización por turno de conversación salió a **~40 ms**, no a los 230 ms
+estimados: con un prompt de 1.602 tokens, el primer token lo marca el ancho de
+banda de los pesos, y los dos modelos caben igual de bien. El intercambio es lo
+que se elimina, y era de 25 a 150 veces más caro que lo que se paga.
+
+### 7b. El contexto de 64k era un requisito sin dueño
+
+| | |
+|---|---|
+| prompt real del sistema | **5.606 chars ≈ 1.602 tokens** |
+| peor caso construido (16 pasos) | ≈ 15.321 tokens |
+| contexto antes / ahora | 64.000 / **32.768** |
+| KV en f16 antes / ahora | ≈3,6 GB / **≈1,8 GB** |
+
+Los 64k venían de `MINIMUM_CONTEXT_LENGTH`, de Hermes. Desde la Fase 1 Hermes
+es una sonda de salud, no un motor. El número siguió porque nadie lo quitó
+consigo sujustifylo.
+
+### 7c. Qué se comprueba de una respuesta, y cuánto se caza
+
+`app/evidencia.py` extiende la regla de A-016 —el veredicto sale de la traza,
+nunca de `final_text`— un nivel arriba: **las afirmaciones también**.
+
+Sobre los 103 runs `completado` del histórico:
+
+| | |
+|---|---|
+| su respuesta nombra un fichero | 21 |
+| su respuesta afirma «en verde» | 2 |
+| **afirman algo comprobable** | **19 (18 %)** |
+| **caen sin respaldo** | **0** |
+
+**Cero, y es el resultado correcto.** Cuando el modelo va a trabajar llama al
+verificador y no tiene que decirlo. El fallo que la regla previene no estaba en
+los runs de agente.
+
+El coste de la regla, medido en cada versión en que se rompió:
+
+| versión | falsos positivos | detecciones |
+|---|---|---|
+| sin filtro | 3 | 0 |
+| solo prosa (sin citas, listas ni código) | 1 | 0 |
+| afirmación de menos de 100 caracteres | 0 | 0 |
+| afirmación en las dos primeras frases | **1** | **0** |
+
+La última es la que está. **Un falso positivo de 220 runs (0,5 %):** la
+respuesta reproducía el índice de las lecciones del repo y la regla leyó «en
+verde» como una afirmación suya. No lo era —la frase citada dice justo lo
+contrario— pero venía dentro de una enumeración y de las dos primeras frases.
+
+Los criterios probados antes elegían **un número** —longitud de línea, posición
+de la frase— y los dos fallaron en los dos sentidos: 100 caracteres se saltaban
+un «No necesito tools para confirmar eso. **El verificador está en verde.**» de
+102, y la posición 120 agarraba el índice con el match en el 92. Se paró ahí a
+propósito: **cuarto criterio para un artefacto mal formado es sobreajustar**, y
+un test con el residuo escrito está en `tests/test_evidencia.py` para que el
+coste no desaparezca de la vista.
+
+| lo que sí funciona | |
+|---|---|
+| camino de la conversación, en vivo | **cero falsos positivos** |
+| detecciones en vivo | 2 de 2 (la afirmación salía sin comprobar nada) |
+
+### 7d. Donde sí muerde: la conversación
+
+En `/chat` no hay verificador, y el hueco se llena de «está en verde» sin
+comprobar. Comprobado en vivo:
+
+```
+«el verificador esta en verde»
+  → «Entendido, el verificador esta en verde. ¿En qué te puedo ayudar hoy?»
+  → turno guardado con sin_respaldo: 1
+```
+
+Y el caso que la que originó la regla, de la lección A-016:
+
+```
+«revisa el repositorio aegis y dime si el verificador está en verde»
+  → «Verificando… Está en verde.»      (sin haber ejecutado nada)
+```
+
+### 7e. Dos bugs que solo aparecieron al medir
+
+| bug | síntoma |
+|---|---|
+| la respuesta entraba en «lo que el modelo ha visto» | cualquier ruta inventada se respaldaba a sí misma |
+| el punto final no cerraba el regex de rutas | **ninguna ruta al final de una frase se encontraba** |
+
+El segundo es el peor de los dos, porque una comprobación que no suena nunca
+**parece que pasa**. Lo cazó un test que escribí para otra cosa.
+
 ## Cómo se mide otra vez
 
 | Lo que quieres saber | El instrumento |

@@ -218,9 +218,26 @@ def solo_prosa(texto: str) -> str:
     return "\n".join(fuera)
 
 
-#: Una afirmación suelta es corta. Por encima de esto ya no es «está en verde»,
-#: es un informe que **contiene** la frase.
-_AFIRMACION_MAX = 100
+#: Cuántas frases iniciales cuentan como **lo que Aegis dice**.
+#:
+#: Esto sustituye dos criterios que se probaron y fallaron, y conviene que se sepa
+#: que fallaron porque son los que se probaron primero:
+#:
+#: | criterio | fallo medido |
+#: |---|---|
+#: | longitud de línea < 100 chars | se saltaba «No necesito tools para confirmar eso. El verificador está en verde.» —102 chars y es una afirmación |
+#: | la frase empieza antes del char 120 | agarraba el índice de una lista de lecciones en un informe, con el match en el 92 |
+#:
+#: Los dos elegían **un número** y los dos numeros no significan nada: el mismo
+#: texto es afirmación o informe según lo que haya antes.
+#:
+#: Lo que sí lo distingue es la **intención de la frase**: Aegis dice lo que
+#: quiere decir primero, o está resumiendo un informe que menciona de pasada
+#: un texto que leyó. Por eso el corte son **las dos primeras frases**. Ni una
+#: —«Entendido, el verificador está en verde.» se pierde— ni cinco —el índice
+#: de lecciones vuelve a colarse—.
+_PRIMERAS_FRASES = 2
+
 
 
 def afirma_verde(texto: str) -> bool:
@@ -249,9 +266,39 @@ def afirma_verde(texto: str) -> bool:
     """
     for linea in solo_prosa(texto).splitlines():
         limpia = linea.strip()
-        if limpia and len(limpia) <= _AFIRMACION_MAX and VERDE_RE.search(limpia):
-            return True
+        if not limpia:
+            continue
+        for frase in _primeras_frases(limpia, _PRIMERAS_FRASES):
+            if VERDE_RE.search(frase):
+                return True
     return False
+
+
+def _primeras_frases(linea: str, n: int) -> list[str]:
+    """Las `n` primeras frases de una línea.
+
+    Corta por `.`, `?` y `!` seguidos de espacio o fin, y **no** por los
+    puntos de una ruta o de un numero: `app/main.py` y `1.5` no cortan frase,
+    porque cortarlos parte el texto en trozos donde una afirmación queda
+    partida y otra empieza a mitad de un nombre de fichero.
+    """
+    partes: list[str] = []
+    actual = ""
+    i = 0
+    while i < len(linea):
+        actual += linea[i]
+        if linea[i] in ".?!":
+            nxt = linea[i + 1] if i + 1 < len(linea) else " "
+            previo = linea[i - 1] if i else " "
+            if nxt in " \n" and (previo.isalpha() or previo == ")"):
+                partes.append(actual.strip())
+                actual = ""
+                if len(partes) == n:
+                    return partes
+        i += 1
+    if actual.strip():
+        partes.append(actual.strip())
+    return partes
 
 
 def corrrio_verificador(trace: Iterable[dict[str, Any]]) -> bool:
