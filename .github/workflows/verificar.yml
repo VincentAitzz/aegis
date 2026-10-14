@@ -162,13 +162,44 @@ jobs:
           # Solo patrones de **formato**: claves que en la práctica empiezan por
           # sk-/ghp_/nhc_ y connection strings con contraseña. Un `grep` de
           # "API_KEY" no sirve: este repo documenta variables sin parar.
+          #
+          # ## Por qué se excluyen los ficheros de test
+          # Porque los tests del escaneo de secretos **tienen** que contener
+          # secretos falsos: la connection string con contraseña y la clave con
+          # prefijo `sk-` de `bridge/tests/test_guardrails.py` son el material
+          # con el que se prueba que el guardarraíl veta una escritura. Sin esta
+          # exclusión el job falla en cada push y su único efecto es que la
+          # gente aprenda a saltárselo.
+          #
+          # La exclusión es por ruta y no por «que parezca falso»: el motivo
+          # está arriba y cualquiera puede discutirlo.
+          #
+          # Y este fichero **tampoco** puede llevar esas cadenas escritas, porque
+          # el `grep` de arriba las encontraría en sus propios comentarios. Por eso
+          # aquí se describen y no se copian: es un poco más incómodo de escribir
+          # y evita que el job se detecte a sí mismo.
+          #
+          # La exclusión es por ruta y no por «que parezca falso»: el motivo
+          # está arriba y cualquiera puede discutirlo.
           if git grep -nIE \
             '(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|nhc_[A-Za-z0-9]{20,}|postgres(ql)?://[^[:space:]]+:[^[:space:]@]+@)' \
-            -- . ':!*.lock'; then
-            echo "::error::posible secreto en el árbol de trabajo"
+            -- . ':!bridge/tests' ':!mobile/test' ':!mobile/integration_test' ':!*.lock'; then
+            echo "::error::posible secreto fuera de los tests"
             exit 1
           fi
-          echo "OK: sin secretos de formato reconocible"
+          echo "OK: sin secretos de formato reconocible fuera de los tests"
+
+      - name: Los tests del escaneo siguen teniendo un secreto falso que probar
+        # La exclusión de arriba no puede dejar de lado un test que se haya
+        # quedado sin su fixture. Se mira el prefijo, no la cadena entera: el
+        # punto es que exista material de mentira, no comprobar que sea de
+        # mentira — si alguien mete un secreto real en un test, ni este paso ni
+        # el anterior lo pillan. Es un aviso, no una puerta.
+        run: |
+          set -euo pipefail
+          if ! grep -q 'Sup3r' bridge/tests/test_guardrails.py; then
+            echo "::warning::los fixtures de secreto falso de los tests no están donde se esperaban"
+          fi
 
       - name: La licencia está
         run: |
