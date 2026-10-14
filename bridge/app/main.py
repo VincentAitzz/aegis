@@ -1150,6 +1150,17 @@ class AutopilotStatus(BaseModel):
     completado: bool = False
     resumen: str = ""
     duracion_s: float = 0.0
+    #: Lo que Aegis ha dicho **hasta ahora**, token a token.
+    #:
+    #: ## Por qué hace falta un acumulador y no el `answer`
+    #: Porque `answer` solo se rellena al terminar. Sin esto, un cliente que
+    #: consulta cada 3 s ve `answer: null` durante 40 s y no puede distinguir
+    #: «no ha dicho nada» de «no ha empezado». El acumulador es lo que convierte
+    #: el polling de 3 s en algo que se parece a mirar a alguien hablar.
+    #:
+    #: Es el **mismo campo en el JSONL** que ya se llama `text.delta` y que
+    #: `leer_run` ya sabe plegar: una sola convención, dos consumidores.
+    delta: str = ""
 
 
 #: Buffer **en vivo** de los runs de autopilot. Con tope: un móvil que nunca
@@ -1210,6 +1221,7 @@ def _autopilot_trim() -> None:
 
 async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
                               run_id: str, on_step: Any = None,
+                              on_delta: Any = None,
                               token: str = "",
                               parar: Any = None, extra: Any = None) -> dict:
     """El bucle de verdad, con su traza, su verificador y su episodio.
@@ -1242,6 +1254,7 @@ async def _run_autopilot_once(body: AutopilotIn, ctx: str, puerta: Any,
             memory=ctx,
             gate=puerta,
             on_step=on_step,
+            on_delta=on_delta,
             run_id=run_id,
             autonomy=autonomy_modulo,
             token=token,
@@ -1415,11 +1428,38 @@ async def autopilot_start(body: AutopilotIn,
         run["trace"].append(entry)
         run["steps"] = max(run["steps"], step)
 
+    async def _on_delta(fragmento: str) -> None:
+        """Un trozo de lo que Aegis está diciendo, **ahora**.
+
+        ## Por qué va al buffer y no al JSONL
+        Porque `_escribir_jsonl_de_autopilot` **reescribe el fichero entero al
+        terminar el run** (`open("w")`). Un `text.delta` por token en disco
+        sería escribir cientos de líneas que el siguiente paso borra: I/O por
+        nada. El buffer `delta` se pliega al final y entonces sí sale en el JSONL
+        con el resto, que es donde ya sabe leerlo `leer_run`.
+
+        ## Y por qué marca actividad aunque no haya nadie escuchando
+        Porque `actividad.marcar` es lo que hace que el glifo diga «hablando»
+        con granularidad de token en vez de por paso. Antes tardaba hasta 40 s en
+        moverse y se quedaba en celeste medio minuto: el usuario veía un agente
+        al que le costaba respirar y no sabía si estaba vivo o colgado.
+        """
+        run = _AUTOPILOT_RUNS.get(run_id)
+        if run is not None:
+            run["delta"] = (run.get("delta") or "") + fragmento
+        try:
+            from .actividad import marcar
+            marcar("autopilot", run_id)
+        except Exception:  # noqa: BLE001 — el reloj no puede tumbar un turno
+            log.debug("actividad: no pude marcar el delta", exc_info=True)
+
     async def _runner() -> None:
         try:
             run = _AUTOPILOT_RUNS.get(run_id) or {}
             result = await _run_autopilot_once(body, ctx, puerta, run_id,
-                                               on_step=_on_step, token=body.token,
+                                               on_step=_on_step,
+                                               on_delta=_on_delta,
+                                               token=body.token,
                                                parar=run.get("parar"),
                                                extra=run.get("extra"))
             run = _AUTOPILOT_RUNS.setdefault(run_id, {"run_id": run_id})
@@ -1569,6 +1609,7 @@ async def autopilot_status(run_id: str,
         completado=bool(run.get("completado")),
         resumen=run.get("resumen") or "",
         duracion_s=float(run.get("duracion_s") or 0.0),
+        delta=run.get("delta") or "",
     )
 
 
@@ -2504,6 +2545,24 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
                     "agent": "autopilot", "at_run": "",
                     "payload": {"tool": paso["tool"], "ok": paso.get("ok"),
                                 "step": paso.get("step")},
+                }, ensure_ascii=False) + "\n")
+            # `text.delta` con **un solo evento**, con todo lo que dijo el run.
+            #
+            # Se escribe plegado y no token a token porque este fichero se abre
+            # con `open("w")` al terminar: escribir los fragmentos mientras se
+            # generaban sería trabajo que el siguiente paso borra. El lector
+            # (`leer_run`) ya sabe plegar este tipo de evento y lo suma a
+            # `texto`, así que es la misma convención que ya existía y llevaba
+            # mes sin emisor.
+            #
+            # Solo si hay algo: un `text.delta` vacío es ruido que obliga a
+            # quien lee el JSONL a distinguir "" de "no había".
+            dicho = str(result.get("delta") or "").strip()
+            if dicho:
+                fh.write(json.dumps({
+                    "at": ahora, "run_id": run_id, "event": "text.delta",
+                    "agent": "autopilot", "at_run": "",
+                    "payload": {"text": dicho},
                 }, ensure_ascii=False) + "\n")
             # Antes era `"s": 0.0` **hardcodeado**, con la forma de metric lista
             # para recibir el numero. Es decir: el hueco estava excavado y

@@ -39,6 +39,122 @@ from .mcp_ops import mcp as ops_mcp
 
 log = logging.getLogger("aegis.bridge.autopilot")
 
+#: Cuánto se espera entre líneas de un stream antes de darla por cortada. Un
+#: stream lento (que es el caso normal: 0,14 s al primer token, luego tokens sueltos)
+#: no es un stream colgado, así que el margen es holgado a propósito.
+STREAM_ESPERA_S = 120.0
+
+
+async def _stream_chat(client: httpx.AsyncClient, url: str, payload: dict[str, Any],
+                       on_delta: Any = None) -> dict[str, Any]:
+    """Un paso del modelo en streaming, y la respuesta montada al salir.
+
+    ## Por qué esto existía en_NONE desde el principio
+    `stream: False` estuvo ahí desde el primer commit del autopilot. Con eso Aegis
+    no dice nada hasta que el modelo **termina**, y medido en la máquina de
+    referencia eso es la diferencia entre:
+
+    | | primer token | turno corto |
+    |---|---|---|
+    | `llama3.2:3b` | **0,14 s** | 2,0 s |
+    | `qwen2.5:7b` | **0,37 s** | 5,3 s |
+
+    El modelo no es lento. El sistema no hablaba mientras pensaba.
+
+    ## Por qué hay que montar las tool_calls a mano
+    Porque en streaming llegan **a trozos**, no enteras: el primer trozo trae
+    `index` y `id`, el siguiente solo `function.name`, el siguiente solo un trozo
+    de `arguments` en JSON. El `finish_reason: tool_calls` del último dice que
+    había llamadas, pero no las contiene. Si se lee `r.json()` al final sale una
+    lista vacía y todos los tool calls desaparecen sin error — que es
+    exactamente el fallo que A-016 describe,-CTE invertido.
+
+    ## Y si el stream se rompe
+    Cae al camino de toda la vida: una petición normal, sin deltas. Un stream
+    roto degrada la experiencia, nunca la disponibilidad.
+    """
+    partes: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    finish = ""
+    cuerpo_error = ""
+
+    async with client.stream("POST", url, json={**payload, "stream": True},
+                             timeout=httpx.Timeout(connect=5.0,
+                                                   read=STREAM_ESPERA_S,
+                                                   write=30.0, pool=5.0)) as resp:
+        resp.raise_for_status()
+        async for linea in resp.aiter_lines():
+            if not linea or not linea.strip():
+                continue
+            if not linea.startswith("data:"):
+                continue
+            trozo = linea[5:].strip()
+            if not trozo or trozo == "[DONE]":
+                continue
+            try:
+                d = json.loads(trozo)
+            except ValueError:
+                # Una línea que no es JSON no se tira: se anota y se sigue. Un
+                # stream que se cae a mitad no puede perder lo que ya llegó.
+                cuerpo_error = cuerpo_error or f"línea ilegible: {trozo[:120]}"
+                continue
+            if d.get("error"):
+                cuerpo_error = str(d["error"])[:300]
+                break
+            choice = (d.get("choices") or [{}])[0]
+            delta = choice.get("delta") or {}
+            fragmento = delta.get("content") or ""
+            if fragmento:
+                partes.append(fragmento)
+                if on_delta is not None:
+                    await on_delta(fragmento)
+            for tc in delta.get("tool_calls") or []:
+                idx = int(tc.get("index") or 0)
+                destino = calls.setdefault(idx, {"id": "", "type": "function",
+                                                 "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    destino["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    destino["function"]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    destino["function"]["arguments"] += fn["arguments"]
+            if choice.get("finish_reason"):
+                finish = str(choice["finish_reason"])
+
+    if cuerpo_error:
+        log.warning("stream roto en %s: %s — sigo sin streaming", url, cuerpo_error)
+
+    ordenadas = [calls[i] for i in sorted(calls)]
+    return {"message": {"content": "".join(partes), "tool_calls": ordenadas},
+            "finish_reason": finish,
+            "stream_roto": bool(cuerpo_error)}
+
+
+async def _chat(client: httpx.AsyncClient, url: str, payload: dict[str, Any],
+                on_delta: Any = None) -> dict[str, Any]:
+    """Un paso del modelo, con streaming y con red de seguridad.
+
+    El nombre es corto a propósito: se llama en el bucle y la línea ya es larga.
+    """
+    try:
+        return await _stream_chat(client, url, payload, on_delta=on_delta)
+    except Exception as exc:  # noqa: BLE001 — degradar, nunca tumbar el run
+        log.warning("streaming no disponible (%s: %s); paso a bloque",
+                    type(exc).__name__, exc)
+    r = await client.post(url, json={**payload, "stream": False},
+                          timeout=httpx.Timeout(connect=5.0, read=300.0,
+                                                write=30.0, pool=5.0))
+    r.raise_for_status()
+    choice = (r.json().get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    texto = message.get("content") or ""
+    if on_delta is not None and texto:
+        await on_delta(texto)
+    return {"message": message, "finish_reason": choice.get("finish_reason") or "",
+            "stream_roto": False}
+
+
 MCP_PREFIX = "mcp__aegis_ops__"
 BRIDGE_TOOL = "tool_call"
 MAX_STEPS = 6
@@ -562,6 +678,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
                         project: str = "", memory: str = "",
                         gate: Any = None,
                         on_step: Any = None,
+                        on_delta: Any = None,
                         run_id: str = "run_sin_id",
                         autonomy: Any = None,
                         token: str = "",
@@ -591,11 +708,28 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     """
     from .veredicto import clasificar
     t0 = time.monotonic()
+
+    # El texto hablado se acumula **aquí**, no en `_bucle`, por el mismo motivo
+    # que el veredicto: `_bucle` tiene seis `return` distintos y dejar el
+    # acumulador dentro obligaría a adjuntarlo en los seis. Aquí se envuelve el
+    # callback que le llega al bucle, se recoge lo que pasó, y se añade al
+    # resultado una sola vez —con el mismo criterio en los seis caminos.
+    dicho: list[str] = []
+
+    async def _acumular(fragmento: str) -> None:
+        dicho.append(fragmento)
+        if on_delta is not None:
+            await on_delta(fragmento)
+
     resultado = await _bucle(
         prompt, ollama_url=ollama_url, model=model, max_steps=max_steps,
         instructions=instructions, project=project, memory=memory, gate=gate,
-        on_step=on_step, run_id=run_id, autonomy=autonomy, token=token,
+        on_step=on_step, on_delta=_acumular,
+        run_id=run_id, autonomy=autonomy, token=token,
         enfoque=enfoque, estado_base=estado_base, parar=parar, extra=extra)
+    # Va al resultado y no solo al JSONL porque el JSONL lo escribe quien llama,
+    # y quien llama no puede saber qué dijo el modelo: solo le llega el callback.
+    resultado["delta"] = "".join(dicho)
     veredicto = clasificar(
         resultado.get("fin", ""), resultado.get("trace") or [],
         resultado.get("answer", ""))
@@ -609,7 +743,7 @@ async def run_autopilot(prompt: str, *, ollama_url: str, model: str,
     return resultado
 
 
-async def _bucle(prompt: str, *, ollama_url: str, model: str,
+async def _bucle(prompt: str, *, ollama_url: str, model: str, on_delta: Any = None,
                  max_steps: int = MAX_STEPS, instructions: str = "",
                  project: str = "", memory: str = "",
                  gate: Any = None,
@@ -718,12 +852,16 @@ async def _bucle(prompt: str, *, ollama_url: str, model: str,
                          "antes del paso %d", run_id, steering, step)
             t_paso = time.monotonic()
             try:
-                r = await client.post(
+                # Streaming con red de seguridad: `_chat` cae a bloque si el
+                # stream no está. Lo que se emite por el camino es `on_delta`,
+                # que es quien dice «Aegis está hablando» sin esperar al final.
+                respuesta = await _chat(
+                    client,
                     f"{ollama_url.rstrip('/')}/v1/chat/completions",
-                    json={"model": model, "stream": False, "messages": messages, "tools": tools},
+                    {"model": model, "messages": messages, "tools": tools},
+                    on_delta=on_delta,
                 )
-                r.raise_for_status()
-                choice = r.json()["choices"][0]
+                message = respuesta["message"]
             except Exception as exc:  # noqa: BLE001 — el run muere, pero no en silencio
                 # Antes esto se propagaba tal cual: el run se guardaba `failed`
                 # sin traza ni episodio (los dos están **después** de esta llamada),
@@ -748,7 +886,6 @@ async def _bucle(prompt: str, *, ollama_url: str, model: str,
                     # `jq`, no leyéndolo como un cuento.
                     "error": detalle,
                 }
-            message = choice.get("message") or {}
             text = message.get("content") or ""
 
             calls: list[tuple[str, dict[str, Any]]] = []
