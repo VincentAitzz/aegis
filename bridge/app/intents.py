@@ -327,6 +327,28 @@ def _dice_fecha(args: dict[str, Any]) -> str:
     return f"Hoy es {_fecha_ahora()}, y son las {_dime('')}."
 
 
+def _que_puedes_hacer(args: dict[str, Any]) -> str:
+    """Qué sabe hacer el sistema, dicho por el sistema.
+
+    Sin modelo, sin tools, y —lo que importa— **sin memoria del modelo**: la
+    lista sale de `app/capacidades.py`, que la deduce de las tools que existen.
+
+    ## Por qué esto no es «un intent más»
+    Porque antes de existir esto, la pregunta se contestaba de memoria: medido el
+    2026-10-14, «cuentame cuales son tus funciones» tardó 161 s, no llamó a
+    ninguna tool para contestarlo, **se inventó** la lista y además llamó a
+    `project_create` para inventarse un proyecto. «hola, que puedes hacer?» tardó
+    56 s con `fin=sin_tools` y otra lista inventada.
+
+    Aquí se contesta en **0,02 ms** y la respuesta no puede quedar vieja, porque
+    `test_toda_tool_tiene_descripcion` falla si añades una tool sin describirla.
+    """
+    from . import capacidades
+    # `ancha=True` porque esta respuesta es para una persona, no para un prompt:
+    # se pide una vez y se lee entera. No se paga en cada paso de cada run.
+    return capacidades.como_texto(ancha=True)
+
+
 def _lista_proyectos(args: dict[str, Any]) -> str:
     from .projects import PROJECTS
     from .workspaces import describe_workspace
@@ -458,6 +480,63 @@ INTENTS: list[Intent] = [
            r"dime\s+(?:la\s+fecha|que\s+dia\s+es)|en\s+que\s+dia\s+estamos|"
            r"que\s+dia\s+hoy)\s*[?.!]*\s*$"),
         _sin_args, _dice_fecha, ayuda="qué día es hoy",
+    ),
+    Intent(
+        # «qué puedes hacer» es la pregunta que más se le hace a un sistema, y la
+        # única cuya respuesta **es un hecho sobre el código**. Un modelo puede
+        # contestarla de memoria y acertar hoy y equivocarse mañana; aquí no hay
+        # nada que pueda equivocarse.
+        #
+        # El patrón es deliberadamente estrecho y **abstiene** ante cualquier cosa
+        # que no sea la pregunta literal. «muéstrame tus herramientas» NO entra:
+        # ese caso cae al modelo, que es lo correcto, porque «muéstrame» puede
+        # significar «hazlo» y no «explícalo».
+        "que_puedes_hacer",
+        # Tres piezas, y las tres hacen falta para que case la frase **real** que
+        # le dice una persona a un asistente.
+        #
+        #   1. lo de delante, que es de cortesía: «hola aegis, soy tu creador, »
+        #   2. el verbo: pregunta directa («qué puedes hacer») o de cortesía
+        #      («cuéntame un poco cuáles son tus funciones»)
+        #   3. el sustantivo, que es lo que ancla el patrón: funciones,
+        #      herramientas o capacidades. Sin él, «dime qué hora es» colaría.
+        #
+        # ## Por qué este patrón es más ancho que los demás
+        # Porque **el peor caso de fallar es distinto aquí**. Si casa de más,
+        # Aegis contesta con su lista cuando le preguntaron otra cosa: un susto.
+        # Si casa de menos, cae al modelo —que es lo de antes—. Se ensancha
+        # cuando equivocarse es un susto; los intents que **escriben** no se
+        # tocan.
+        #
+        # ## Y lo que sigue sin entrar, a propósito
+        # «muéstrame tus herramientas» cae al modelo: «muéstrame» puede querer
+        # decir «hazlo». Y la cola `\s*[?.!]*\s*$` evita que «qué puedes hacer
+        # por mí la cena» entre.
+        _p(r"^\s*"
+           # 1. la cortesía de delante. Tras el saludo puede venir otra frase
+           #    suelta («hola aegis, soy tu creador, …»), así que el segundo
+           #    grupo es genérico: cualquier fragmento corto acabado en coma.
+           #    Sin el tope de 60 se comería un encargo entero y contestaría a
+           #    algo que no se le preguntó.
+           r"(?:(?:hola|hey|buenas|aegis)\b[^?!]{0,80}?[.,]\s*)*"
+           r"(?:[^?!]{0,60}?[.,]\s*)*"
+           # 2+3. el verbo y el sustantivo
+           r"(?:"
+           r"que\s+(?:puedes|sabes)\s+hacer"
+           r"|para\s+que\s+sirves"
+           r"|en\s+que\s+puedes\s+(?:ayudarme|ayudar)"
+           r"|(?:que|cuales|cuales)\s+(?:son\s+)?(?:tus\s+|las\s+|los\s+)?"
+           r"(?:funciones|herramientas|capacidades)\s+(?:tienes|haces)"
+           r"|cuales?\s+(?:son\s+)?(?:tus\s+)?(?:funciones|herramientas|capacidades)"
+           r"|(?:cuentame|cuéntame|dime|explicame|explícame)\s+"
+           r"(?:[^?!]{0,40}?\s+)?(?:funciones|herramientas|capacidades)"
+           r"(?:\s+(?:tienes|haces|hay))?"
+           r"|(?:preséntate|presentate)"
+           r")"
+           # lo de detrás: más cortesía, y el cierre
+           r"(?:\s*(?:un\s+poco(?:\s+mas)?|aegis|por\s+favor|gracias|ahora))*"
+           r"\s*[?.!]*\s*$"),
+        _sin_args, _que_puedes_hacer, ayuda="qué puedes hacer",
     ),
     Intent(
         "lista_proyectos",
