@@ -347,8 +347,14 @@ el puerto no está abierto por defecto, y sin esto la puerta dice «el teléfono
 llega» con el teléfono enchufado al lado:
 
 ```bash
-sudo ufw allow from SUBNET_LOCAL/24 to any port 8000 proto tcp
+# `SUBNET_LOCAL` es la subred de tu casa, no una de este documento. Una regla de
+# firewall con la subred de otra persona escrita es una regla que no funciona.
+sudo ufw allow from SUBNET_LOCAL/24 to any port 8000 proto tcp   # ← pon la tuya
 ```
+
+Para averiguarla sin adivinar: `ip route | awk '/default/ {print $3}'` no sirve;
+lo que quieres es la de la interfaz que usa el móvil, y sale de
+`ip -4 addr show | awk '/inet /{print $2}'`.
 
 - Instalación y **lanzar** son pasos separados. Por defecto solo se instala.
 - La aprobación es de **un solo uso** y la gasta la propia tool: el agente nunca
