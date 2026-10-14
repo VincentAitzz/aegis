@@ -46,44 +46,65 @@ class Settings(BaseSettings):
     #: y en la traza. Y una tabla se puede testear, revertir con una variable y
     #: auditar sin abrir el bucle.
     #:
-    #: **Por qué `t1_model` es otro.** Antes solo había un modelo: el 7B para
-    #: todo. Con un solo modelo, «abstenerse» significaba pagar sus 4.400 MB y su
-    #: latencia, que es exactamente lo que el camino rápido viene a evitar. Con
-    #: T1 siendo un modelo pequeño **residente**, la abstención cuesta poco.
-    #: El 7B queda para T2, por turnos.
+#: **Por qué `t1_model` NO es otro (esto se dio la vuelta el 2026-10-14).**
     #:
-    #: **Y esto es una hipótesis hasta que se mida.** Se espera que el 4B sea más
-    #: rápido por ser más pequeño; nadie lo ha cronometrado todavía. Está medido
-    #: en `docs/decisiones/002`. Si sale peor, se cambia esta línea y nada más:
-    #: el modelo ya viaja por petición (`AutopilotIn.model`).
-
-    #: Modelo de T1: corto, tool-calling, **residente**.
+    #: Antes era `llama3.2:3b`, con este motivo: con un solo modelo, «abstenerse»
+    #: significaba pagar sus 4,4 GB y su latencia, que es justo lo que el camino
+    #: rápido viene a evitar. La abstención sería cara; con un 3B residente, barata.
     #:
-    #: ## Medido, no supuesto (2026-10-05, n=2-3 por modelo, mismo encargo)
+    #: **El motivo era bueno y el coste estaba mal medido.** Lo que se comparó
+    #: fue el tiempo de un *run de agente* (16,8 s contra 20,6 s, un 18 %), no
+    #: el coste de tener **los dos modelos resident a la vez**. Y ese coste no es
+    #: de VRAM, que es de la que no hay: es de RAM. Medido con los dos cargados:
     #:
-    #: | modelo | mediana | ¿tool-calling? | VRAM |
-    #: |---|---|---|---|
-    #: | **`llama3.2:3b`** | **16,8 s** | sí | 1,9 GB |
-    #: | `qwen2.5:7b` | 20,6 s | sí | 4,4 GB |
-    #: | `qwen2.5-coder:7b` | 31,4 s | sí | 4,4 GB |
-    #: | `gemma3:4b` | — | **roto** | 3,3 GB |
-    #: | `qwen3:4b` | **212 s** | sí | 2,4 GB |
+    #: ```
+    #: llama-server (7B)      6,07 GB de RAM
+    #: llama-server (embed)   0,64 GB de RAM
+    #: total                  6,71 GB   de 15 GB, y creciendo por rachas
+    #: ```
     #:
-    #: **`qwen3:4b` era la suposición original y era falsa**: 10 veces más
-    #: lento. Es un modelo de *thinking* y genera el razonamiento antes de
-    #: responder; en un bucle que va a 9.000 tokens de prompt, eso lo hunde. Menos
-    #: parámetros, peor latencia.
+    #: Dos modelos resident son **dos `llama-server` en RAM a la vez**, y eso
+    #: multiplica la superficie en la que un OOM mata lo que esté abierto. El
+    #: editor ya se cayó una vez con los dos cargados. «Que Aegis no se cuelgue
+    #: ni pierda el trabajo» es uno de los cuatro sentidos de «confiable», y un
+    #: diseño que multiplica la memoria en uso le juega en contra.
     #:
-    #: ## Y el margen es pequeño, y eso es el dato importante
-    #: 16,8 contra 20,6 es un 18 % — no el 10× que se esperaba. Porque **el
-    #: bottleneck no es el modelo, es el prompt**: con 35.835 chars tardaba 49,1 s
-    #: y con 22.847 tardaba 18,5 s. Un 36 % menos de prompt, un 62 % menos de
-    #: tiempo.
+    #: ## Sobre el swap: hay zram, y no es de disco
     #:
-    #: Cambiar de modelo es barato y ayuda, pero **no es la palanca**. Recortar el
-    #: prompt sí lo es, y ahí van los 19.083 chars del schema de tools, que es
-    #: lo único que se paga en cada paso sin condición.
-    t1_model: str = "llama3.2:3b"
+    #: `/dev/zram0`, **15,3 GB con compresión zstd**, creado en cada arranque
+    #: por `zram-generator` (un *systemd generator*, no un servicio). Comprime
+    #: ~4:1, así que su coste en RAM real es una fracción de su tamaño.
+    #:
+    #: **No hay swap en disco.** Eso es lo que queda: zram es RAM comprimida, es
+    #: holgura, no seguro. Si la RAM se agota, el OOM sigue pudiendo matar. Por
+    #: eso el trabajo de estabilidad no es «crear un swapfile» —el zram ya está
+    #: y se automantiene— sino **no pedir más memoria de la que hace falta**, que
+    #: es lo que hace este cambio.
+    #:
+    #: ## Lo que cuesta la decisión, medido
+    #:
+    #: | | T1 (con otro modelo) | T1 (el mismo 7B, sin schema) |
+    #: |---|---|---|
+    #: | primer token en conversación | 0,14 s | 0,37 s |
+    #: | RAM resident | 2 modelos (~8 GB) | 1 modelo (~6 GB) |
+    #: | intercambio por petición de trabajo | **6–15 s** | **0** |
+    #:
+    #: Se paga **0,23 s por turno de conversación** y se ahorran **6–15 s por
+    #: petición de trabajo**. El equilibrio está en ~1 trabajo por cada 15 turnos de
+    #: conversación, y por encima de ahí tener las dos solo empeora. El uso real es
+    #: sobre todo trabajo, así que gana por un factor de 25 o más.
+    #:
+    #: ## Y T1 no desaparece por esto
+    #:
+    #: T1 pasa a ser **«el mismo modelo, sin schema»**, que era la idea desde el
+    #: principio: sin schema no hay nada que llamar, y no puede inventarse una
+    #: llamada. Lo que se elimina es el intercambio, no la clase de latencia.
+    #:
+    #: **Empty por defecto a propósito.** Un valor que tiene que coincidir con
+    #: otro es un valor que divergirá; por eso no se pone `qwen2.5:7b` aquí, sino
+    #: `""` y `modelo_t1()` lo resuelve. Cambiar el modelo base sigue siendo
+    #: cambiar una línea, y las dos clases no pueden quedar desincronizadas solas.
+    t1_model: str = ""
 
     #: Tope de pasos de T1. Menor que el de T2 a propósito: una petición corta que
     #: necesita ocho pasos ya no es una petición corta.
@@ -148,6 +169,20 @@ class Settings(BaseSettings):
     @property
     def hermes_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.hermes_api_key}"}
+
+    def modelo_t1(self) -> str:
+        """El modelo que responde en T1. Vacío significa «el de siempre».
+
+        Existe para que el caso de un solo modelo sea el **valor por defecto** y
+        no un estado que hay que mantener. Un `t1_model` que se parece a
+        `autopilot_model` diverge en cuanto alguien cambia uno y no el otro, y
+        esa divergencia no da ningún error: solo aparece como un intercambio de
+        6–15 s en la traza, semanas después. Con `""` no hay nada que mantener.
+
+        Poner aquí un nombre sigue funcionando, y es lo que hace falta para
+        medir un modelo pequeño al lado del grande sin tocar nada más.
+        """
+        return self.t1_model.strip() or self.autopilot_model
 
 
 @lru_cache

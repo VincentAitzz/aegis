@@ -18,6 +18,7 @@ import socket
 import time
 import uuid
 from pathlib import Path
+from . import evidencia
 from typing import Any, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -2041,6 +2042,39 @@ class ChatIn(BaseModel):
     nodo: str = Field(default="teclado", max_length=32)
 
 
+def _registrar_turno(turno: str, respuesta: str, *, clase: str = "",
+                     modelo: str = "", ms: float = 0.0,
+                     primer_token_ms: float = 0.0,
+                     run_id: str | None = None,
+                     evidencia_: dict | None = None) -> str:
+    """Guarda el turno en el dataset y devuelve su id. Nunca rompe el chat.
+
+    ## Por qué no puede lanzar
+
+    El dataset alimenta una decision de meses (entrenar o no), y esa decision no
+    tiene nada que ver con si hoy se pudo escribir una linea. Un disco lleno o un
+    `PermissionError` tienen que_bankear el turno, **no** el chat: quien pregunta
+    la hora no va a saber que hay un problema con un JSONL.
+
+    ## Por qué se guarda tambien lo que no fue respuesta
+
+    Un T2 devuelve `respuesta=""` porque la respuesta llega despues, por el run.
+    Guardar el turno con el `run_id` es lo que permite enlazarlos despues. Si se
+    guardara solo lo que tiene texto, la mitad de los turnos —los que hicieron
+    trabajo de verdad— no existirian para el dataset.
+    """
+    try:
+        from .conversaciones import dataset
+        conv = dataset().registrar_chat(
+            turno, respuesta, clase=clase, modelo=modelo, ms=ms,
+            primer_token_ms=primer_token_ms, run_id=run_id,
+            evidencia=evidencia_ or {})
+        return conv.id
+    except Exception as exc:  # noqa: BLE001 — el chat no depende del dataset
+        log.warning("conversaciones: no pude guardar el turno: %s", exc)
+        return ""
+
+
 class ChatOut(BaseModel):
     clase: str          # T0 = sin modelo | T1 = el 3B | T2 = el 7B
     respuesta: str
@@ -2051,6 +2085,7 @@ class ChatOut(BaseModel):
     modelo: str = ""
     escalado: bool = False
     run_id: str = ""
+    conversacion: str = ""   # id en `data/conversaciones.jsonl`, para corregirla
 
 
 @app.post("/chat")
@@ -2094,20 +2129,22 @@ async def chat(body: ChatIn, _auth: None = Depends(exigir_token)) -> ChatOut:
         texto = intents_mod.aplicar(plan)
         ms = round((time.monotonic() - t0) * 1000, 2)
         log.info("chat %s · %s · T0 · %.2f ms", body.nodo, plan.intent.nombre, ms)
-        return ChatOut(clase="T0", respuesta=str(texto), delta=str(texto),
+        conv = _registrar_turno(body.texto, str(texto), clase="T0")
+        return ChatOut(clase="T0", respuesta=str(texto), delta=str(texto), conversacion=conv,
                        ms=ms, primer_token_ms=ms, chars_prompt=0, modelo="")
     # Un intent que escribe **no** se ejecuta aquí: este endpoint no escribe, y
     # `preparar` no distingue. Si casara, cae al modelo, que sí tiene la puerta.
 
-    # --- T1: el 3B, sin schema -------------------------------------------------
+    # --- T1: el modelo, sin schema -----------------------------------------
     import httpx
     from .capacidades import como_texto, identidad_para_el_prompt
+    from .autopilot import anuncia_tool_sin_ejecutar
     system = "\n\n".join(p for p in (
         identidad_para_el_prompt(), SYSTEM_PROMPT,
         method_context(body.proyecto), quien_context(),
         como_texto()) if p)
     # La última línea del bloque anterior es la que hace el trabajo: sin ella el
-    # 3B afirma haber revisado cosas que nadie le pasó. Ver
+    # modelo afirma haber revisado cosas que nadie le pasó. Ver
     # `capacidades.identidad_para_el_prompt`, que tiene la medición.
     system += (
         "\n\nEstás en una conversación con quien te creó. **No tienes "
@@ -2116,6 +2153,8 @@ async def chat(body: ChatIn, _auth: None = Depends(exigir_token)) -> ChatOut:
         "la lista de arriba, y no describas ninguna tarea. Si te piden algo que "
         "requiera mirar archivos o ejecutar código, dilo con tus palabras y deja "
         "que él decida. Responde en español y breve.")
+
+    modelo_t1 = settings.modelo_t1()
 
     t_prompt = time.monotonic()
     primer = {"ms": 0.0}
@@ -2132,7 +2171,7 @@ async def chat(body: ChatIn, _auth: None = Depends(exigir_token)) -> ChatOut:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=180.0,
                                                            write=30.0, pool=5.0)) as c:
             async with c.stream("POST", f"{settings.ollama_base_url.rstrip('/')}/v1/chat/completions",
-                                json={"model": settings.t1_model,
+                                json={"model": modelo_t1,
                                       "stream": True,
                                       "messages": [
                                           {"role": "system", "content": system},
@@ -2157,25 +2196,51 @@ async def chat(body: ChatIn, _auth: None = Depends(exigir_token)) -> ChatOut:
         log.warning("chat: el modelo no respondió: %s", error)
 
     ms = round((time.monotonic() - t0) * 1000, 2)
+    # Por qué se mira el texto y no solo si está vacío. Medido: hay respuestas
+    # que **son** una llamada a tool sin ejecutar, servidas como respuesta
+    # ({"name": "fichas_read", ...}, que además no existe en el schema).
+    # Escalando ahí no se pierde nada: se ejecuta lo que se quiso ejecutar.
+    # Ver `autopilot.anuncia_tool_sin_ejecutar`.
+    motivo = ""
     if texto.strip():
-        log.info("chat %s · T1 · %.0f ms · primer token %.0f ms · %d chars",
-                 body.nodo, ms, primer["ms"], len(texto))
-        return ChatOut(clase="T1", respuesta=texto, delta="".join(partes), ms=ms,
-                       primer_token_ms=primer["ms"], chars_prompt=len(system),
-                       modelo=settings.t1_model)
+        if not anuncia_tool_sin_ejecutar(texto):
+            log.info("chat %s · T1 · %.0f ms · primer token %.0f ms · %d chars",
+                     body.nodo, ms, primer["ms"], len(texto))
+            # Aquí es donde la comprobación **sí** muerde. Medido sobre los runs de
+            # autopilot, solo el 18 % de las respuestas afirma algo
+            # comprobable, y de esas casi ninguna cae: cuando el modelo va a
+            # trabajar llama al verificador y no tiene que decirlo. En
+            # conversación no hay verificador, y el hueco se llena de "está
+            # en verde" sin comprobar: es como salió el falso "Está en verde"
+            # que motivo esto.
+            ev = evidencia.resumen(texto, [{"prompt": body.texto}])
+            conv = _registrar_turno(body.texto, texto, clase="T1", modelo=modelo_t1,
+                                    ms=ms, primer_token_ms=primer["ms"],
+                                    evidencia_=ev)
+            return ChatOut(clase="T1", respuesta=texto, delta="".join(partes), ms=ms,
+                           primer_token_ms=primer["ms"], chars_prompt=len(system),
+                           modelo=modelo_t1, conversacion=conv)
+        motivo = "anunció una tool que no se ejecutó"
+        log.warning("chat %s · T1 devolvió una tool sin ejecutar (%d chars) · escalo",
+                    body.nodo, len(texto))
 
-    # --- T2: solo si T1 no dijo nada ------------------------------------------
-    log.info("chat: T1 sin respuesta (turno %.0f ms); escalo a T2. motivo: %s",
-             ms, error or "vacío")
+    # --- T2: si T1 se calló, o si quiso llamar y no pudo -------------------
+    # Antes solo escalaba el silencio. El otro caso —querer llamar y quedarse
+    # con el JSON en la respuesta— es el que hacía que Aegis pareciera que
+    # había hecho algo. Con las dos señales, lo que dijo T1 es la entrada de
+    # T2 y no la respuesta final.
+    log.info("chat: escalo a T2. motivo: %s", error or motivo or "vacío")
     rid = uuid.uuid4().hex[:16]
     cuerpo = AutopilotIn(prompt=body.texto, project=body.proyecto, max_steps=3)
     tarea = asyncio.create_task(
         _correr_autopilot_en_segundo_plano(rid, cuerpo),
         name=f"chat-{rid}")
     _AUTOPILOT_RUNS.setdefault(rid, {"run_id": rid})["task"] = tarea
+    conv = _registrar_turno(body.texto, "", clase="T2", ms=ms,
+                            primer_token_ms=primer["ms"], run_id=rid)
     return ChatOut(clase="T2", respuesta="", ms=ms, primer_token_ms=primer["ms"],
                    chars_prompt=len(system), modelo=settings.autopilot_model,
-                   escalado=True, run_id=rid)
+                   escalado=True, run_id=rid, conversacion=conv)
 
 
 @app.post("/voces")
@@ -2268,6 +2333,67 @@ class TareaPatch(BaseModel):
     notas: Optional[str] = Field(default=None, max_length=5_000)
     para: Optional[str] = Field(default=None, max_length=32)
     estado: Optional[str] = None
+
+
+# --- El dataset de conversaciones -------------------------------------------
+#
+# No es una API de entrenamiento: es la forma de **corregir a mano** lo que dijo
+# Aegis, y de que eso quede escrito. El motivo es la parte que de verdad
+# enseña; un booleano solo no sirve para corregir un ejemplo.
+#
+# Vive junto a la memoria y no aparte porque es lo mismo: datos tuyos sobre ti,
+# en tu disco, borrables con el mismo gesto. Ver `app/conversaciones.py`.
+
+
+class CorreccionIn(BaseModel):
+    veredicto: str          # buena | mala | sin_etiquetar
+    motivo: str = ""        # por qué está mal — lo que hace útil la corrección
+    corregido: str = ""     # cómo debería haber respondido
+
+
+@app.get("/conversaciones", )
+async def conversaciones_listar(limite: int = 50, solo_pendientes: bool = True,
+                               _auth: None = Depends(exigir_token)) -> dict:
+    """Los turnos para revisar. Por defecto, los que aún no tienen veredicto."""
+    from .conversaciones import dataset
+    ds = dataset()
+    if solo_pendientes:
+        return {"conversaciones": [c.a_dict() for c in ds.sin_etiquetar(limite)]}
+    por_id = ds.leer()
+    return {"conversaciones": [c.a_dict() for c in
+                               list(por_id.values())[:limite]]}
+
+
+@app.get("/conversaciones/resumen", )
+async def conversaciones_resumen(_auth: None = Depends(exigir_token)) -> dict:
+    """Cuántas hay y cuántas sirven para algo.
+
+    `malas_sin_motivo` es el número que se mira: sin motivo, una respuesta
+    rechazada cuenta pero no enseña.
+    """
+    from .conversaciones import dataset
+    return dataset().resumen()
+
+
+@app.post("/conversaciones/{conv_id}/correccion", )
+async def conversacion_corregir(conv_id: str, body: CorreccionIn,
+                                _auth: None = Depends(exigir_token)) -> dict:
+    from .conversaciones import dataset
+    try:
+        ok = dataset().corregir(conv_id, body.veredicto, body.motivo,
+                                body.corregido)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="no encontré esa conversación")
+    return {"ok": True, "id": conv_id, "veredicto": body.veredicto}
+
+
+@app.delete("/conversaciones", )
+async def conversaciones_borrar(_auth: None = Depends(exigir_token)) -> dict:
+    """Borra el dataset entero. Invariante «la memoria es tuya»."""
+    from .conversaciones import dataset
+    return {"borradas": dataset().borrar()}
 
 
 @app.get("/notas", )

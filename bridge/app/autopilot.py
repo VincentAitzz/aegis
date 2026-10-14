@@ -189,6 +189,105 @@ def _looks_truncated(text: str) -> bool:
     stripped = text.strip()
     return 0 < len(stripped) <= 60 and stripped[-1] in "):："
 
+
+def anuncia_tool_sin_ejecutar(text: str) -> bool:
+    """True si el modelo quiso llamar a una tool y esta no llegó a ejecutarse.
+
+    Es el hermano público de `_mentions_tool`, y el que decide una escalada.
+    La diferencia es que no basta con que *nombre* una tool: eso lo hace al
+    hablar de ellas, que es una conversación normal. Lo que se busca es la
+    **intención de llamar** que se quedó en el aire.
+
+    ## Por qué esto necesita su propio predicado
+
+    Medido sobre los 108 runs que acabaron en `fin: sin_tools`, las últimas 20
+    respuestas incluyen dos que son una llamada a tool **servida como
+    respuesta**:
+
+    ```
+    {"name": "uso_enfoque", "arguments": {"nombre": "", "por_que": "..."}}
+    {"name": "fichas_read", "parameters": {"f": "aegis projects"}}
+    ```
+
+    `fichas_read` no existe en el schema. `uso_enfoque` va con el nombre
+    vacío. El modelo **pidió** una herramienta, Aegis no pudo, y en vez de
+    registrar un fallo guardó el JSON crudo como respuesta y declaró el run
+    completado.
+
+    Esto es A-016 con otro traje: un paso fallido contabilizado como éxito
+    porque el texto de después parecía bueno. La diferencia —y por qué con
+    tools era detectable— es que **en una conversación no hay traza que lo
+    delate**. No hay tool que revisar, no hay verificador que salga rojo, y quien
+    lee cree que Aegis ha respondido.
+
+    ## Las tres señales
+
+    1. **Colgado**: JSON que se abre y no se cierra, o una llamada cortada.
+    2. **Llamada que sí se parsesaba**: `extract_tool_calls` la encuentra. No
+       se ejecuta aquí —para eso está el bucle de T2, con el schema delante—
+       pero su presencia es la prueba de la intención.
+    3. **Nombra una tool permitida junto a una forma de llamada**: evita el
+       falso positivo de una respuesta que *habla* de herramientas.
+
+    Con T0 esto no aplica (no hay modelo). Con T2 tampoco: el bucle ya ejecuta
+    lo que puede y solo escala cuando no puede. Aquí es donde el fallo era
+    silencioso.
+    """
+    if not text.strip():
+        return False
+    if _DANGLING_RE.search(text) or _looks_truncated(text):
+        return True
+    if extract_tool_calls(text):
+        return True
+    if _respuesta_es_una_tool_suelta(text):
+        return True
+    return _menciona_forma_de_llamada(text)
+
+
+def _respuesta_es_una_tool_suelta(text: str) -> bool:
+    """La respuesta entera es el nombre de una tool y nada más.
+
+    El caso degenerado: sin schema, el modelo a veces contesta `aegis_read_file`
+    y ahí se acaba. No es una respuesta ni es una frase — es una llamada a la
+    que no le llegó a llegar arguments, y por tanto no se ejecutó.
+
+    Se separa de «voy a usar aegis_read_file» por una sola cosa: que **todo** el
+    texto sea el nombre. Con una frase delante ya es conversación, y eso lo
+    decide `_menciona_forma_de_llamada` en sentido contrario.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > 80:
+        return False
+    # Sin punto, sin coma y sin dos puntos: son marcas de frase, y una frase
+    # sobre una tool es conversación, no una llamada.
+    if any(mark in stripped for mark in ".,:;\n"):
+        return False
+    limpio = stripped.rstrip("(").strip()
+    return any(re.search(rf"^(?:{re.escape(n)}|{re.escape(MCP_PREFIX + n)})$", limpio)
+               for n in allowed_tools())
+
+
+_FORMA_DE_LLAMADA_RE = re.compile(
+    r"""(?ix)
+    (?:\{\s*["']?\s*(?:tool_?name|tool|function|name)\s*["']?\s*:)
+    | (?:\btool_?call\b)
+    | (?:\bfunction_?call\b)
+    | (?:\[\s*\{[^\]]*["']\s*name\s*["']\s*:)
+    """
+)
+
+
+def _menciona_forma_de_llamada(text: str) -> bool:
+    """True si el texto tiene la *forma* de una llamada, no solo el nombre.
+
+    Es lo que separa «voy a usar `aegis_read_file`» (conversación, no se
+    escala) de `{"name": "aegis_read_file", ...}` (intención de llamada, se
+    escala). Comparte el mismo nombre de tool y son cosas opuestas: una es
+    hablar del trabajo y la otra es dejarlo sin hacer.
+    """
+    return bool(_FORMA_DE_LLAMADA_RE.search(text))
+
+
 SYSTEM_PROMPT = (
     "Eres el agente Aegis. Para trabajar en el host llamas SIEMPRE a las tools "
     "disponibles, una por llamada, y esperas su resultado antes de seguir. "

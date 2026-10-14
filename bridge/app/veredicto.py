@@ -44,6 +44,8 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Optional
 
+from . import evidencia
+
 # Los `fin` que el bucle puede devolver (`autopilot.py`) más los que pone
 # `main.py` cuando el run revienta antes de empezar a correr.
 FINS_ROTO = frozenset({"modelo_caido", "reventado"})
@@ -104,9 +106,18 @@ def _herramientas(trace: Iterable[dict[str, Any]]) -> tuple[list[str], list[str]
 
 
 def _clasificar(fin: str, ok: list[str], rojas: list[str],
-                answer: str) -> tuple[str, str]:
-    """(estado, resumen). La regla única; todo lo demás la llama."""
+                answer: str, sin_respaldo: list[str] | None = None
+                ) -> tuple[str, str]:
+    """(estado, resumen). La regla unica; todo lo demas la llama.
+
+    `sin_respaldo` son las afirmaciones de la respuesta que la traza no
+    sostiene (ver `app/evidencia.py`). Solo puede **bajar** el estado de
+    `completado` a `sin_evidencia`, nunca subirlo: un run sin evidencia no es
+    mejor que uno con ella, es peor o igual. Por eso va al final de la cadena y
+    no entre los `fin`.
+    """
     resumen = ""
+    caidas = list(sin_respaldo or [])
     if fin in FINS_ROTO:
         estado = "roto"
     elif fin in FINS_ESPERA:
@@ -127,7 +138,16 @@ def _clasificar(fin: str, ok: list[str], rojas: list[str],
     else:
         estado = "incompleto"
 
-    if estado == "completado":
+    if estado == "completado" and caidas:
+        # El unico caso en el que se degrada un estado ya bueno. Hay tool verde
+        # y hubo respuesta, pero la respuesta afirma cosas que no pasaron. No
+        # es `roto` —el trabajo se hizo— y no es `completado` —no se puede
+        # decir que se delivered. Se llama distinto a propósito.
+        estado = "sin_evidencia"
+        resumen = (f"{len(ok)} tool(s) en verde, pero {len(caidas)} "
+                   f"afirmación(es) sin respaldo: " + "; ".join(caidas[:3])
+                   + ("…" if len(caidas) > 3 else ""))
+    elif estado == "completado":
         resumen = f"{len(ok)} tool(s) en verde, respuesta de {len(answer.strip())} car."
     elif estado == "esperando_ok":
         resumen = "parado esperando tu OK; no ha escrito nada."
@@ -154,13 +174,16 @@ def clasificar(fin: str, trace: Iterable[dict[str, Any]],
     recordar la palabra).
     """
     ok, rojas = _herramientas(trace)
-    estado, resumen = _clasificar(fin or "", ok, rojas, answer or "")
+    ev = evidencia.resumen(answer or "", list(trace or []))
+    estado, resumen = _clasificar(fin or "", ok, rojas, answer or "",
+                                  [d for d in ev["detalle"]])
     return {
         "estado": estado,
         "completado": estado == "completado",
         "resumen": resumen,
         "tools_ok": ok,
         "tools_fallidas": rojas,
+        "evidencia": ev,
     }
 
 
