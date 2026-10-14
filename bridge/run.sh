@@ -12,10 +12,30 @@ if [[ ! -d .venv ]]; then
   .venv/bin/pip install -q -r requirements.txt
 fi
 
-# .env propio (sólo si falta): se copia el ejemplo y se pide la clave real
+# .env propio (sólo si falta): se copia el ejemplo y se rellenan los secretos.
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  echo "⚠️  Creé .env desde .env.example — edita HERMES_API_KEY (ver ~/.hermes/.env)."
+  echo "⚠️  Creé .env desde .env.example."
+  # La clave de la API de operación se genera aquí y **no se imprime**.
+  #
+  # ## Por qué esto importa más desde que hay servicio
+  # `AEGIS_API_KEY=` vacía significa **sin autenticación**: cualquiera que llegue
+  # al puerto 8000 puede concederle a Aegis permiso de escritura sobre tus
+  # proyectos. Antes esto se activaba a mano y se veía; desde que existe
+  # `aegis-bridge.service` arranca **solo**, después de un reinicio, sin que
+  # nadie mire. Si el `.env` se creara aquí con la clave vacía, el bridge
+  # quedaría abierto en la red sin que nadie se enterase hasta que sea tarde.
+  #
+  # Es el mismo motivo por el que `infra/setup.sh` la genera: una clave escrita a
+  # mano acaba en un repositorio, en un screenshot o en un log de CI. Generada
+  # aquí, escrita una vez y nunca mostrada.
+  if grep -q '^AEGIS_API_KEY=$' .env; then
+    clave="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    sed -i "s|^AEGIS_API_KEY=$|AEGIS_API_KEY=$clave|" .env
+    chmod 600 .env
+    echo "   Generé una AEGIS_API_KEY nueva (no se imprime)."
+  fi
+  echo "   Edita HERMES_API_KEY si vas a usar la gateway (ver ~/.hermes/.env)."
 fi
 
 # El --reload es de desarrollo y **solo si se pide**: el valor por defecto es 0.
