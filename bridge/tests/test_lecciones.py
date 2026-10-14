@@ -179,34 +179,94 @@ class TestCuerpo(_LeccionesTemporales):
         self.assertIn("números", mod.cuerpo("x", []))
 
 
-class TestElPromptYaNoSeCompeLasLecciones(unittest.TestCase):
-    def test_el_prompt_del_proyecto_aegis_cabe_en_una_fraccion(self):
-        """La puerta del bloque: si esto falla, el arreglo no sirve."""
+class TestLasLeccionesYaNoVanAlPrompt(unittest.TestCase):
+    """Lo que sustituye a la puerta anterior, y por qué está escrita al revés.
+
+    ## Antes
+    Esta clase comprobaba que el índice de lecciones estaba en el prompt y que la
+    lección más relevante iba entera. Se quitó el 2026-10-14, así que el test se
+    **invirtió**: ahora comprueba que el bloque **no** está y que el prompt se ha
+    encogido de verdad.
+
+    Invertir un test en vez de borrarlo es lo que hace que esto no se repita. Un
+    mecanismo que ya se gastó 9 200 caracteres por run y no cambió ningún
+    comportamiento volvería si alguien reintrodujera la línea, y lo más fácil es
+    que lo haga creyendo que mejora algo. Este test dice lo contrario, con un
+    número.
+    """
+
+    def test_el_prompt_no_trae_lecciones(self):
         from app.autopilot import build_system_prompt
-        completo = build_system_prompt(
-            "", "aegis", "",
-            encargo="repite la llamada que ya falló dos veces")
-        sin = build_system_prompt("", "otro-sin-lecciones", "")
-        # Antes eran 125 489 chars. El presupuesto acordado es 8 000 para el
-        # índice; el resto del prompt son unos 8 000. Se exige que no lo reviente.
-        self.assertLess(len(completo), 30_000,
-                        f"el prompt sigue siendo enorme: {len(completo)}")
-        self.assertGreater(len(completo), len(sin))
-        self.assertIn("LECCIONES DE ESTE PROYECTO (índice", completo)
-        self.assertIn("A-001", completo)
+        p = build_system_prompt("", "aegis", "",
+                                encargo="repite la llamada que ya falló dos veces")
+        self.assertNotIn("LECCIONES DE ESTE PROYECTO", p)
+        self.assertNotIn("La que más aplica a este encargo", p)
+        # Y ninguna lección suelta: ni una referencia suelta a «A-0NN», que es
+        # como se colaría una reintroducción parcial.
+        self.assertNotRegex(p, r"### A-\d+")
 
-    def test_la_leccion_mas_relevante_va_entera(self):
-        """«voy a decir que he creado tres enums» tiene que traer el recuento.
+    def test_el_prompt_se_encogio_de_verdad(self):
+        """El número, no la impresión.
 
-        Y si no lo trae, el índice es decorativo: es justo el caso que el índice
-        promete cubrir.
+        `bin/medir-prompt.py` dio 17 155 antes y 7 953 después; las lecciones eran
+        9 200 de eso. Se exige una banda alta y holgada —10 000— para que este
+        test no se rompa con un cambio legítimo, y una baja que sigue siendo
+        mucho más pequeña que la de antes.
         """
         from app.autopilot import build_system_prompt
         p = build_system_prompt("", "aegis", "",
-                                encargo="voy a decir que he creado tres enums")
-        self.assertIn("La que más aplica a este encargo", p)
-        self.assertIn("### A-002", p)
-        self.assertNotIn("### A-001", p.split("La que más aplica")[1])
+                                encargo="repite la llamada que ya falló dos veces")
+        self.assertLess(len(p), 10_000,
+                        f"el prompt volvió a crecer: {len(p)} chars")
+        # Y no basta con estar por debajo del tope: el cambio tiene que notarse.
+        self.assertGreater(len(p), 5_000,
+                           f"el prompt está sospechosamente corto: {len(p)} chars")
+
+    def test_load_lessons_devuelve_vacio_pero_sigue_existiendo(self):
+        """La función no se borra, y devuelve siempre `""`.
+
+        Se queda a propósito: `bin/medir-prompt.py` la llama para reportar el
+        bloque, y el número es lo que permite comprobar que se quitó. Una función
+        borrada delata menos el sitio donde algo se apagó.
+        """
+        from app.autopilot import load_lessons
+        self.assertEqual("", load_lessons("aegis", "cualquier cosa"))
+        self.assertEqual("", load_lessons("", ""))
+
+    def test_la_tool_lecciones_no_esta_en_el_schema(self):
+        """Sacarla del prompt pero dejarla en el schema sería la mitad del gasto.
+
+        El schema se paga en cada paso de cada run aunque la tool no se use. La
+        tool tuvo 0 llamadas en los 857 run logs del repo.
+        """
+        from app.autopilot import allowed_tools
+        self.assertNotIn("lecciones", allowed_tools())
+
+    def test_nadie_la_declara_nivel_de_autonomia(self):
+        """Una tool que ya no existe no puede seguir clasificada.
+
+        Hay un test en otro fichero que exige que todo nombre clasificado exista
+        como tool real; este comprueba el otro lado — que el nombre retirado no
+        quede en ninguna de las tres listas.
+        """
+        from app.autonomy import CON_PERMISO, LIBRES, REQUIERE_OK
+        from app.autonomy import NIVELES_CAMINO_RAPIDO
+        for nivel in (LIBRES, CON_PERMISO, REQUIERE_OK, NIVELES_CAMINO_RAPIDO):
+            self.assertNotIn("lecciones", nivel)
+
+    def test_el_fichero_de_lecciones_sigue_en_el_repo(self):
+        """El fichero no se borró: es documentación, y eso no ha cambiado.
+
+        Lo que cambió es quién lo lee. Si alguien lo borra por confundirlo con
+        «lo que se quitó del prompt», este test lo dice.
+        """
+        from app import lecciones
+        self.assertTrue(lecciones.ruta("aegis").is_file(),
+                        "lessons/aegis.md es documentación y no va al prompt, "
+                        "pero sigue siendo el registro de por qué el código es "
+                        "como es")
+        self.assertTrue(lecciones.cargar("aegis"),
+                        "y tiene que seguir siendo legible")
 
 
 class TestNingunFicheroSeQuedaFuera(unittest.TestCase):
@@ -214,7 +274,7 @@ class TestNingunFicheroSeQuedaFuera(unittest.TestCase):
 
     ## Qué se rompió
     `lessons/portafolio.md` titula sus 14 lecciones `### R-001 · …`, y el patrón
-    de encabezado exigía `(A-\d+)`. Resultado: `cargar('portafolio')` devolvía
+    de encabezado exigía `(A-[0-9]+)`. Resultado: `cargar('portafolio')` devolvía
     una tupla vacía, `indice('portafolio')` devolvía cadena vacía, y el prompt de
     cada run del portafolio salía **sin lecciones**. Sin error, sin aviso, y sin
     forma de notarlo salvo llevando la cuenta a mano.

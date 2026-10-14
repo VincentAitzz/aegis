@@ -322,7 +322,7 @@ Tres capas: **aislamiento**, **observabilidad** y **memoria**. Un solo motor:
       │
       ├─ POST /autopilot/start
       │     ├─ build_system_prompt: metodo + quien eres + ficha + enfoque
-      │     │                     + índice de lecciones + recall + denegaciones
+      │     │                     + recall + denegaciones   (7 953 chars)
       │     ├─ Ollama :11434 ──► el modelo elige QUÉ tool
       │     ├─ autonomy.decide() ANTES de ejecutar  (niveles: libre / con permiso / requiere OK)
       │     ├─ _execute en un hilo  ──► mcp_ops: whitelist, denylist,
@@ -479,8 +479,14 @@ Ciclo de vida (automatizado en el bridge):
    semánticamente sin mirar el `outcome`, así que el filtrado a `success` ocurre en
    la frontera de inyección. Un `failed` bajo el rótulo de "resueltos antes" es
    instrucción contraria, y el 7B la copia.
-3. **Consultar a demanda** — `lecciones(alias, tema)` para las lecciones. El
-   servidor MCP de memoria (`app/mcp_memory.py`) se borró en la Fase 1 con el
+3. ~~**Consultar a demanda** — `lecciones(alias, tema)`.~~ **Retirado el
+   2026-10-14**, junto con el índice del prompt: ocupaban el 54 % del system
+   prompt, la tool tuvo **0 llamadas** en los 857 run logs del repo, y el
+   comportamiento que describen no cambiaba con ellas (A-014 se repitió 3/3 con y
+   sin). `lessons/{alias}.md` sigue en el repo como documentación; los números
+   están en el docstring de `load_lessons` (`app/autopilot.py`).
+
+   El servidor MCP de memoria (`app/mcp_memory.py`) se borró en la Fase 1 con el
    resto de la exposición MCP: era un segundo camino de entrada a la memoria y no
    lo usaba nadie.
 

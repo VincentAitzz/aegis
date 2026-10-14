@@ -80,9 +80,10 @@ El orden es siempre el mismo:
 6. **Dejar la lección** — en `bridge/lessons/{proyecto}.md`.
 
 > **Regla dura: una corrección sin lección escrita es trabajo incompleto.**
-> Un arreglo que solo vive en el commit no lo ve nunca el agente: la próxima vez
-> lo repite. Las lecciones se inyectan solas en el prompt (ver
-> `app/autopilot.py:build_system_prompt`).
+> Un arreglo que solo vive en el commit no lo ve nadie: la próxima vez se repite.
+> La lección se escribe para quien viene, y **el agente ya no la lee** — desde el
+> 2026-10-14 no van al prompt (ver §3, «Las lecciones»). Por eso la razón de una
+> regla nueva va también junto al código que la impone.
 
 ### Cuándo usar cada camino
 
@@ -244,24 +245,35 @@ no es un enfoque, es texto.
 
 Añadir una fase es escribir un fichero. Sin código, sin enum, sin compilar.
 
-### Las lecciones: índice, no el fichero entero
+### Las lecciones: ya no van al prompt
 
 `bridge/lessons/{alias}.md` es el registro de por qué el código es como es, y
-**no se borra**. Al prompt solo va:
+**no se borra**. Lo que cambió el 2026-10-14 es que **dejó de ser input del
+modelo**: al prompt no va ni el índice ni la lección más relevante, y la tool
+`lecciones(alias, tema)` se quitó del schema.
 
-1. un **índice** con número, título y cuándo aplica;
-2. la lección **más relevante** para el encargo, entera;
-3. el resto, con `lecciones(alias, tema)` — una tool de lectura, nivel libre.
+| | antes | después |
+|---|---|---|
+| system prompt | 17 155 chars | **7 953** |
+| de los cuales, lecciones | 9 200 (**54 %**) | 0 |
+| tools en el schema | 22 | 21 |
 
-Medido el 2026-10-04 (n=5, intercalado): con las 120 KB enteras cada llamada
-tardaba **60,2 s**; con el índice, **11,9 s**. Y el comportamiento que las
-lecciones describen no cambia: A-014 dice «no repitas la llamada idéntica que ya
-falló dos veces» y el modelo la repitió 3 de 3 **con** las lecciones y 3 de 3
-**sin** ellas.
+Tres razones, y las tres son mediciones:
 
-Cada lección puede declarar su criterio con `> Aplica cuando: …`. Las que no lo
-declaran usan la primera frase de su «qué pasó», y **no se inventa uno**: un
-disparador inventado suena específico y no sirve.
+1. **No cambiaba el comportamiento.** A-014 dice «no repitas la llamada idéntica
+   que ya falló dos veces»; el modelo la repitió **3 de 3 con las lecciones
+   inyectadas y 3 de 3 sin ellas**.
+2. **La puerta no se usó nunca.** La tool `lecciones` tiene **0 llamadas** en los
+   857 run logs del repo (`data/logs/runs/`, 2026-09-24 → 2026-10-14).
+3. **El índice estaba truncado.** Con el tope de 8 000 chars listaba A-001…A-078
+   de 121: se pagaba el 100 % para enseñar el 65 %.
+
+Para volver a mirar el número: `bin/medir-prompt.py`.
+
+**Al leer una lección, ábrela con un editor.** Si la regla te importa, está junto
+al código que la impone y en el test que la comprueba; la lección entera es el
+porqué, y el porqué no lo necesita un modelo de 7 GB.
+
 
 ### Desde el móvil, o cuando el run puede tardar
 
@@ -285,7 +297,8 @@ RID=$(cd bridge && bin/api POST autopilot/start \
   `coerce_args`: es la malformación típica del 7B y antes tumbaba el run.
 
 **Antes de delegar, lee `bridge/lessons/{proyecto}.md`.** Si vas a repetir un
-trabajo, las lecciones ya explican dónde se equivocó la última vez.
+trabajo, las lecciones ya explican dónde se equivocó la última vez. Ábrelo con un
+editor: ya no se inyecta en el prompt (§3).
 
 ## 4. Guardarraíles: intocables
 

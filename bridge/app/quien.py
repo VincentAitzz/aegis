@@ -7,10 +7,11 @@ Aquí **no**, y la razón está medida en este repo:
 - A-016 midió que el 7B deja de emitir `tool_calls` cuando el prompt crece.
 - A-080 Campaigns lo mismo en otro sitio: el prompt se **re-evalúa en cada
   paso**, así que un bloque grande es un coste que multiplica.
-- El peor caso del system prompt ya está en 28 794 caracteres y el test que lo
-  vigila está en 30 000. Quedan 1 206.
+- El peor caso del system prompt está en **7 953** caracteres y el test que lo
+  vigila está en 30 000. Antes eran 17 155: las lecciones eran 9 200 de ellos.
+  El margen se descargó quitándolas, no recortando este fichero.
 
-Por eso el fichero se parte en dos, igual que las lecciones:
+Por eso el fichero se parte en dos:
 
 - la sección `RESUMEN` entra en **todos** los runs, con tope de `MAX_RESUMEN`;
 - el resto del fichero **no se inyecta nunca**: se lee con
@@ -38,8 +39,8 @@ clientes, esa sigue siendo la vía; este fichero es sobre cómo hablamos.
 es la respuesta a «quién eres», y esa respuesta es de quien lo instala, no del
 proyecto. El repo trae `quien-eres.ejemplo.md` y `infra/setup.sh` lo copia al
 arrancar. Si no está, este módulo devuelve `""` y Aegis sigue: el prompt se
-construye con `metodo.md`, las lecciones y el registro, que son las tres cosas
-que sí son del proyecto.
+construye con `metodo.md` y la ficha del proyecto, que son las dos cosas que sí
+son del proyecto.
 """
 
 import re

@@ -13,10 +13,11 @@ Hay tres hechos medidos en el código que no dependen del modelo:
 1. **No hay camino corto.** `POST /autopilot` y `/autopilot/start`
    (`bridge/app/main.py:925`, `:960`) siempre llegan al modelo. Antes del primer
    token se paga `build_system_prompt` (`bridge/app/autopilot.py:133`): método +
-   quién eres + ficha + enfoque + índice de lecciones + recall + denegaciones.
+   quién eres + ficha + enfoque + recall + denegaciones. **7 953 caracteres**,
+   de los que las lecciones eran 9 200 antes del 2026-10-14.
 2. **Las herramientas triviales no existen para el modelo.** `POST /tareas` y
    `POST /notas` (`main.py:1551-1600`) están escritas y funcionan, pero no están
-   en el schema: `autopilot._tools_schema()` (`autopilot.py:249`) deriva 22 tools
+   en el schema: `autopilot._tools_schema()` (`autopilot.py:249`) deriva 21 tools
    de `mcp_ops`, y ninguna es "crear una alarma".
 3. **Aegis no sabe cuánto tarda.** `main.py:2013` escribe
    `"run_duration_s": 0.0` **hardcodeado**. Sin duración real no hay presupuesto,

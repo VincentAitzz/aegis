@@ -61,8 +61,14 @@ nobody uses is not an invariant; it is an intention.
 Measured on the reference machine: at 35,835 characters a run took 49.1 s; at
 22,847 it took 18.5 s. 36 % less prompt, 62 % less time.
 
-That is why lessons reach the prompt as an **index**, not whole, and why your
-profile is never injected in full. See `docs/decisiones/002-camino-rapido.md`.
+The clearest case is the lessons. They took **9,200 of the prompt's 17,155
+characters** — 54 % — their index was silently truncated, and the tool to ask for
+them had **0 calls across 857 recorded runs**. They did not change the behaviour
+they described. The prompt now weighs **7,953**.
+
+Rule: **every block that enters the prompt has to justify its cost with a
+measurement, and if the measurement says it does nothing, it goes.** See
+`docs/decisiones/002-camino-rapido.md` and `bin/medir-prompt.py`.
 
 ### Nothing irreversible on its own
 

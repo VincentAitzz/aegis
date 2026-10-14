@@ -395,38 +395,29 @@ tools de nivel 3, con sus guardarraíles y con rastro en
 sirve para que Aegis **continúe** después de esa llamada. En el móvil son los dos
 botones de la tarjeta.
 
-### 4.4 Lecciones: índice, no el fichero entero
+### 4.4 Las lecciones ya no van al prompt
 
 `lessons/{alias}.md` es el registro de por qué el código es como es, y **no se
-borra**. Lo que cambió es cuánto se le enseña al modelo:
+borra**. Lo que cambió el 2026-10-14 es que dejó de ser input del modelo.
 
-- Al prompt va un **índice**: número, título y cuándo aplica (~8 000 caracteres
-  con 79 lecciones). Antes iban las 120 KB enteras.
-- La lección **más relevante** para el encargo va entera.
-- El resto se pide con la tool `lecciones(alias, tema)`.
-
-Por qué, medido el 2026-10-04 (n=5, intercalado, mismo proceso):
-
-| prompt | tool_calls | latencia |
+| | antes | después |
 |---|---|---|
-| con las 120 KB | 5/5 | 60,2 s por llamada |
-| con el índice (16 720 chars) | 5/5 | **11,9 s** |
-| sin lecciones (4 489 chars) | 4/5 | 10,1 s |
+| system prompt | 17 155 chars | **7 953** |
+| de los cuales, lecciones | 9 200 (54 %) | 0 |
+| tools en el schema | 22 | 21 |
 
-El índice cuesta **+1,8 s (+17%)** por llamada. Y el comportamiento que las
-lecciones describen tampoco cambiaba: se probó A-014 («no repitas la llamada
-idéntica que ya falló dos veces») y el modelo la repitió **3 de 3 con ellas y
-3 de 3 sin ellas** (A-079).
+Por qué, medido:
 
-Cada lección puede declarar su propio criterio con una línea
-`> Aplica cuando: …` bajo el título; las que no la tienen usan la primera frase
-de su «qué pasó». **No se inventa un disparador**: uno inventado suena específico
-y no sirve para nada.
+| motivo | evidencia |
+|---|---|
+| No cambiaba el comportamiento | A-014 («no repitas la llamada idéntica que ya falló dos veces») se repitió **3 de 3 con las lecciones inyectadas y 3 de 3 sin ellas** |
+| La puerta no se usó nunca | La tool `lecciones` tiene **0 llamadas** en los 857 run logs de `bridge/data/logs/runs/` |
+| El índice estaba truncado | Con el tope de 8 000 chars listaba A-001…A-078 de 121: se pagaba el 100 % para enseñar el 65 % |
+| Y era caro | Con las 120 KB enteras: 60,2 s por llamada. Con el índice: 11,9 s. Sin nada: 10,1 s |
 
-```
-lecciones(alias='aegis', tema='voy a decir que ya he hecho todo')
-lecciones(alias='aegis', numeros='A-055,A-061')
-```
+**Para leer una lección, ábrela con un editor.** Para volver a mirar el número:
+`bin/medir-prompt.py`.
+
 
 ### 4.5 Fases de trabajo
 

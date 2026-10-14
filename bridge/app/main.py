@@ -1355,9 +1355,13 @@ async def autopilot(body: AutopilotIn,
     Es la vía fiable de autonomía: el modelo local decide QUÉ tool usar y el
     bridge la EJECUTA de verdad, con lista blanca y traza auditable.
 
-    El run se guarda como episodio: con `project` se inyectan las lecciones
-    curadas del repo y el recall, de modo que una corrección escrita a mano
-    llegue sola a los intentos siguientes.
+    El run se guarda como episodio: con `project` se inyecta la **ficha** del
+    proyecto y el recall, de modo que una corrección escrita a mano llegue sola a
+    los intentos siguientes.
+
+    Lo que ya **no** se inyecta son las lecciones: eran el 54 % del prompt y su
+    puerta —la tool `lecciones`— tuvo 0 llamadas en 857 runs registrados. Los
+    números están en `load_lessons`, en `app/autopilot.py`.
 
     Es síncrono a propósito. Para el móvil, que no puede dejar al usuario
     mirando un spinner dos minutos sin saber qué pasa, está

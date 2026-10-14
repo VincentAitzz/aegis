@@ -89,48 +89,47 @@ LESSONS_DIR = Path(__file__).resolve().parent.parent / "lessons"
 
 
 def load_lessons(project: str, encargo: str = "") -> str:
-    """Lecciones del proyecto para el prompt: **el índice y la que más aplica**.
+    """**Siempre vacío.** Las lecciones ya no van al prompt, y esto se queda para
+    poder medir el antes y el después sin reconstruir el pasado.
 
-    ## Por qué ya no va el fichero entero
-    Medido el 2026-10-04, mismo encargo, n=5 cada caso (`app/lecciones.py` tiene
-    la tabla entera):
+    ## Por qué se quitó, con los números
+    `bin/medir-prompt.py` antes del cambio, con el mismo encargo y el mismo
+    proyecto:
 
-    | prompt | tool_calls | latencia en frío |
+    | bloque | caracteres | % del prompt |
     |---|---|---|
-    | con las 120 KB enteras | 5/5 | **60,2 s** |
-    | sin lecciones | 5/5 | **10,5 s** |
+    | **lecciones (índice + la más relevante)** | **9 200** | **54 %** |
+    | — de las cuales, solo el índice | 8 020 | 47 % |
+    | método | 3 570 | 21 % |
+    | ficha del proyecto | 3 189 | 19 % |
+    | identidad | 601 | 4 % |
+    | **prompt entero** | **17 155** | |
 
-    5,7× por llamada y el mismo número de tool_calls. Y el comportamiento que
-    describen tampoco cambia: se probó A-014 («no repitas la llamada idéntica que
-    ya falló dos veces») y el modelo la repitió **3 de 3 con las lecciones
-    inyectadas y 3 de 3 sin ellas**.
+    La mitad del prompt era un índice. Y ese índice, además:
 
-    ## Qué va ahora
-    Un índice (número, título y cuándo aplica) y la lección más relevante entera.
-    El resto se pide con la tool `lecciones(alias, tema)`. Las lecciones siguen
-    siendo el registro de por qué el código es como es —eso no cambia—; lo que
-    cambia es lo que se le enseña a un modelo que no las iba a obedecer.
+    1. **Estaba truncado.** El tope `MAX_INDICE_CHARS` es de 8 000, así que
+       listaba A-001…A-078 de 121 y remataba «y 43 más que no caben». Se pagaba
+       el 100 % del coste para enseñar el 65 % del contenido.
+    2. **Su puerta no se usó nunca.** La tool `lecciones` tiene **0 llamadas** en
+       los 857 run logs del repo (`data/logs/runs/`, 2026-09-24 → 2026-10-14). No
+       es que se usara poco: es que no se usó.
+    3. **No cambiaba el comportamiento que describía.** El propio repo lo midió el
+       2026-10-04 con A-014 («no repitas la llamada idéntica que ya falló dos
+       veces»): el modelo la repitió **3 de 3 con las lecciones inyectadas y 3 de
+       3 sin ellas**. Efecto cero, tanto en el caso de uso bueno como en el malo.
 
-    ## Por qué una entera y no cero
-    Una concreta cabe, y es la que de verdad puede darle un motivo para mirar.
-   -meterla en el prompt la deja leída en el momento en que decide; depender de
-    que pida la tool es depender de que el 7B se acuerde.
+    ## Y lo que no se quita
+    `bridge/lessons/{proyecto}.md` **sigue en el repo y sigue siendo el registro de
+    por qué el código es como es**. Eso no cambia en esta fase: cambia quién lo
+    lee. Documentación para una persona, no prompt para un modelo de 7 GB.
+
+    ## Por qué no se borra la función
+    Porque `bin/medir-prompt.py` la llama para reportar el bloque, y el número
+    es lo que permite comprobar que la quitamos y no solo lo parece. Una función
+    que devuelve `""` delata el sitio donde algo se apagó, que es justo lo que
+    uno quiere poder ver en seis meses.
     """
-    if not project:
-        return ""
-    indice = lecciones.indice(project)
-    if not indice:
-        return ""
-    partes = [
-        "LECCIONES DE ESTE PROYECTO (índice, no el texto entero). Si una encaja "
-        "con lo que te toca, pídela con la tool `lecciones(alias, tema)` antes de "
-        "actuar — o léela aquí si va entera:\n" + indice,
-    ]
-    encaja = lecciones.relevantes(project, encargo)
-    if encaja:
-        partes.append("La que más aplica a este encargo:\n\n"
-                      + encaja[0].como_texto())
-    return "\n\n".join(partes)
+    return ""
 
 
 def build_system_prompt(instructions: str = "", project: str = "",
@@ -138,13 +137,16 @@ def build_system_prompt(instructions: str = "", project: str = "",
                         enfoque_por_que: str = "",
                         enfoque_derivado: bool = False,
                         encargo: str = "") -> str:
-    """Sistema = identidad + método + base + ficha + enfoque + lecciones + memoria.
+    """Sistema = identidad + método + perfil + ficha + enfoque + memoria.
+
+    Las lecciones ya **no** entran aquí: eran el 54 % del prompt y no cambiaban
+    el comportamiento. Ver `load_lessons` en este mismo fichero, que tiene los
+    números y el motivo.
 
     El `enfoque` inyecta `bridge/enfoques/{enfoque}.md`, que es donde vive lo que
     solo tiene sentido mientras se piensa: cómo se va a construir algo, y en qué
-    orden se decide. Va **después** de la ficha y **antes** de las lecciones,
-    porque el enfoque dice lo que hay que hacer y las lecciones lo que no hay que
-    repetir.
+    orden se decide. Va **después** de la ficha, porque el enfoque dice lo que hay
+    que hacer y solo tiene sentido cuando se sabe de qué trata esto.
 
     ## Y por qué cabe uno solo
     A-016 midió que los modelos de 6 GB dejan de emitir `tool_calls` cuando el
@@ -173,14 +175,14 @@ def build_system_prompt(instructions: str = "", project: str = "",
     # porque, si los dos se contradijeran, manda el método.
     #
     # Son ~384 caracteres con tope duro de 600 (`app/quien.py`). El resto del
-    # fichero NO entra aquí: se pide con `quien_eres(tema)`, igual que las
-    # lecciones. Añadirlo todo «porque el modelo lo aprovecha más» se pagaría en
-    # cada paso de cada run —A-016, A-080—.
+    # fichero NO entra aquí: está en disco y `aegis_read_file` lo lee. Añadirlo
+    # todo «porque el modelo lo aprovecha más» se pagaría en cada paso de cada
+    # run: es exactamente lo que ocupaban las lecciones, el 54 % del prompt.
     quien = quien_context()
     if quien:
         parts.append(quien)
-    # La ficha del proyecto va antes que las lecciones: dice de qué trata esto,
-    # y las lecciones solo tienen sentido una vez que se sabe.
+    # La ficha del proyecto dice de qué trata esto, y va antes que cualquier
+    # otra cosa del proyecto: es lo que hace que lo demás tenga sentido.
     ficha = context_for(project)
     if ficha:
         parts.append(ficha)

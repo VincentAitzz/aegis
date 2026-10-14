@@ -9,8 +9,12 @@ Existe porque hay tres cosas distintas y conviene no confundirlas:
                           emulador, tu teléfono.
 
 El método es global a propósito: es la parte que el usuario no quiere volver a
-explicar en cada encargo. Las lecciones son por proyecto porque nacen de un
-error concreto y no tienen sentido fuera de él.
+explicar en cada encargo. Lo que es por proyecto es la **ficha**, porque describe
+un proyecto concreto y no tiene sentido fuera de él.
+
+(`lessons/{alias}.md` también era por proyecto y también se ha ido del prompt:
+eran el 54 % del system prompt y su tool tuvo 0 llamadas. El fichero se queda
+como documentación; ver `load_lessons` en `app/autopilot.py`.)
 
 **Por qué vive en un fichero y no en el prompt del código:** para poder
 corregirlo sin tocar Python, y para que sea revisable en un `git diff`. Y

@@ -61,8 +61,14 @@ usa no es un invariante; es una intención.
 Medido en la máquina de referencia: con 35 835 caracteres un run tardaba 49,1 s; con
 22 847, 18,5 s. Un 36 % menos de prompt, un 62 % menos de tiempo.
 
-Por eso las lecciones van al prompt como **índice**, no enteras, y el perfil entero
-no se inyecta nunca. Ver `docs/decisiones/002-camino-rapido.md`.
+El caso más claro está en las lecciones. Ocupaban **9 200 de los 17 155 caracteres**
+del prompt —el 54 %—, su índice estaba truncado sin decir nada, y la tool para
+pedirlas tenía **0 llamadas en 857 runs registrados**. No cambiaban el
+comportamiento que describían. El prompt hoy pesa **7 953**.
+
+Regla: **cada bloque que entra en el prompt tiene que justificar su coste con una
+medición, y si la medición dice que no hace nada, sale.** Ver
+`docs/decisiones/002-camino-rapido.md` y `bin/medir-prompt.py`.
 
 ### Nada irreversible por su cuenta
 
