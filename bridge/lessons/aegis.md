@@ -2854,3 +2854,173 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
   —«he lanzado la pregunta» y «ya sé la respuesta»— hay que nombrarlos por
   separado en la API. Con un solo nombre, el segundo caso hereda el
   comportamiento del primero y nadie se entera.
+
+## A-116 — Un guardarraíl que excluye lo que no cabe en su recorrido no cubre el hueco
+
+> Aplica cuando: un test de propiedades recorre una estructura y se salta algún
+> caso «porque así no se puede comprobar».
+
+- **Qué pasó** (2026-10-13): `test_lectura_nueva_nace_cerrada` recorre
+  `app.routes` y falla si alguna ruta nace sin `exigir_token`. Es un test de
+  propiedades de verdad, y por eso daba confianza. Pero tenía una línea:
+  `if ruta.path.startswith(("/docs", "/openapi", "/redoc", "/oauth2")): continue`.
+  `/docs`, `/redoc` y `/openapi.json` **devolvían 200 sin token** y publicaban
+  la superficie completa de la API —todas las rutas, sus esquemas y los cuerpos
+  de petición— con el test en verde. El guardarraíl estaba escrito y no cubría
+  el hueco.
+- **Por qué estaba la exclusión**: porque esas rutas no entran en `app.routes`
+  como las demás, y el recorrido no las veía. Se excluyeron para que el test
+  pasara, no para que la puerta quedara cerrada. **La diferencia entre «no lo sé
+  comprobar» y «no me molesta comprobarlo» es donde nace el agujero.**
+- **La regla**: una exclusión en un test de propiedades es una afirmación sobre
+  el sistema, y hay que poder decir cuál. Si la exclusión es porque *el recorrido
+  no puede mirar ahí*, la respuesta es **un test aparte para ese sitio**, no
+  borrar la línea. Aquí cabía en tres líneas: `docs_url=None` en el `FastAPI` y
+  un `assertEqual(404, …)` para las tres.
+- **El patrón general, y el que más se repite**: un invariante que se escribe
+  pero no se ejecuta no es un invariante —ya se pagó con `hooks.py` cableado a un
+  motor parado (A-016)—. Y un test de propiedades con un `continue` es la misma
+  cosa escrita con buena intención.
+
+## A-117 — Un trade-off con la premisa equivocada no se está pagando por nada
+
+> Aplica cuando: un test o un comentario justifican una decisión mala.
+
+- **Qué pasó** (2026-10-13): `Resolvedor.resolver()` daba prioridad a mDNS
+  sobre el host compilado, y el test que lo fijaba se justificaba así: *«el
+  compilado es una IP que el router puede cambiar: si ganara él, el cambio
+  volvería a romper la app sin que nadie pueda hacer nada»*. Es decir: mDNS
+  primero a cambio de que un cambio de IP no rompa la app.
+- **La premisa era falsa**: el host compilado del teléfono es una IP `100.x` de
+  Tailscale, y la asigna el plano de control de la malla. No se mueve porque
+  cambie el router, la casa o el ISP. El trade-off protegía contra un problema
+  que no existía.
+- **Por qué importaba lo que se protegía**: el candidato que gana la resolución
+  es el que recibe `X-Aegis-Token` **en todas las peticiones**. Y el sondeo que
+  decide el ganador solo mira que el puerto conteste y que `/health` diga
+  `status: ok` — **cero comprobación de identidad**. Cualquiera en la LAN que
+  anuncie `_aegis._tcp.local` y conteste `{"status":"ok"}` se convertía en el
+  bridge y recibía el token. El descubrimiento de red local es **descubrimiento,
+  no identidad**, y usarlo para elegir a quién se le habla es confundir las dos.
+- **La regla**: antes de aceptar un trade-off, **comprueba que la premisa es
+  cierta en producción**, no en el comentario que la justifica. Y un argumento
+  del tipo «es discovery, es fácil de usar» no compite con «es la identidad»,
+  porque son categorías distintas.
+- **La forma que sí conserva el descubrimiento**: `intentos()` —lo que se
+  **mira**, en Diagnóstico— sigue enseñando mDNS entero; `resolver()` —lo que se
+  **obedece**, en cada petición— solo usa el host compilado y **falla cerrado**.
+  Mirar no es obedecer, y separarlos fue lo que hizo el cambio pequeño.
+
+## A-118 — Un token de un solo uso que no se puede reproducir no se puede usar
+
+> Aplica cuando: apruebas un permiso y relanzas, esperando que el agente lo gaste.
+
+- **Qué pasó** (2026-10-13): se aprobó un `aegis_patch_file` para que Aegis
+  aplicara dos cambios de una línea en `app/main.py`, y se relanzó el run con el
+  token. El token era correcto y el run **terminó `completed` con 40 pasos**.
+  No escribió nada: 24 intentos de parche, todos rechazados con *«ese permiso era
+  para otra llamada distinta»*, y 16 más de `read_file`/`repo_verify`.
+- **Por qué**: el token valida **la llamada, no el run** (A-033), así que exige
+  que la tool y los argumentos coincidan. El modelo reescribió los argumentos en
+  cada intento y no iteró una sola vez: cada rechazo era un `error` nuevo y el
+  siguiente intento volvía a cambiar algo. El mecanismo era correcto; lo que no
+  aguantó fue repetir la llamada idéntica.
+- **Lo grave no es el fallo: es el veredicto.** `status: completed` con **20 de
+  20 tools en `false`** y una respuesta que *describe* el cambio en prosa. Es
+  exactamente el falso éxito de A-016, y solo se ve mirando la traza — el
+  `fin` decía `sin_tools`, que A-016 ya reescribió, pero `completed` es el que
+  engaña.
+- **La regla**: cuando el destino **no puede repetir los argumentos**, aprobar la
+  llamada no da permiso de trabajo: da permiso a *esta* llamada. Si el trabajo
+  real necesita N llamadas con argumentos distintos, la via que funciona es el
+  **verificador**, no el token. Y antes de leer `completed` como entrega, cuenta
+  cuántas tools salieron `true`.
+
+## A-119 — Una firma que siempre funciona es una firma que nunca se rompe
+
+> Aplica cuando: un valor por defecto «temporal» lleva años en el código y
+> nadie recuerda quién lo puso ni por qué.
+
+- **Qué pasó** (2026-10-13): `build.gradle.kts` llevaba `// TODO: Add your own
+  signing config` sobre un `signingConfig = signingConfigs.getByName("debug")`.
+  Todo build de release de la historia salió por ahí. No es una clave: es la del
+  SDK de Android, con la contraseña en la documentación de Google.
+- **Por qué era peor que una clave débil**: en Android el Keystore está
+  indexado por paquete **y** certificado. Alguien que genere un APK con
+  `com.aegis.aegis_console` y la clave de debug obtiene **la misma identidad** y
+  por tanto el mismo acceso a las semillas TOTP del teléfono. No hace falta el
+  dispositivo, ni root, ni ser usuario: basta con el APK y la clave, que es
+  pública. Con `FLAG_SECURE` puesto —A-120—, esa era la única vía que quedaba.
+- **Por qué nadie lo notó**: `getByName("debug")` **siempre funciona**. La build
+  de release compilaba, instalaba, arrancaba y generaba códigos correctos. El
+  fallo no era un fallo: era una configuración que no se puede confundir con
+  nada mientras mires la app. **Que compile no dice con qué está firmada.**
+- **La regla**: un default que debe fallar hay que hacer que **falle**. Ahora
+  `buildTypes.release` usa `signingConfigs.findByName("release") ?: throw
+  GradleException(...)`, y el mensaje dice **dónde se busca** el
+  `key.properties`, porque un error accionable vale más que un comentario.
+- **Y la clave fuera del árbol**: vive en `~/.config/aegis/key.properties`, con
+  `chmod 600`. `mobile/android/.gitignore` ya excluía `key.properties` y
+  `**/*.jks`, pero depender de un `.gitignore` es depender de que nadie haga
+  `git add .` con prisa. La ruta por defecto es la de fuera; la del repo queda
+  solo para quien trabaje en otra máquina.
+- **Y comprobar el discriminante**: el chequeo de firma de
+  `infra/mobile/install-phone.sh` se probó **contra un APK de verdad firmado en
+  debug** y tiene que abortar con código 1. Un chequeo que solo se ejecuta sobre
+  el caso bueno no está probado: es A-115 con otro disfraz.
+
+## A-120 — Instalar y actualizar son dos caminos, y el nombre los confunde
+
+> Aplica cuando: un mismo destino tiene más de una forma de recibir un binario.
+
+- **Qué pasó** (2026-10-13): `infra/mobile/install-phone.sh` instalaba el APK de
+  **debug** con `adb reverse` y `API_HOST=localhost`. Instalado en el teléfono
+  físico, eso significa una app firmada con la clave pública **más** apuntando a
+  `localhost`, o sea que no ve el bridge fuera del ordenador. El script se llama
+  `install-phone`, dice «instala en un teléfono físico», y no es lo que hace.
+- **La distinción que faltaba**: **Instalación** es la primera vez, o cuando hay
+  que cambiar de firma; compila uno local y lo instala por cable.
+  **Actualización** es el día a día; pide al bridge un binario que el bridge
+  selló, y por eso sabe que es más nuevo que lo de dentro. Instalar por USB una
+  build vieja hace que la app **no vea actualización pendiente y no avise de
+  nada**.
+- **La regla**: cuando un destino tiene dos vías de entrada, cada una necesita
+  su nombre y su comprobación. Aquí la vía USB comprueba **la firma antes de
+  instalar**, porque una APK firmada en debug se comporta exactamente igual que
+  una correcta: abre, lista las cuentas y genera códigos buenos. Nada en la app
+  lo delata; solo la huella.
+- **Lo que se añadió para que no cuelgue**: paso final que hace `ping` a la IP de
+  la malla desde el teléfono y **dice en voz alta que eso prueba Tailscale, no la
+  app**. Sin ese paso, «instalado» y «funcionando» son la misma palabra, y con el
+  túnel caído son dos estados distintos que se ven igual.
+
+## A-121 — Un guardarraíl que casa por subcadena se apaga, y apagado es peor que no tenerlo
+
+> Aplica cuando: un test busca un texto sospechoso y da positivo en algo innocent.
+
+- **Qué pasó** (2026-10-13): el guardarraíl nuevo de la bóveda buscaba llamadas
+  al log por subcadena, con `'log('` en la lista. Dio **siete falsos positivos**,
+  todos en `claves_page.dart`, y todos la misma cosa: `showDiálogo`/`diálogo`/
+  `_confirmarAlta` — la palabra «diálogo» **contiene «log»**. No había ni un solo
+  `log()` en el repo, en ningún sitio.
+- **Por qué importa más que el bug**: un guardarraíl rojo se apaga. Siete
+  falsos positivos y el próximo que llega borra el test o añade `skip`, y se
+  queda **sin invariante y con la comforting de que había una**. Eso es peor que
+  el hueco original, porque el hueco al menos era visible.
+- **La regla**: para detectar llamadas, **regex con límite de palabra**, nunca
+  subcadena. `\blog\s*\(` no casa con `diálogo(` porque entre `á` y `l` no hay
+  frontera; `log(` sí. Y hay que excluir las líneas de comentario: el fichero
+  que **explica** el problema nombra `print(` y `log(` al explicarlo, y sin esa
+  exclusión el guardarraíl falla contra sí mismo.
+- **La forma correcta de escribir este test**: se comparan **rutas exactas**
+  (`contains('lib/core/auth/boveda.dart')`) y no prefijos. Con prefijos, un
+  fichero renombrado a `boveda_v2.dart` pasaba el test y el guardarraíl se
+  quedaba mirando el hueco **sin decirlo**.
+- **Y lo que va antes**: el guardarraíl empieza comprobando que **mira algo** —
+  que la lista no está vacía y que `boveda.dart` está dentro. Sin ese primer
+  test, un rename que dejara la lista llena de rutas muertas pasa en verde para
+  siempre.
+- **Y hay que probarlos tres veces**: se inyecto a propósito `import
+  'package:dio/dio.dart'`, un `print` con una semilla y un `HttpClient`, y cada
+  uno tiene que **cazar el test que toca**. Un guardarraíl solo ejecutado sobre
+  el caso bueno no está probado (A-115).

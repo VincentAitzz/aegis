@@ -308,10 +308,10 @@ desactiva: el motivo de cada veto está en el mensaje.
 Hay **dos** caminos para poner una build en el móvil, y confundirlos cuesta una
 tarde:
 
-| Camino | Quién decide | Para qué |
+| Camino | Quién compila | Para qué |
 |---|---|---|
-| `install_apk(target=…)` | Aegis, con tu OK | una release |
-| Ajustes → «Actualizar Aegis» | tú, en Android | una build que ya está en el bridge |
+| `bash infra/mobile/install-phone.sh` (USB) | tú, en local | **Instalación**: la primera vez, o al cambiar de firma |
+| Ajustes → «Actualizar Aegis» | el bridge | **Actualización**: el día a día, sin cable |
 
 El segundo es el día a día, y tiene una regla que no es negociable: **el bridge no
 sirve un APK más viejo que su propio código.** Un APK viejo instalado como si
@@ -319,7 +319,28 @@ fuera nuevo deja la app peor que antes, y es el peor tipo de fallo posible: uno
 que parece una mejora. Por eso `HEAD /apk/{base}` devuelve `409` con el motivo en
 `x-aegis-motivo`, y la app lo enseña.
 
-Las dos cosas que hacen que esto funcione, y que ya se rompieron una vez:
+### La firma: por qué el camino USB **no** instala el APK de debug
+
+Desde el 2026-10-13 la release se firma con una clave propia, en
+`~/.config/aegis/key.properties` (fuera del repo, `chmod 600`). Antes usaba
+`signingConfigs.getByName("debug")`, que es la clave **pública del SDK de
+Android** — A-119.
+
+No es «menos seguro»: es una vía directa a las semillas TOTP. En Android el
+Keystore se indexa por paquete **y** certificado, así que cualquiera que genere un
+APK con `com.aegis.aegis_console` y la clave de debug obtiene **la misma
+identidad** y el mismo acceso a ese almacén. Y como una APK firmada en debug
+funciona exactamente igual que una correcta, el error no se ve en la app: abre,
+lista las cuentas y genera códigos buenos. Por eso `install-phone.sh`
+**comprueba la firma antes de instalar** y aborta con código 1, y por eso la
+build de release **falla** si no encuentra `key.properties` en vez de caer al
+debug.
+
+Para girar la clave hay que **desinstalar y reinstalar**: Android no acepta que
+el sustituto venga de otro firmante.
+
+Las dos cosas que hacen que la actualización funcione, y que ya se rompieron una
+vez:
 
 - **El motivo viaja en cabecera**, no en el cuerpo. La app pregunta con un
   `HEAD`, y un `HEAD` no tiene cuerpo. Y va **sin acentos**, porque las cabeceras
@@ -329,8 +350,8 @@ Las dos cosas que hacen que esto funcione, y que ya se rompieron una vez:
   indistinguible de una red lenta (A-105).
 
 Para probar el ciclo entero hacen falta **dos** builds: una que se instala a mano
-con `adb` y otra más nueva que se sirve. Con una sola, la app ve que ya tiene la
-última y no hay nada que probar. Detalle en `docs/runbook.md` §4.1.2.
+con `install-phone.sh` y otra más nueva que se sirve. Con una sola, la app ve que
+ya tiene la última y no hay nada que probar. Detalle en `docs/runbook.md` §4.1.2.
 
 ## 5. Operación (verificar antes de asumir)
 

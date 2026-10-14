@@ -90,7 +90,7 @@ class TestNingunMutanteSinPuerta(unittest.TestCase):
             metodos = getattr(ruta, "methods", None)
             if not metodos:
                 continue
-            if ruta.path.startswith(("/docs", "/openapi", "/redoc", "/oauth2")):
+            if ruta.path.startswith(("/oauth2",)):
                 continue
             tiene = getattr(ruta, "dependant", None) and "exigir_token" in {
                 d.call.__name__ for d in ruta.dependant.dependencies}
@@ -100,6 +100,21 @@ class TestNingunMutanteSinPuerta(unittest.TestCase):
                          "estas rutas no piden token y no están en "
                          "LECTURAS_ABIERTAS, así que nacieron abiertas:\n  "
                          + "\n  ".join(sin_puerta))
+
+    def test_la_superficie_de_la_api_no_se_sirve_sin_llave(self):
+        """`/docs`, `/redoc` y `/openapi.json` no son una excepción: son la puerta.
+
+        Este test antes no existía, y el hueco era real: los tres devolvían 200
+        sin token y publicaban el mapa entero de la API. Para colarse, el test de
+        propiedades de arriba **excluía esas tres rutas a propósito** —no entran en
+        `app.routes` como las demás—, así que el guardarraíl estaba escrito y no
+        cubría el hueco.
+
+        Ahora el `FastAPI` se construye con las tres en `None` y devuelven 404.
+        """
+        c = TestClient(self.app)
+        for ruta in ("/docs", "/redoc", "/openapi.json"):
+            self.assertEqual(404, c.get(ruta).status_code, ruta)
 
     def test_un_run_no_se_lee_sin_llave(self):
         """La que se coló: la traza completa, con tus encargos y los argumentos."""

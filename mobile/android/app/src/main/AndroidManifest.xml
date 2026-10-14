@@ -47,10 +47,27 @@
          pantalla en vez de dejar que aparezca por sorpresa. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
+    <!-- ## Por qué `allowBackup="false"`
+         Sin declararlo, Android usa **`true` por defecto** y sube el
+         `data/` de la app a la nube del sistema. Para una app normal es lo que
+         quieres. Aquí no, por dos razones:
+
+         - La bóveda **ya tiene su propio backup**, y este sí está bien: cifrado con
+           Argon2id + AES-256-GCM, con clave derivada de una contraseña que elige
+           la persona (`core/auth/copia.dart`). El de Android no es ese.
+         - Este no lo controla nadie. Sale de la máquina sin que la app lo decida,
+           y con el alcance que quiera la nube del sistema.
+
+         Lo que **no** se sacrifica: las semillas no se pueden leer en el
+         backup, porque el ciphertext de `flutter_secure_storage` depende de una
+         clave que vive en el Keystore y el Keystore no se copia. El riesgo era
+         bajo y aun así se cierra, porque «bajo» aquí significa «depende de que
+         nadie cambie la configuración del sistema». -->
     <application
         android:label="@string/app_name"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
         android:usesCleartextTraffic="true">
         <!-- ## Por qué cleartext está declarado
              No es un descuido de seguridad: **es lo que la app ya hacía**.

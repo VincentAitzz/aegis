@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import re
+import secrets
 import socket
 import time
 import uuid
@@ -114,7 +115,24 @@ async def lifespan(app: FastAPI):
         await hermes.aclose()
 
 
-app = FastAPI(title="Aegis Bridge", version="0.1.0", lifespan=lifespan)
+# `docs_url`/`redoc_url`/`openapi_url` a None: Swagger, ReDoc y el esquema
+# OpenAPI son la **superficie completa de la API** —todas las rutas, sus esquemas
+# y los cuerpos de petición— y por defecto se sirven **sin token**, porque FastAPI
+# los monta fuera de la puerta. Aquí semeasured 200 en los tres.
+#
+# No es un descuido de configuración: `tests/test_puerta_http.py` recorre las
+# rutas de `app.routes` para que ninguna nueva nazca abierta, y **excluía estas
+# tres a propósito** (`if ruta.path.startswith(("/docs", "/openapi", "/redoc"))`),
+# porque no entran en `app.routes` del mismo modo. El guardarraíl estaba escrito
+# y no cubría el hueco, que es el peor sitio para que un hueco esté.
+app = FastAPI(
+    title="Aegis Bridge",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -133,9 +151,34 @@ def _token_aceptado(x_aegis_token: Optional[str]) -> bool:
     """El veredicto de una clave, sin la excepción. Lo comparten el HTTP y el WS.
 
     Sin clave configurada, todo vale: ver la nota de `exigir_token`.
+
+    ## Por qué `compare_digest` y no `==`
+    `==` sobre `str` en CPython sale en cuanto encuentra el primer byte distinto,
+    y además compara longitudes antes. Eso convierte cada 401 en un oráculo: con
+    muchas peticiones midiendo el tiempo de respuesta se puede recuperar el
+    token prefijo a prefijo.
+
+    Aquí el riesgo es de manual, no de red —el ruido de una llamada HTTP real es
+    mayor que la diferencia—, pero el arreglo cuesta una línea y no hay forma
+    honesta de decir que no hace falta: **una comparación de secretos no es una
+    comparación de secretos si depende del reloj**.
+
+    ## Por qué el `except`
+    `compare_digest` exige que las dos entradas sean `str` **ASCII**. La clave la
+    elige la persona, y una con una `ñ` o un emoji legítimamente rompería el
+    arranque entero con un `TypeError` en *cada* petición. Caer a `==` en ese caso
+    degrada la protección, pero es una clave que nadie puede atacar por reloj si
+    no es ASCII: no la puede ni escribir.
     """
     esperada = settings.aegis_api_key
-    return not esperada or bool(x_aegis_token) and x_aegis_token == esperada
+    if not esperada:
+        return True
+    if not x_aegis_token:
+        return False
+    try:
+        return secrets.compare_digest(x_aegis_token, esperada)
+    except TypeError:
+        return x_aegis_token == esperada
 
 
 def exigir_token(x_aegis_token: Optional[str] = Header(default=None)) -> None:

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -36,6 +37,34 @@ class MainActivity : FlutterActivity() {
      * hicieran a la vez, un fallo de red dejaría la bandeja vacía por un motivo
      * que no es «no hay nada», que es exactamente la mentira que hay que evitar.
      */
+    /**
+     * Lo que hace con la pantalla antes de que se vea nada.
+     *
+     * ## Por qué `FLAG_SECURE` y no "es una app de autenticación"
+     * Porque aquí vive la semilla TOTP de cuentas reales, y sin esta bandera las
+     * tres salidas por las que se escapan son **gratis** y ninguna necesita root:
+     *
+     * - el **lockscreen** de Android, que hace una captura de la ventana cuando
+     *   pulsas recentes o al bloquear;
+     * - las **capturas y grabaciones** de pantalla;
+     * - el **multitarea**, que guarda un reductor de la ventana en el sistema.
+     *
+     * La bandera corta las tres de raíz, y no depende de que la app recuerde
+     * tapar nada: se aplica al sistema de ventanas, no a nuestra UI.
+     *
+     *## Por qué va en `onCreate` y no en Flutter
+     * `FLAG_SECURE` es una propiedad de la `Window` nativa. Ponerla desde Dart
+     * dejaría una ventana de arranque sin ella, que es justo la que se captura al
+     * abrir la app.
+     */
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE,
+        )
+    }
+
     override fun onStart() {
         super.onStart()
         if (!concedePermiso()) return

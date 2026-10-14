@@ -1,4 +1,6 @@
+import java.io.File
 import java.util.Base64
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -6,8 +8,53 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// ## Dónde vive la clave de firma
+//
+// Antes esto firmaba con la clave de **debug**, que es la del SDK de Android y
+// tiene la contraseña en la documentación de Google. Eso no es una credencial
+// débil: es una credencial **pública**. Cualquiera puede generar un APK con
+// **la misma firma**, y en Android el almacén de claves está indexado por
+// paquete **y** certificado. Mismo paquete y misma firma = misma identidad =
+// **acceso al mismo Keystore**. Con `FLAG_SECURE` puesto, esa era justo la vía
+// para robarle las semillas TOTP a alguien: hacerte creer que su app nueva era
+// la app vieja. Estaba abierta de par en par.
+//
+// Se lee en este orden, y el primero que exista gana:
+//
+// 1. `AEGIS_KEY_PROPERTIES` — una ruta explícita.
+// 2. `~/.config/aegis/key.properties` — **fuera del repositorio**, que es donde
+//    vive de verdad. Fuera del árbol porque la contraseña no es algo que deba
+//    depender de que nadie haga `git add .` un día con prisa.
+// 3. `android/key.properties` — la convención de Flutter/Gradle, por si alguien
+//    trabaja en otra máquina. `android/.gitignore` ya lo excluye.
+//
+// Si no hay ninguna, la build de release **falla**; está en `buildTypes` abajo.
+val ficheroClaves: File? = sequenceOf(
+    System.getenv("AEGIS_KEY_PROPERTIES")?.let(::File),
+    File(System.getProperty("user.home"), ".config/aegis/key.properties"),
+    rootProject.file("key.properties"),
+).filterNotNull().firstOrNull { it.isFile }
+
+val claves = Properties().apply {
+    ficheroClaves?.inputStream()?.use { load(it) }
+}
+
 android {
     namespace = "com.aegis.aegis_console"
+
+    // Va **dentro** de `android` porque `signingConfigs` es del plugin, no del
+    // script. Fuera de aquí el build falla al *evaluar*, no al compilar, y el
+    // mensaje que sale es sobre el DSL y no sobre la clave que falta.
+    signingConfigs {
+        if (ficheroClaves != null) {
+            create("release") {
+                storeFile = file(claves.getProperty("storeFile"))
+                storePassword = claves.getProperty("storePassword")
+                keyAlias = claves.getProperty("keyAlias")
+                keyPassword = claves.getProperty("keyPassword")
+            }
+        }
+    }
 
     // `buildConfig` va a propósito: el overlay nativo y el receptor de
     // notificaciones necesitan la dirección del bridge y el token **sin pasar por
@@ -68,9 +115,24 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // ## Por qué esto falla y antes no
+            //
+            // `signingConfigs.getByName("release")` **no existe** si no hay
+            // `key.properties`, y por eso no se puede dejar el
+            // `getByName("debug")` de antes como red de seguridad: siempre
+            // funcionaba, y por eso el fallo era invisible. Una release firmada
+            // con una clave pública circulaba igual que una de verdad, porque
+            // **que compile no dice con qué está firmada**.
+            //
+            // El mensaje dice dónde se busca el fichero, porque el fallo tiene que
+            // ser accionable sin leer este comentario.
+            signingConfig = signingConfigs.findByName("release") ?: throw GradleException(
+                "Falta el fichero de claves de firma. Se busca en " +
+                    "\$AEGIS_KEY_PROPERTIES, ~/.config/aegis/key.properties o " +
+                    "android/key.properties. Una release NO se firma con la clave " +
+                    "de debug: cualquiera podría generar un APK con la misma firma " +
+                    "y leer el Keystore de este telefono."
+            )
         }
     }
 }

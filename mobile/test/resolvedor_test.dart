@@ -25,16 +25,51 @@ void main() {
       {'ok': true, 'hermes_ok': true, 'ollama_ok': true};
 
   group('el candidato que gana', () {
-    test('es el de mDNS cuando responde, aunque el compilado también esté vivo', () async {
-      // Los dos bridges están en pie y aun así el de la red local gana. Importa
-      // porque el compilado es una IP que el router puede cambiar: si ganara él,
-      // el cambio volvería a romper la app sin que nadie pueda hacer nada.
+    test('con host compilado, un anuncio de mDNS NO gana la resolución', () async {
+      // Este test cambió de resultado a propósito. Antes affirmaba lo contrario
+      // («es el de mDNS cuando responde»), y su motivo era que «el compilado es
+      // una IP que el router puede cambiar»: si ganara él, un cambio de IP
+      // rompería la app sin que nadie pudiera hacer nada.
+      //
+      // El motivo era falso. Una IP `100.x` de Tailscale la asigna el plano de
+      // control de la malla y no se mueve porque cambie el router, la casa o el
+      // ISP. Así que se estaba dejando el token de la API a cambio de una
+      //avonstibilidad que no compraba nada.
+      //
+      // Lo que se cambia de verdad: el anuncio de mDNS es **descubrimiento**, no
+      // identidad. Cualquiera en la LAN que anuncie `_aegis._tcp.local` y
+      // conteste `{"status":"ok"}` —todo lo que el sondeo comprueba— se
+      // convierte en el bridge y recibe el `X-Aegis-Token` en cada petición.
       final r = Resolvedor(
         config: compilado('100.101.102.100'),
         buscar: () async => const [BridgeEncontrado(host: '192.168.0.50', puerto: 8000)],
         sondear: sano,
       );
+      expect(await r.resolver(), 'http://100.101.102.100:8000');
+    });
+
+    test('sin host compilado, el anuncio de mDNS sigue sirviendo', () async {
+      // El caso de desarrollo (emulador sin `API_HOST`) no tiene nada que
+      // pinear, y la red local es exactamente lo que se quiere ahí.
+      final r = Resolvedor(
+        config: const AppConfig(apiHost: 'localhost', usesMeshHostname: false),
+        buscar: () async => const [BridgeEncontrado(host: '192.168.0.50', puerto: 8000)],
+        sondear: sano,
+      );
       expect(await r.resolver(), 'http://192.168.0.50:8000');
+    });
+
+    test('si el compilado no responde, falla cerrado en vez de repartir', () async {
+      // Devolver el anuncio de mDNS cuando el host pineado no contesta es
+      // exactamente el fallo que hay que evitar: «no está el mío» no puede
+      // significar «te pongo el de otro».
+      final r = Resolvedor(
+        config: compilado('100.101.102.100'),
+        buscar: () async => const [BridgeEncontrado(host: '192.168.0.50', puerto: 8000)],
+        sondear: (base) async =>
+            base.contains('100.101.102.100') ? throw StateError('sin respuesta') : sano(base),
+      );
+      expect(await r.resolver(), isNull);
     });
 
     test('es el compilado cuando no hay nada por mDNS', () async {
@@ -101,13 +136,15 @@ void main() {
       // El falso éxito que este repo ya pagó una vez (A-016): el puerto contesta,
       // la respuesta llega, y el bridge por dentro está roto. Si `ok` fuera
       // «me contestaron», la app hablaría con un puente que no puede hacer nada.
+      // Con el host pineado, lo que se afirma es que no se usa ese candidato —
+      //y tampoco se recurre al anuncio de la red local para salir del paso.
       final r = Resolvedor(
         config: compilado('100.101.102.100'),
         buscar: () async => const [],
         sondear: (base) async =>
             base.contains('100.84') ? {'ok': false, 'hermes_ok': false} : sano(base),
       );
-      expect(await r.resolver(), 'http://localhost:8000');
+      expect(await r.resolver(), isNull);
     });
 
     test('el contrato real de /health, que es status, cuenta como vivo', () async {
@@ -142,7 +179,7 @@ void main() {
         sondear: (base) async =>
             base.contains('100.84') ? const {} : sano(base),
       );
-      expect(await r.resolver(), 'http://localhost:8000');
+      expect(await r.resolver(), isNull);
     });
   });
 

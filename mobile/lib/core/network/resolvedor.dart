@@ -8,6 +8,14 @@
 ///
 /// La regla es: **todos se prueban y se queda el que responde `/health`**, en ese
 /// orden. El orden no es arbitrario, y está en [candidatos].
+///
+/// ## La salvedad que separa [intentos] de [resolver]
+/// La lista de candidatos se usa para **mirar** —en Diagnóstico— y para
+/// **elegir** —en cada petición—, y desde que la app guarda semillas TOTP ya no
+/// pueden ser lo mismo: mirar un anuncio de mDNS es diagnóstico, y **obedecer**
+/// a un anuncio de mDNS es dejar que cualquiera en la LAN reciba el token de la
+/// API. Por eso [resolver] no mira la red local cuando hay host compilado, y
+/// [intentos] sigue enseñándola entera. Ver [resolver].
 library;
 
 import 'dart:async';
@@ -135,13 +143,43 @@ class Resolvedor {
     return out;
   }
 
-  /// La base del primer candidato que responde, o `null` si ninguno.
+  /// La base contra la que hablar, o `null` si nadie responde.
   ///
   /// ## Por qué devuelve `String` y no el `Intento`
   /// Porque quien llama —el cliente HTTP— solo necesita la URL. Devolver el
   /// intento entero hace que cada consumidor tenga que acordarse de mirar el
   /// campo, y uno se olvidará.
+  ///
+  /// ## Por qué con host compilado **no** se consulta mDNS
+  /// Porque el que gana la resolución se convierte en el que recibe el
+  /// `X-Aegis-Token` **en todas las peticiones**, y el orden era
+  /// «el primero que conteste `/health`». Eso no es descubrir un bridge: es
+  /// **aceptar que cualquiera en la LAN pueda convertirse en el bridge**. Basta
+  /// con anunciar `_aegis._tcp.local` y contestar `{"status":"ok"}` — que es
+  /// exactamente lo que el sondeo comprueba, y no comprueba nada más. La
+  /// app no distinguía «el bridge» de «un host que dice ser el bridge».
+  ///
+  /// ## Por qué no se pierde nada, corrigiendo el motivo antiguo
+  /// El orden anterior justificaba el mDNS primero con que «el compilado es una
+  /// IP que el router puede cambiar». Eso es cierto para la IP de casa y
+  /// **falso para Tailscale**: un `100.x` lo asigna el plano de control de la
+  /// malla y no se mueve porque el router cambie, porque te mude de casa o
+  /// porque el ISP te dé otra IP. La premise del trade-off era incorrecta, así
+  /// que el trade-off no se estaba pagando por nada.
+  ///
+  /// Lo que sí cambia: si el host compilado no responde, aquí se devuelve
+  /// `null` —**falla cerrado**— en vez de repartirse por la lista. Quien lo
+  /// recibe (`AgentRepositoryImpl._base`) cae al host compilado y ve el error de
+  /// verdad, en vez de hablar con quien haya ganado el multicast.
+  ///
+  /// [intentos] sigue viendo la lista entera, así que Diagnóstico **sí** enseña
+  /// lo que se anuncia por mDNS: se puede seguir mirando por qué la app no
+  /// llega, aunque ya no obedezca al anuncio.
   Future<String?> resolver() async {
+    if (config.usesMeshHostname) {
+      final i = await _probar(config.httpBase, 'compilado');
+      return i.ok ? i.base : null;
+    }
     for (final i in await intentos()) {
       if (i.ok) return i.base;
     }

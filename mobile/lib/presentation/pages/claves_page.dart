@@ -279,7 +279,45 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
 
   // -- canjear --------------------------------------------------------------
 
+  /// Cuántos canjes seguidos fallan antes de parar uno.
+  static const _maxIntentosCanje = 5;
+
+  /// Cuánto se queda parado un canje que se pasó de intentos.
+  static const _esperaCanje = Duration(minutes: 5);
+
+  /// Intentos fallidos seguidos. Se pone a cero en cuanto uno sale bien.
+  int _canjeFallidos = 0;
+
+  /// Hasta cuándo no se vuelve a intentar canjear.
+  DateTime? _canjeBloqueadoHasta;
+
+  /// ## Qué protege esto y qué no — y por qué está, aun así
+  ///
+  /// El canje es **local**: `Boveda.canjear` compara contra los códigos
+  /// guardados como SHA-256, sin pedir nada a nadie. Así que este límite **no**
+  /// protege contra un atacante que tenga el dispositivo desbloqueado: puede
+  /// leer la pantalla, probar lo que quiera y saltarse una puerta de la UI.
+  ///
+  /// Aun así está, por una razón concreta: los códigos de recuperación son de
+  /// un solo uso y de vida corta, y quemarlos cinco veces por error **destruye la
+  /// cuenta** de quien los tenía guardados y no los estaba usando, y eso sí
+  /// pasa sin adversario. Un límite de cinco intentos convierte un error de
+  /// dedo en cinco minutos de pausa; sin él, es una cuenta perdida.
   Future<void> _canjear() async {
+    final ahora = DateTime.now();
+    final hasta = _canjeBloqueadoHasta;
+    if (hasta != null) {
+      if (ahora.isBefore(hasta)) {
+        final falta = hasta.difference(ahora).inSeconds + 1;
+        _error('Demasiados intentos. Prueba en ${falta}s.');
+        return;
+      }
+      // La espera pasó: esto es un desbloqueo, no un canje, y no cuenta como
+      // intento para no poder encadenar ventanas de cinco.
+      _canjeBloqueadoHasta = null;
+      _canjeFallidos = 0;
+    }
+
     final codigo = await showDialog<String>(
       context: context,
       builder: (_) => const DialogoCanje(),
@@ -288,6 +326,16 @@ class _ClavesPageState extends ConsumerState<ClavesPage> {
 
     final id = await ref.read(bovedaProvider.notifier).canjear(codigo);
     if (!mounted) return;
+
+    if (id == null) {
+      _canjeFallidos++;
+      if (_canjeFallidos >= _maxIntentosCanje) {
+        _canjeBloqueadoHasta = DateTime.now().add(_esperaCanje);
+      }
+    } else {
+      _canjeFallidos = 0;
+      _canjeBloqueadoHasta = null;
+    }
 
     final boveda = _bovedaActual(ref);
     final cuenta = boveda?.cuentas.where((c) => c.id == id).firstOrNull;
