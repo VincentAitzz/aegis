@@ -67,8 +67,12 @@ pedirlas tenía **0 llamadas en 857 runs registrados**. No cambiaban el
 comportamiento que describían. El prompt hoy pesa **7 953**.
 
 Regla: **cada bloque que entra en el prompt tiene que justificar su coste con una
-medición, y si la medición dice que no hace nada, sale.** Ver
-`docs/decisiones/002-camino-rapido.md` y `bin/medir-prompt.py`.
+medición, y si la medición dice que no hace nada, sale.**
+
+Todas las cifras de este README, con su comparativa y su n, están en
+**[`docs/medidas.md`](docs/medidas.md)**. Para medir de nuevo:
+`bin/medir-prompt.py` (de qué está hecho el prompt) y
+`bin/lab/medir-prompt-ab.py` (un A/B de dos prompts, alternando).
 
 ### Nada irreversible por su cuenta
 

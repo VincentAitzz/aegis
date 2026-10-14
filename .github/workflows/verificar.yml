@@ -214,7 +214,8 @@ jobs:
         run: |
           set -euo pipefail
           for doc in docs/hardware.md docs/vision.md docs/architecture.md \
-                     docs/runbook.md README.en.md CONTRIBUTING.md SECURITY.md; do
+                     docs/runbook.md docs/medidas.md README.en.md \
+                     CONTRIBUTING.md SECURITY.md; do
             test -f "$doc" || { echo "::error::el README enlaza a $doc y no existe"; exit 1; }
           done
           # Y lo que el README afirma del motor tiene que ser verdad: Hermes ya

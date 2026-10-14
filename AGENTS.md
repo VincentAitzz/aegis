@@ -268,7 +268,8 @@ Tres razones, y las tres son mediciones:
 3. **El índice estaba truncado.** Con el tope de 8 000 chars listaba A-001…A-078
    de 121: se pagaba el 100 % para enseñar el 65 %.
 
-Para volver a mirar el número: `bin/medir-prompt.py`.
+Para volver a mirar el número: `bin/medir-prompt.py`. Y el A/B que justifica
+que salieran, con su n y su comparativa, en `docs/medidas.md` §4.
 
 **Al leer una lección, ábrela con un editor.** Si la regla te importa, está junto
 al código que la impone y en el test que la comprueba; la lección entera es el

@@ -67,8 +67,12 @@ them had **0 calls across 857 recorded runs**. They did not change the behaviour
 they described. The prompt now weighs **7,953**.
 
 Rule: **every block that enters the prompt has to justify its cost with a
-measurement, and if the measurement says it does nothing, it goes.** See
-`docs/decisiones/002-camino-rapido.md` and `bin/medir-prompt.py`.
+measurement, and if the measurement says it does nothing, it goes.**
+
+Every number in this README, with its comparison and its n, is in
+**[`docs/medidas.md`](docs/medidas.md)**. To measure again:
+`bin/medir-prompt.py` (what the prompt is made of) and
+`bin/lab/medir-prompt-ab.py` (an A/B of two prompts, interleaved).
 
 ### Nothing irreversible on its own
 
