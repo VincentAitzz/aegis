@@ -119,6 +119,55 @@ bin/api GET health
 bin/api POST autopilot '{"project":"aegis","prompt":"list the projects and their verifiers"}'
 ```
 
+### Two ways to talk
+
+There are two, and the difference is not cosmetic: one **converses**, the other
+**works**.
+
+| | `POST /chat` | `POST /autopilot` |
+|---|---|---|
+| Model | the 3B | the 7B |
+| 21-tool schema | **no** | yes |
+| What it answers | conversation | work, with a trace |
+| Short turn | **0.17 – 0.8 s** | 23 – 40 s |
+| Tools | none | all of them, each behind its gate |
+
+`/chat` deliberately carries **no schema**, and that is measured: with the schema
+in front of it, the model calls a tool when it doesn't need to. "Hi, how are you?"
+produces a call to `quien_eres_actualiza`. **The model does not know when not to
+use a tool** — and a tool called by accident is not harmless: it runs, or worse,
+it asks permission for something nobody asked for.
+
+Where a turn goes:
+
+```
+text → T0  intents        → 0.01 s, no model
+    → T1  the 3B, no schema → 0.17 s, conversation
+    → T2  only if T1 falls silent → real work
+```
+
+Escalation is not the model's to decide: it escalates **on silence**, which is
+observable. A system that decides on its own that what it heard was an order is
+the failure this repo already measured, when Aegis asked to create a project
+nobody had asked it to create.
+
+### Surviving a reboot
+
+```bash
+bash infra/systemd/instalar.sh      # three user units + a watchdog timer
+journalctl --user -u aegis-bridge -f
+```
+
+User units, on purpose: they start when you log in, die when you log out, need no
+sudo and touch nothing privileged. That is not style — it is the invariant that
+*Aegis is not a single point of failure*. If your business depended on a system
+service, shutting the laptop down would cut it off, which is worse than not
+having it.
+
+`infra/stack.sh` still exists and works everywhere: there is no `systemd --user`
+on macOS. The units are not the only way to start Aegis, they are the way not to
+have to remember.
+
 ### The mobile app (optional)
 
 ```bash

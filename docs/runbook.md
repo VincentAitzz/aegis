@@ -13,6 +13,48 @@ importante es **qué comprueba cada script**, no el nombre del gestor de servici
 Las direcciones IP y los seriales que aparecen son **de ejemplo**. Las tuyas las
 sabes con `tailscale ip -4`, `ip -4 addr` y `adb devices -l`.
 
+## 0. Como servicio (lo normal)
+
+Desde el 2026-10-14 lo normal no es arrancar a mano: es que Aegis arranque solo.
+
+```bash
+bash infra/systemd/instalar.sh      # instala y activa
+systemctl --user status aegis-bridge
+journalctl --user -u aegis-bridge -f
+```
+
+Tres units **de usuario** — `aegis-ollama`, `aegis-gateway`, `aegis-bridge` — y
+un timer que llama a `infra/stack.sh estado` cada 30 s.
+
+| Quiero… | … |
+|---|---|
+| ver si está vivo | `bash infra/stack.sh estado` |
+| los logs | `journalctl --user -u aegis-bridge -f` |
+| parar todo | `systemctl --user stop aegis-bridge aegis-gateway aegis-ollama` |
+| quitarlo | `bash infra/systemd/instalar.sh --desinstalar` |
+
+### Por qué de usuario y no de sistema
+
+Porque **Aegis no es punto único de falla**. Si el negocio dependiera de un
+servicio de sistema, apagar el portátil de día le cortaría el negocio, y eso es
+peor que no tenerlo. De usuario: arranca al iniciar sesión, muere al cerrarla, no
+pide sudo y no toca nada privilegiado.
+
+### Si algo no levanta
+
+```bash
+journalctl --user -u aegis-<nombre> -n 40      # el motivo está aquí
+bash infra/stack.sh estado                     # salud de los tres
+```
+
+Dos fallos que ya pasaron y tienen su razón escrita:
+
+- **`203/EXEC — Permission denied`**: el bit de ejecución no viaja en git. Las
+  units invocan `/bin/bash`, nunca el fichero directamente.
+- **El gateway se despide solo**: `hermes gateway run` desde una unit ve que su
+  entrada no es una terminal y sale. Por eso se arranca con
+  `infra/hermes/start-gateway.sh`, que lo suelta desacoplado.
+
 ## 1. Arranque tras un reinicio
 
 Ollama y el gateway de Hermes **no** son servicios de sistema (Tailscale sí usa

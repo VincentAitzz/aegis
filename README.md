@@ -9,10 +9,13 @@ encuentra — sin nube, sin cuenta, y sin una sola petición a un tercero.
 ```
 ┌──────────────┐   REST    ┌─────────────────┐   HTTP    ┌──────────┐
 │  App Flutter │ ────────► │  Bridge FastAPI │ ────────► │  Ollama  │
-│  (Android)   │ ◄──────── │   :8000         │ ◄──────── │  :11434  │
-└──────────────┘  traza   │   + autopilot    │  traza   └──────────┘
-                          │   + memoria      │
+│  (Android)   │ ◄──────── │     :8000       │ ◄──────── │  :11434  │
+└──────────────┘  stream  │  /chat   T0→T1   │  stream  │ llama3.2 │
+                          │  /autopilot   T2 │          └──────────┘
+                          │  memoria · tools │
                           └─────────────────┘
+                                ▲
+                    systemd --user: se levanta solo
 ```
 
 ## Qué es y qué no es
@@ -95,7 +98,19 @@ git clone https://github.com/VincentAitzz/aegis.git && cd aegis
 bash infra/setup.sh                 # venv + .env + comprobaciones
 ```
 
-`servir` Ollama con 64 000 de contexto y bajar el modelo:
+**Y para que no haya que acordarse después de un reinicio**, la instalación como
+servicio de usuario (arranca al iniciar sesión, muere al cerrarla, no pide sudo):
+
+```bash
+bash infra/systemd/instalar.sh      # tres units + un timer de vigilancia
+journalctl --user -u aegis-bridge -f
+```
+
+`infra/stack.sh` sigue ahí y funciona en todas partes: las unidades no existen en
+macOS, y no son la única forma de encender Aegis, sino la de que no tengas que
+acordarte.
+
+Ollama con 64 000 de contexto y el modelo:
 
 ```bash
 bash infra/ollama/start-ollama.sh
@@ -118,6 +133,36 @@ cd bridge
 bin/api GET health
 bin/api POST autopilot '{"project":"aegis","prompt":"lista los proyectos y su verificador"}'
 ```
+
+### Las dos formas de hablar
+
+Hay dos, y la diferencia no es de estilo: una **conversa** y la otra **trabaja**.
+
+| | `POST /chat` | `POST /autopilot` |
+|---|---|---|
+| Modelo | el 3B | el 7B |
+| Schema de 21 tools | **no** | sí |
+| Qué contesta | conversación | trabajo con traza |
+| Turno corto | **0,17 – 0,8 s** | 23 – 40 s |
+| Herramientas | ninguna | todas, con su puerta |
+
+`/chat` **no lleva el schema a propósito**, y está medido: con el schema delante,
+el modelo llama a una herramienta aunque no haga falta. Un «hola, ¿qué tal?»
+produce una llamada a `quien_eres_actualiza`. **El modelo no sabe cuándo no usar
+una herramienta**, y una tool llamada sin querer no es inocua: se ejecuta, o
+peor, se pide permiso por algo que nadie pidió.
+
+Los tres destinos de un turno:
+
+```
+texto → T0  intents  → 0,01 s, sin modelo
+     → T1  el 3B, sin schema  → 0,17 s, conversación
+     → T2  solo si T1 se calla → trabajo de verdad
+```
+
+La escalada no se la deja al modelo: escala **por silencio**, que es observable.
+Un sistema que decide por su cuenta que lo que oyó fue una orden es el fallo que
+ya se midió cuando Aegis pidió crear un proyecto que nadie le había pedido.
 
 ### La app móvil (opcional)
 

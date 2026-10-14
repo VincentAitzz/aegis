@@ -90,11 +90,9 @@ Y el comportamiento que las lecciones describen no cambiaba: A-014 («no repitas
 la llamada idéntica que ya falló dos veces») se repitió **3 de 3 con las
 lecciones inyectadas y 3 de 3 sin ellas**.
 
-### 4b. El A/B de la retirada (2026-10-14, n=12, 6 pares)
+### 4b. El A/B de la retirada — y el número que estaba mal
 
-`bin/lab/medir-prompt-ab.py`. El bloque viejo se reconstruye desde
-`git show 0669557~1:bridge/app/autopilot.py` en un proceso aparte: **el código de
-producción no cambia**, que es lo que hace la comparación honesta.
+**Primera medición, 2026-10-14, n=12 (6 pares):**
 
 | | sin lecciones | con lecciones |
 |---|---|---|
@@ -102,25 +100,116 @@ producción no cambia**, que es lo que hace la comparación honesta.
 | latencia, mediana | **40,0 s** | **71,8 s** |
 | latencia, rango | 34,0 – 55,2 | 64,3 – 103,6 |
 
-Dos conclusiones, y la segunda es la que importa:
+De aquí sale «**+31,8 s, +79 %**», y ese número se publicó. **Es falso.**
 
-1. **El tool-calling no cambia.** 6/6 en los dos grupos, y 6/6 en la ronda
-   anterior: 12/12 en total. Coincide con el 3/3 de 2026-10-04. Las lecciones
-   nunca pusieron a este modelo a dejar de llamar a una tool.
-2. **La latencia sí, y mucho: +31,8 s, un 79 %.** En la ronda templada el
-   **mínimo del grupo con (64,3) es mayor que el máximo del grupo sin (55,2)**.
-   Cero solape. Con n=6 y esa dispersión, una diferencia menor que el ruido no se
-   afirma; esta no lo es.
+**Remedido en un solo proceso**, alternando, con `bin/lab/medir-prompt-costo.py`:
 
-Y el tamaño, con `bin/medir-prompt.py`:
-
-| | antes | después |
+| | sin lecciones | con lecciones |
 |---|---|---|
-| system prompt | 17 155 chars | **7 953** |
-| de los cuales, lecciones | 9 200 (**54 %**) | 0 |
-| tools en el schema | 22 | 21 |
+| primer token | 3,07 s | 4,24 s |
+| total | **12,5 s** | **16,3 s** |
+| | | **+3,8 s (+31 %)** |
 
-## 5. La puerta que nadie usó
+Ocho veces menos. El A/B original levantaba **dos procesos del bridge contra la
+misma GPU** y alternaba los requests entre ellos: lo que estaba midiendo era
+**contención**, no prompt. Dos procesos pidiendo al mismo Ollama con 6 GB de VRAM
+se estorban, y esa diferencia es la que salió.
+
+### Lo que sí se sostiene
+
+| conclusión | evidencia | ¿se sostiene? |
+|---|---|---|
+| El tool-calling no cambia | 6/6 y 6/6 en el A/B; 3 de 3 con y sin en 2026-10-04 | **Sí** |
+| El prompt cuesta algo | +3,8 s (+31 %) en un proceso | **Sí**, pero 8 veces menos de lo que se dijo |
+| La tool `lecciones` no se usó | 0 llamadas en 857 run logs | **Sí** |
+| El índice estaba truncado | 8 000 chars de tope listaban A-001…A-078 de 121 | **Sí** |
+
+**La decisión no cambia**: 54 % del prompt para algo con 0 llamadas, 0 efecto en
+el comportamiento y contenido truncado sin avisar. Lo que estaba mal era la
+cifra, y una cifra falsa en un fichero que se llama `medidas.md` es exactamente
+el fallo que este repo dice no cometer.
+
+### Y una observación que salió de arreglarlo
+
+Con el prefijo **estable** el prompt de 7 953 chars cuesta **+30 ms** al primer
+token: la caché de prefijo de Ollama lo absorbe casi entero. El coste real no es
+el tamaño, es que el prefijo **cambie**.
+
+| | primer token |
+|---|---|
+| prompt de 60 chars | 0,13 s |
+| prompt de 7 953 chars | 0,16 s |
+
+Eso decide una cosa para siempre: **todo lo estable va en el prompt**, porque es
+barato. Lo caro no es meter contexto, es **meterlo en el sitio equivocado**.
+
+## 5. Hablar con Aegis: lo que cuesta y por qué el chat no lleva schema
+
+**2026-10-14 · `POST /chat` · máquina de referencia**
+
+### 5a. El modelo no es lento. El sistema no hablaba.
+
+`"stream": False` estuvo en la llamada al modelo desde el primer commit. Con eso
+no se emitía nada hasta que el modelo **terminaba**:
+
+| | primer token | turno corto | turno de trabajo |
+|---|---|---|---|
+| `llama3.2:3b` | **0,14 s** | 2,0 s | 14,0 s |
+| `qwen2.5:7b` | **0,37 s** | 5,3 s | 99,1 s |
+
+El tiempo hasta el primer token no cambia casi nada al poner streaming. Lo que
+cambia es que **a los 0,14 s ya hay una palabra en la pantalla**.
+
+### 5b. Con el schema delante, el modelo llama tools aunque no haga falta
+
+Mismo modelo, misma máquina, con y sin el schema de 21 tools:
+
+| | primer token | total | ¿llamó a una tool? |
+|---|---|---|---|
+| 3B **sin** schema | **0,02 s** | **0,17 s** | no |
+| 3B **con** schema (19 649 chars) | — | 0,39 s | **siempre** |
+
+Un «hola, ¿qué tal?» con el schema produce una llamada a `quien_eres_actualiza`.
+**El modelo no sabe cuándo no usar una herramienta.** Por eso `/chat` no se lo
+pone delante, y por eso la escalada a T2 no se le deja decidir: escala solo
+cuando **T1 se queda callado**, que es observable.
+
+### 5c. Los dos modelos no caben en la tarjeta
+
+VRAM: 6 144 MiB. `llama3.2:3b` = 2,0 GB, `qwen2.5:7b` = 4,7 GB. **Suma 6,7 GB.**
+
+| | carga en frío | resident |
+|---|---|---|
+| `llama3.2:3b` | 6,5 – 14,7 s | **0,27 s** |
+| `qwen2.5:7b` | 10,8 s | 1,12 s |
+
+**Cada escalada entre T1 y T2 cuesta 6 – 15 s.** Y T1 ahorra 0,2 s de primer token.
+Ese es el cálculo entero, y por eso el conversational va con el resident: una
+conversación no puede provocar un swap.
+
+### 5d. Lo que contestaba el 3B sin saber qué era
+
+Sin identidad en el prompt, contesta de memoria. Medido por HTTP contra `/chat`:
+
+| se le preguntó | respondió |
+|---|---|
+| «cuéntame qué puedes hacer» | «tareas relacionadas con la **seguridad de la información**» |
+| «revisa el repositorio aegis y dime si el verificador está en verde» | «Verificando… **Está en verde.**» |
+
+La segunda es A-016 con otro traje. En el autopilot la delata la traza, porque el
+veredicto se calcula de los pasos ejecutados. En una conversación **no hay traza**:
+la única defensa es que no tenga con qué mentir.
+
+Con `identidad_para_el_prompt()` (234 chars) y `como_texto()` en el prompt:
+
+| se le preguntó | respondió | total |
+|---|---|---|
+| «cuéntame qué puedes hacer» | la lista real de herramientas | **0,01 s** (T0, sin modelo) |
+| «hola, ¿qué tal?» | «Estoy listo. ¿En qué puedo ayudarte?» | 0,80 s |
+| «¿ya está todo bien en mis proyectos?» | «**no lo comprobé.**» | 0,63 s |
+| «estoy aburrido» | una pregunta | 0,75 s |
+
+## 6. La puerta que nadie usó
 
 **2026-09-24 → 2026-10-14 · los 857 run logs de `bridge/data/logs/runs/`**
 
@@ -131,6 +220,12 @@ Y el tamaño, con `bin/medir-prompt.py`:
 | `verify_deploy`, `build_apk` | 1 cada una |
 | **`lecciones`** | **0** |
 | **`usar_enfoque`** | **0** |
+| `memoria` | 0 — **la acabo de crear**, así que su 0 es provisional |
+
+`lecciones` se retiró por esto (sección 4). `usar_enfoque` **sigue ahí**: tiene las
+mismas 0 llamadas y es el siguiente candidato, pero los enfoques son un mecanismo
+de decisión y no de memoria. No se retira en el mismo movimiento algo que ya está
+medido, junto a otra cosa que no.
 
 Y el índice, además, estaba truncado: con el tope de 8 000 chars listaba
 A-001…A-078 de 121. Se pagaba el 100 % del coste para enseñar el 65 %.
@@ -147,6 +242,8 @@ A-001…A-078 de 121. Se pagaba el 100 % del coste para enseñar el 65 %.
 | Qué modelo va más rápido | `bin/lab/measure-models.py` |
 | Cómo se reparten los estados del histórico | `bin/medir-runs` |
 | Si el modelo emite tool-calling de verdad | `bin/probe-toolcall.sh` |
+| Cuánto cuesta un bloque del prompt, **en un proceso** | `bin/lab/medir-prompt-costo.py` |
+| Si el conversational escala, y lo que cuesta el swap | `bin/lab/medir-prompt-ab.py` y §5c |
 
 `probe-toolcall.sh` mida **una** tool con un prompt mínimo. Sirve para detectar
 que el modelo **dejó** de emitir tool-calls; **no** sirve para declarar que el

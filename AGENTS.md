@@ -382,6 +382,23 @@ si añades una ruta de tu máquina a un fichero, el repo deja de arrancar en la 
 los demás. El CI lo comprueba: la suite del bridge corre **sin Flutter, sin JDK y
 sin SDK de Android**, a propósito.
 
+## 5.0 Encender Aegis: lo normal es que ya esté encendido
+
+Desde el 2026-10-14 hay unidades **systemd de usuario** (`aegis-ollama`,
+`aegis-gateway`, `aegis-bridge`) y un timer de vigilancia. Si están instaladas,
+**no hay que arrancar nada**: `bash infra/stack.sh estado` lo dice.
+
+```bash
+bash infra/systemd/instalar.sh      # instalar y activar (una vez)
+bash infra/systemd/instalar.sh --desinstalar
+journalctl --user -u aegis-bridge -f
+```
+
+De **usuario** y no de sistema a propósito: Aegis no es punto único de falla, y
+un servicio de sistema lo haría depender de que la máquina esté encendida.
+`infra/stack.sh` sigue existiendo porque funciona en todas partes —no hay
+`systemd --user` en macOS— y porque es lo que se usa cuando algo va mal.
+
 ```bash
 bash infra/stack.sh arrancar     # Ollama :11434 + gateway :8642 + bridge :8000
 bash infra/stack.sh estado       # salud de los tres + qué puede escribir Aegis
