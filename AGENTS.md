@@ -493,13 +493,48 @@ significa nada en la máquina de nadie. Va en `bridge/.env`
 (`NEON_PROJECT_AEGIS=`). Un repositorio público que lleva dentro el id de Neon de
 alguien es un repositorio que ha enviado una credencial sin querer.
 
+### La memoria, y por qué los tests corren aparte
+
+El 2026-10-14 un test mal escrito cerró Visual Studio Code dos veces. No por lo
+que parece: **opencode, el editor y cada shell que sale de su terminal
+comparten cgroup** (`app-com.microsoft.VSCode-*.scope`), y `systemd-oomd` mata
+el **scope**, no al proceso culpable. El padre es el que queda con el nombre.
+
+```
+22:23  app-com.microsoft.VSCode.scope: 11.8G memory peak, 480 procesos muertos
+```
+
+Por eso:
+
+```bash
+cd bridge && bin/test          # la suite, en su propio scope con MemoryMax
+cd bridge && bin/memoria       # quién se está comiendo la RAM ahora
+```
+
+`bin/test` corre en `aegis-test.service` con `MemoryMax` y `MemorySwapMax`. Si
+se pasa de memoria **muere el test, con un motivo, y el editor sigue abierto**.
+Medido: la suite son **279 MB de pico**, y con un tope de 300 M un comando que
+escribe 1 GB muere con `oom-kill` sin tocar el editor.
+
+Y dos guardarraíles que vienen de ese incidente:
+
+- **`tests/test_no_recursion.py`** falla si algún test lanza `unittest discover`
+  sobre `tests/`. Lo hace con `ast`, no con `grep`, porque el patrón está en cinco
+  docstrings. Es A-129: el modo de fallo **no es «un test falla», es «la máquina
+  muere»**, y eso no lo cubre ningún assertion.
+- **El aislamiento de las bases es estructural.** `app/entorno.datos()` mira de
+  dónde viene la llamada y, si está bajo `tests/`, redirige a un temporal. No
+  depende de que un fichero se importe: correr un test suelto también aísla. Es
+  A-130, y la razón es que `conftest.py` **no lo carga `unittest`**.
+
 ## 7. Verificación
 
 No afirmes que algo funciona sin ejecutarlo:
 
 ```bash
 # El bridge (rápido, siempre)
-cd bridge && .venv/bin/python -m unittest discover -s tests -q   # ~700 tests
+cd bridge && bin/test                                            # la suite, en su propio scope
+cd bridge && .venv/bin/python -m unittest discover -s tests -q   # lo mismo, sin scope
 cd bridge && .venv/bin/python bin/check-imports.py               # el verificador de `aegis`
 cd bridge && .venv/bin/python bin/medir-runs                     # reparto de estados del histórico
 cd bridge && bash bin/probe-toolcall.sh qwen2.5:7b    # capacidad de tool-calling

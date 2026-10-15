@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Aegis — correr la suite en su propio scope, no en el de tu editor
+#
+# ## Por qué existe
+#
+# El 2026-10-14, la suite cerró Visual Studio Code dos veces. El log del
+# sistema lo dice sin que nadie lo preguntara:
+#
+#   22:23  app-com.microsoft.VSCode.scope: 11.8G memory peak, 11.2G swap peak
+#          systemd-oomd killed 480 process(es) in this unit
+#          Failed with result 'oom-kill'
+#   22:46  app-com.microsoft.VSCode.scope:  7.8G memory peak,  7.3G swap peak
+#          systemd-oomd killed 466 process(es) in this unit
+#
+# ## Y por qué la víctima era SIEMPRE el editor
+#
+# No es que VS Code fuera pesado. Ahora mismo su scope usa 2,09 GB. Es que:
+#
+#   opencode, VS Code y cada shell que se lanza desde su terminal
+#   **viven en el mismo cgroup**: app-com.microsoft.VSCode-<pid>.scope
+#
+# y ese scope tiene `ManagedOOMMemoryPressure=auto` y `ManagedOOMSwap=auto`.
+# **systemd-oomd mata el scope, no al proceso culpable.** VS Code es el padre de
+# todo lo que pasa dentro, así que es el nombre que queda en la lápida.
+#
+# Por eso lo que se lanza desde su terminal **se le cobra a su editor**. Y por
+# eso este script no pide más memoria: pide **otro sitio donde pagarla**.
+#
+# ## Qué cambia
+#
+#   $ .venv/bin/python -m unittest discover -s tests -q
+#     → todo se carga al scope de VS Code → oomd mata VS Code
+#
+#   $ bin/test
+#     → corre en aegis-test.service, con su propio MemoryMax
+#     → si se pasa, muere aegis-test y tu editor sigue abierto
+#
+# El mensaje pasa de «El kernel de Linux ha cerrado Visual Studio Code porque el
+# sistema está bajo de memoria» a «aegis-test.service: Failed with result
+# 'oom-kill'», que dice algo.
+# =============================================================================
+set -euo pipefail
+
+RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$RAIZ"
+
+#: Tope de memoria del scope de tests. Por debajo de lo que le dejan al editor
+#: con margen, y por encima de lo que la suite usa de verdad (~300 MB). Con
+#: este tope, una fuga o una recursión matan **el test**, que es información, en
+#: vez de tu sesión, que es pérdida.
+TOPE="${AEGIS_TEST_MEMORIA:-3G}"
+
+#: Cuánto puede además **ir a swap** el scope de tests. Sin esto, `MemoryMax`
+#: solo limita la RAM y el proceso se salva yendo a swap —medido: una unit con
+#: `MemoryMax=300M` reservando 1 GB **terminó bien**, con 650 MB de swap—. Es un
+#: tope blando, y lo que se quiere es un muro: que la suite se quede sin sitio
+#: y muera ella, con un motivo, en vez de empujar al resto del sistema.
+#:
+#: Por defecto se le da **el doble** del tope de RAM, holgado de sobra:
+#: medido, la suite completa son **80 MB de RAM y 202 MB de swap**. Con ese
+#: margen no se muere por poco, y aun así tiene techo.
+TOPE_SWAP="${AEGIS_TEST_MEMORIA_SWAP:-2G}"
+
+PY="$RAIZ/.venv/bin/python"
+[[ -x "$PY" ]] || PY="$(command -v python3)"
+
+#: Los mismos topes de memoria que el bridge, para que un test y el servicio se
+#: comporten igual. Sin `NUM_PARALLEL`/`MAX_LOADED_MODELS` el entorno no los
+#: carga y cada uno inventa su propia política.
+export OLLAMA_NUM_PARALLEL=1
+export OLLAMA_MAX_LOADED_MODELS=2
+export OLLAMA_CONTEXT_LENGTH=32768
+
+#: El aislamiento de las bases va aquí y no solo dentro de la suite. Sin esto,
+#: un test suelto (`python -m unittest tests.test_x`) escribe en la base real —
+#: y no es hipotético: hubo una fila en la cola de aprobaciones con
+#: `run_id: "r"` y `path: "x.txt"`. `tests/test_00_aislamiento.py` lo pone al
+#: descubrirse, y esto cubre el resto de formas de invocarlo.
+export AEGIS_DATA_DIR="${AEGIS_DATA_DIR:-$(mktemp -d -t aegis-tests-XXXXXX)}"
+export AEGIS_SIN_DESCUBRIMIENTO=1
+
+limpiar() { [[ -n "${AEGIS_DATA_DIR:-}" && -d "${AEGIS_DATA_DIR:-}" ]] \
+  && rm -rf "$AEGIS_DATA_DIR"; }
+trap limpiar EXIT
+
+echo "suite en su propio scope · tope $TOPE · bases en $AEGIS_DATA_DIR"
+
+# `--collect` borra la unit al terminar, que si no se acumula una por ejecución
+# y `systemctl --user status` acaba con cien filas.
+#
+# El código de salida de `systemd-run --wait` es el del comando, así que
+# `set -e` no se dispara y podemos imprimir el motivo antes de salir con él.
+# Solo `MemoryMax`. Se probó añadir `ManagedOOMMemoryPressure=no` y **no
+# existe**: systemd solo acepta `auto` y `kill`, así que el intento de desactivar
+# oomd para este scope falla con «Invalid argument» antes de arrancar nada.
+#
+# Y no hace falta. `MemoryMax` lo aplica el controlador de cgroup del propio
+# systemd, que mata **la unit** cuando se pasa. Eso es lo que se quiere: muere
+# `aegis-test`, no el editor. oomd sigue mirando la presión del sistema, pero
+# con un tope duro en el test la presión no llega a ser del editor.
+# `--working-directory` es **imprescindible**: `systemd-run` arranca la unit
+# desde el directorio del sistema, no desde el tuyo, y sin esto falla con
+# «Start directory is not importable: 'tests'».
+#
+# `--setenv` porque **systemd-run no hereda tu entorno**: la unit nace con el
+# del gestor de systemd, no con el del shell que la lanzó. Sin esto, el
+# aislamiento de las bases no llegaría — y el aislamiento interno de Python
+# seguiría cubriendo lo importante, pero es mejor no depender de una sola capa.
+#
+# Y el código de salida se mira con `$?` **fuera** del `if`, porque dentro de
+# `if ! cmd` la variable vale 0: la negación ya se comió el estado real, y un
+# fallo seVestía de éxito. La primera versión hacía exactamente eso yISTRABA
+# «la suite ha fallado (código 0)», que es el peor sitio para ver un 0.
+set +e
+systemd-run --user --unit=aegis-test --collect --wait \
+     -p "MemoryMax=$TOPE" \
+     -p "MemorySwapMax=$TOPE_SWAP" \
+     --working-directory="$RAIZ" \
+     --setenv="AEGIS_DATA_DIR=$AEGIS_DATA_DIR" \
+     --setenv="AEGIS_SIN_DESCUBRIMIENTO=1" \
+     --setenv="OLLAMA_NUM_PARALLEL=1" \
+     --setenv="OLLAMA_MAX_LOADED_MODELS=2" \
+     --setenv="OLLAMA_CONTEXT_LENGTH=32768" \
+     "$PY" -m unittest discover -s tests "$@"
+code=$?
+set -e
+
+if [[ "$code" -ne 0 ]]; then
+  echo "" >&2
+  echo "La suite ha fallado (código $code)." >&2
+  if journalctl --user -u aegis-test --since "-2m" --no-pager 2>/dev/null \
+       | grep -q "oom-kill"; then
+    echo "Y fue por memoria: se pasó de $TOPE. Súbelo con" >&2
+    echo "  AEGIS_TEST_MEMORIA=5G bin/test" >&2
+  else
+    echo "El log del scope:" >&2
+    journalctl --user -u aegis-test --since "-2m" --no-pager 2>/dev/null | tail -20 >&2
+  fi
+  exit "$code"
+fi
+
+echo "En verde, y tu editor sigue abierto."

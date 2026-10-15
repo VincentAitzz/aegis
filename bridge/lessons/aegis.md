@@ -3243,3 +3243,102 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
   segundo reinicio, y en un servicio con `Restart=always` reiniciar dos veces es
   lo más normal del mundo. El test que lo coge es uno que **repite la operación
   y compara el tamaño**, que es la forma general de probar idempotencia.
+
+## A-129 — Un test que lanza la suite es recursión, y no da ningún aviso
+
+> Aplica cuando: Escribas un test que necesite «correr la suite» o «correr los
+> tests» para poder afirmar algo.
+
+- **Qué pasó** (2026-10-14): `tests/test_cola_real.py` comprobaba que la suite no
+  escribiera en las bases de producción, y para comprobarlo la lanzaba:
+
+  ```python
+  subprocess.run([sys.executable, "-m", "unittest", "discover",
+                  "-s", str(RAIZ / "tests"), "-q"], ...)
+  ```
+
+  Ese `discover` encuentra el directorio entero, que **incluye este fichero**,
+  cuyo test lanza otro `discover`… y así hasta que la máquina se queda sin
+  memoria.
+
+- **Lo que se veía desde fuera**: «El kernel de Linux ha cerrado Visual Studio
+  Code porque el sistema está bajo de memoria». Nada más. Ni un test en rojo, ni
+  un traza, ni una línea que dijera «esto es lo que está pasando».
+
+- **Medido por el sistema, no por mí**:
+
+  ```
+  22:23  app-com.microsoft.VSCode.scope: 11.8G memory peak, 11.2G swap peak
+         systemd-oomd killed 480 process(es) — Failed with result 'oom-kill'
+  22:46  app-com.microsoft.VSCode.scope:  7.8G memory peak,  7.3G swap peak
+         systemd-oomd killed 466 process(es) — Failed with result 'oom-kill'
+  ```
+
+- **Por qué la víctima era siempre VS Code**: no es que fuera pesado —su scope
+  usa 2 GB— sino que **opencode, el editor y cada shell que sale de su terminal
+  comparten cgroup**. `systemd-oomd` mata el **scope**, no al proceso culpable, y
+  el padre es el que queda con el nombre. Por eso lo que se lanza desde el
+  terminal de un IDE **se le cobra al IDE**.
+
+- **El arreglo**: lista explícita de módulos que excluye el suyo, calculada antes
+  de lanzarse. No puede recursionar. Y `tests/test_no_recursion.py` lo vigila con
+  `ast`, no con `grep`, porque el patrón aparece en cinco docstrings y un grep
+  daría cinco falsos positivos.
+
+- **La lección**: **el modo de fallo no es «un test falla», es «la máquina
+  muere»**, y eso no lo cubre ningún assertion. Merece su propio guardarraíl. Y
+  cuando algo tan caro se rompe, la respuesta correcta no es *no correr la
+  suite*, sino **cambiar quién paga la factura**: `bin/test` la corre en su
+  propio scope, con `MemoryMax`, y si se pasa de memoria muere el test.
+
+## A-130 — `conftest.py` no existe si no usas pytest
+
+> Aplica cuando: Aísles datos en los tests y uses `unittest`.
+
+- **Qué pasó** (2026-10-14): para que la suite no escribiera en las bases reales
+  se puso un `tests/conftest.py` con el aislamiento, y su comentario afirmaba que
+  «el conftest se carga antes que ningún test».
+
+  Eso es verdad **en pytest**. Este repo corre `python -m unittest discover -s
+  tests -q`, y **`unittest` no carga `conftest.py` en absoluto**. El aislamiento
+  no hizo nada, y la fila contaminada volvió a aparecer.
+
+- **Por qué `tests/__init__.py` tampoco vale**: con `discover -s tests`,
+  `unittest` mete `tests/` en `sys.path` e importa los módulos como **toplevel**,
+  así que `__init__.py` no se ejecuta. Comprobado con un `print` dentro: no
+  imprimió.
+
+- **Lo que sí funciona**: un módulo `test_*.py` (se importa en el descubrimiento,
+  antes de ejecutar ninguna prueba) o `env`/`PYTHONPATH` en el comando. Se quedó
+  `tests/test_00_aislamiento.py`, con dos ceros para que ordene antes que los
+  demás y se entienda por qué.
+
+- **Y aun así no bastaba**: correr un fichero suelto no lo importa. La propiedad
+  que se quería —«desde un test no se toca producción»— solo es real si **no
+  depende de qué se ejecuta**. Así que ahora `app/entorno.datos()` mira de dónde
+  viene la llamada y, si está bajo `tests/`, redirige a un temporal. Es un poco
+  de magia, y es el precio de que el invariante no dependa de acordarse.
+
+- **La lección**: **el aislamiento tiene que ser estructural, no por
+  importación**. Un mecanismo que depende de que un fichero participe en la
+  ejecución protege de un caso y da sensación de proteger de todos.
+
+## A-131 — Dos unidades en el mismo número: KB y bytes
+
+> Aplica cuando: Un script mezcle datos de `ps` con datos de systemd.
+
+- **Qué pasó** (2026-10-14): `bin/memoria` dividía **los dos** por
+  1073741824, que son bytes por gibibyte. Pero `ps -eo rss` está en **KB** y
+  `MemoryCurrent` de systemd está en **bytes**.
+
+  Resultado: VS Code salía en «1.8 GB» —correcto por casualidad— y **Ollama en
+  «0.0 GB»**, con 3,3 GB medidos por `ps` en la línea de al lado.
+
+- **Por qué importa más de lo que parece**: un monitor que enseña 0 donde hay
+  3 GB **no se distingue de uno roto**, y por eso no se mira. Un número
+  obviamente falso se detecta; uno que miente poco, no.
+
+- **La lección**: cuando un script junta fuentes distintas, **la unidad es parte
+  del contrato** y va en el nombre de la función: `gb()` para bytes y `gb_kb()`
+  para los que vienen de `ps`. Un divisor compartido entre dos fuentes que no
+  lo comparten es un error esperando a que alguien mire dos números.

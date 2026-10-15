@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Aegis — mirar la memoria antes de que te mate el editor
+#
+# ## Por qué existe
+#
+# Porque el aviso llega tarde y no dice de quién es. Lo que se veía el 2026-10-14
+# era esto, en pantalla y sin más:
+#
+#   El kernel de Linux ha cerrado Visual Studio Code porque el sistema está
+#   bajo de memoria. Considere el cierre de aplicaciones que no esté usando.
+#
+# Dos cosas mal en ese mensaje. La primera es que **la culpa no era de VS
+# Code**: el cgroup del editor tiene 11,8 GB de pico porque **opencode y todo lo
+# que se lanza desde su terminal viven dentro**. La segunda es que no hay ningún
+# número antes: cuando aparece el aviso, lo que había que mirar ya se perdió.
+#
+# ## Qué enseña
+#
+# Cuatro números y una línea, sin adornos:
+#
+#   · el cgroup de VS Code (que incluye opencode y tus terminales)
+#   · Ollama, que es el segundo consumidor grande
+#   · la memoria total y el zram
+#   · si algo se está acercando al límite
+#
+# ## Por qué el cgroup y no `free`
+#
+# Porque `free` mide la máquina y lo que importa es **a quién se le carga**.
+# El mismo `free` da 6 GB disponibles con el editor a punto de morir, si lo que
+# se acerca al tope es su cgroup.
+# =============================================================================
+set -uo pipefail
+
+#: Por encima de este porcentaje del cgroup del editor, se avisa. El 3G que usa
+#: la suite en su propio scope (`bin/test`) son 150 MB, así que un 20 % es holgado.
+AVISO="${AEGIS_MEMORIA_AVISO:-20}"
+
+RED=$'\033[31m'; VERDE=$'\033[32m'; GRIS=$'\033[90m'; FIN=$'\033[0m'
+[[ -t 1 ]] || { RED=""; VERDE=""; GRIS=""; FIN=""; }
+
+#: Convierte **bytes** a GB. Solo bytes.
+#:
+#: El comentario parece obvio y no lo es: `ps -eo rss` está en **KB** y
+#: `MemoryCurrent` de systemd está en **bytes**. La primera versión usaba un solo
+#: divisor para los dos, así que Ollama salía en «0.0 GB» —3.3 GB de memoria
+#: medidos por `ps`— y VS Code en «1.8 GB». Un monitor que enseña 0 donde hay
+#: 3 GB no se distingue de uno roto, y es peor: no se mira.
+gb() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1073741824}'; }
+#: Lo mismo, desde KB. Para lo que viene de `ps`.
+gb_kb() { awk -v k="$1" 'BEGIN{printf "%.1f", k/1048576}'; }
+pct() { awk -v a="$1" -v b="$2" 'BEGIN{ if (b<=0) print 0; else printf "%.0f", (a/b)*100 }'; }
+
+# El scope se saca de `/proc`, no de `systemctl list-units --type=scope`, que
+# con el patrón `app-com.microsoft.VSCode*` no lo encuentra: los scopes que crea
+# una aplicación lanzada por el escritorio no salen por `list-units` con ese
+# filtro, y se acaba mostrando «0.0 GB», que es el peor número posible —parece
+# que no hay nada y no es que no haya nada que medir.
+SCOPE=""
+for pid in $(pgrep -x code 2>/dev/null); do
+  cgroup=$(tr '\0' '\n' < "/proc/$pid/cgroup" 2>/dev/null | grep -o 'app-com\.microsoft\.VSCode-[0-9]*\.scope' | head -1)
+  if [[ -n "$cgroup" ]]; then SCOPE="$cgroup"; break; fi
+done
+
+echo
+if [[ -n "$SCOPE" ]]; then
+  actual=$(systemctl --user show "$SCOPE" -p MemoryCurrent --value 2>/dev/null || echo 0)
+  pico=$(systemctl --user show "$SCOPE" -p MemoryPeak --value 2>/dev/null || echo 0)
+  swap=$(systemctl --user show "$SCOPE" -p MemorySwapPeak --value 2>/dev/null || echo 0)
+  nproc=$(systemctl --user show "$SCOPE" -p TasksCurrent --value 2>/dev/null || echo 0)
+  total=$(grep MemTotal /proc/meminfo | awk '{print $2*1024}')
+
+  uso=$(pct "$actual" "$total")
+  if [[ "${actual:-0}" -gt 0 ]] && [[ "$uso" -ge "$AVISO" ]]; then
+    color="$RED"
+  elif [[ "${actual:-0}" -gt 0 ]] && [[ "$uso" -ge $((AVISO / 2)) ]]; then
+    color="$GRIS"
+  else
+    color="$VERDE"
+  fi
+
+  printf '  %sVS Code%s (con opencode y tus terminales dentro)\n' "$color" "$FIN"
+  printf '    ahora %s GB   pico %s GB   swap %s GB   procesos %s\n' \
+    "$(gb "${actual:-0}")" "$(gb "${pico:-0}")" "$(gb "${swap:-0}")" "${nproc:-?}"
+  printf '    %s%% del total de RAM\n' "$uso"
+else
+  echo "  ${GRIS}no encuentro el scope de VS Code: mira con 'ps -eo rss,comm --sort=-rss | head'${FIN}"
+fi
+
+# Ollama va aparte porque es el segundo consumidor grande y no está en el scope
+# del editor: lo cuenta la RAM del sistema, pero conviene verlo separado.
+# Por `comm`, no por `args`: el proceso se llama `llama-server` y su línea de
+# comandos es larga; buscando en `args` con un patrón demasiado exacto se
+# quedaba en 0 y enseñaba «0.0 GB», que es un número que miente sin avisar.
+rss_kb=$(ps -eo rss,comm --no-headers 2>/dev/null \
+      | awk '$2 ~ /^llama-server/ {s+=$1} END{print s+0}')
+printf '\n  Ollama\n    %s GB\n' "$(gb_kb "$rss_kb")"
+
+printf '\n  Sistema\n'
+free -h | awk 'NR==2{printf "    RAM      %s usados, %s disponibles\n", $3, $7}'
+swap_line=$(free -h | awk 'NR==3{print $3" usados de "$2}')
+printf '    swap     %s\n' "$swap_line"
+
+zram=$(swapon --show --noheadings --output NAME 2>/dev/null | grep -c zram || echo 0)
+if [[ "$zram" != "0" ]]; then
+  zdata=$(zramctl 2>/dev/null | awk 'NR==2{print $4}')
+  zcomp=$(zramctl 2>/dev/null | awk 'NR==2{print $5}')
+  [[ -n "$zdata" ]] && printf '    zram     %s comprimidos a %s (es RAM, no disco)\n' "$zdata" "$zcomp"
+fi
+
+echo
+echo "  ${GRIS}La suite va con bin/test: corre en su propio scope, así que no la${FIN}"
+echo "  ${GRIS}cobra a tu editor. AEGIS_TEST_MEMORIA=3G para cambiar el tope.${FIN}"
+echo

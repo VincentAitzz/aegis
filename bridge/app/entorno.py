@@ -39,6 +39,8 @@ Lo que queda fuera de este módulo, y por qué:
 
 import os
 import shutil
+import sys
+import tempfile
 from pathlib import Path
 
 #: La raíz del repo: `bridge/app/entorno.py` → `bridge/app` → `bridge` → raíz.
@@ -52,13 +54,86 @@ BRIDGE: Path = RAIZ / "bridge"
 MOBILE: Path = RAIZ / "mobile"
 
 
+_EN_TEST: bool | None = None
+
+
+def _desde_un_test() -> bool:
+    """True si quien llama es un fichero que vive bajo un directorio `tests/`.
+
+    ## Por qué hace falta esto, y por qué no bastaba con `conftest.py`
+    Porque **este repo no usa pytest**. `conftest.py` es de pytest:
+    `python -m unittest discover -s tests` no lo carga nunca. Se puso, se creyó
+    que aislaba, y no aislaba — la fila de test volvió a aparecer en la cola real
+    después de «arreglarlo».
+
+    Y `tests/__init__.py` tampoco sirve: con `discover -s tests`, `unittest`
+    mete `tests/` en `sys.path` e importa los módulos como **toplevel**, así que
+    `__init__.py` no se ejecuta. Comprobado con un `print` dentro.
+
+    Lo que sí funciona es un módulo `test_*.py` (se importa durante el
+    descubrimiento) —y por eso existe `tests/test_00_aislamiento.py`—, pero
+    **solo si ese módulo participa en la ejecución**. Correr un fichero suelto
+    (`python -m unittest tests.test_enfoques`) no lo importa, y la fila se
+    volvía a escribir. Verificado: es exactamente lo que pasó.
+
+    ## Lo que se hace aquí
+    Que la comprobación sea **estructural y no por importación**: si hay
+    `AEGIS_DATA_DIR` se usa, y si no, se mira de dónde viene la llamada. Un
+    fichero bajo `tests/` no puede abrir la base de producción ni queriendo.
+
+    ## Y el coste
+    Se calcula **una vez** y se cachea. `datos()` se llama al inicializar los
+    almacenes, no en un bucle caliente, así que recorrer la pila una vez no
+    cuesta nada. El caso normal —producción, sin tests— es una variable de
+    entorno vacía y un `False` cacheado.
+    """
+    global _EN_TEST
+    if _EN_TEST is not None:
+        return _EN_TEST
+    marco = sys._getframe(1)
+    _EN_TEST = False
+    while marco is not None:
+        nombre = marco.f_globals.get("__file__") or ""
+        partes = Path(str(nombre)).resolve().parts
+        if partes and partes[-1] == "__init__.py":
+            partes = partes[:-1]
+        if "tests" in partes or "test" in partes[-2:-1]:
+            _EN_TEST = True
+            break
+        marco = marco.f_back
+    return _EN_TEST
+
+
 def datos(*partes: str) -> Path:
     """`bridge/data/…`, que es lo que no se versiona.
 
-    Los SQLite de memoria, notas y autonomía cuelgan de aquí. Que sea función y
-    no constante permite que los tests apunten a un temporal.
+    Los SQLite de memoria, notas, autonomía y planes cuelgan de aquí.
+
+    ## Y por qué mira `AEGIS_DATA_DIR`
+    Porque sin esto los tests escriben en las bases **reales**, y eso ya pasó:
+    el lifespan de FastAPI ejecuta `init_autonomia()` en `test_lifespan.py`, y
+    la cola de aprobaciones que ves en el móvil tenía una fila con
+    `run_id: "r"` y `path: "x.txt"` — un test pidiendo permiso para escribir una
+    fichero de una letra que Aegis nunca escribió.
+
+    El problema no era ese test, que aísla su almacén, sino que **no había un
+    sitio donde estar bien por defecto**: cada fichero de pruebas tenía que
+    acordarse. Con la variable, es una vez y para todos, y `tests/conftest.py` la
+    pone antes de importar nada de `app`.
+
+    ## Por qué una variable y no un argumento
+    Porque las bases se abren en la inicialización, que ocurre al importar o al
+    arrancar. Un argumento habría que pasarlo por tres sitios, y el cuarto que
+    se nace mañana se olvidaría.
     """
-    return BRIDGE.joinpath("data", *partes)
+    base = os.environ.get("AEGIS_DATA_DIR", "").strip()
+    raiz = Path(base) if base else BRIDGE / "data"
+    if not base and _desde_un_test():
+        # El invariante, puesto donde no se puede saltarse: **desde un fichero
+        # bajo `tests/`, las bases van a un temporal**, se invoque como se
+        # invoque. Ver `_desde_un_test()` para por qué hace falta.
+        raiz = Path(tempfile.mkdtemp(prefix="aegis-test-")) / "data"
+    return raiz.joinpath(*partes)
 
 
 def _buscar(override: str, nombre: str, candidatos: tuple[str, ...]) -> str:
