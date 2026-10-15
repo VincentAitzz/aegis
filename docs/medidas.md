@@ -396,6 +396,73 @@ dentro**, y otro habla de «la clave de api». Por eso `medir-cobertura` redacta
 UUID, números largos, claves y tu ruta de casa antes de imprimir: un instrumento
 que imprime secretos es un instrumento que algún día los imprime donde no debe.
 
+## 9. El run que sobrevive al reinicio
+
+2026-10-14. El paso que hacía falta para «revisar lo que Aegis hizo en mi ausencia».
+
+### 9a. Qué se perdía
+
+`_AUTOPILOT_RUNS` es un `dict` en memoria, y `aegis-bridge.service` está en
+`Restart=always`. Además el JSONL se escribía **entero al terminar**, con
+`open("w")`. Las dos cosas juntas:
+
+| | antes |
+|---|---|
+| el fichero de un run cortado | **no existía** |
+| el estado en memoria | se perdía con el proceso |
+| lo que se podía decir después | nada. Ni error, ni motivo, ni punto de corte |
+
+### 9b. El cambio: el log pasa a ser append-only
+
+| | cuándo |
+|---|---|
+| `task.created` | al arrancar el run |
+| `tool.completed` | **en cuanto termina cada paso**, no al final |
+| `text.delta`, duración y terminal | al cerrar |
+
+Un corte deja `task.created` más los pasos que se alcanzaron a hacer, y eso **es**
+el estado: estaba en marcha, y se paró en el paso N.
+
+### 9c. Recuperado, con `interrumpido`
+
+Al arrancar, `app/recuperacion.py` relee `data/logs/runs/autopilot-*.jsonl` y
+devuelve los runs al buffer. **Nunca dice `running`**: la tarea no existe tras el
+reinicio, y un cliente esperando a un `running` que no va a llegar espera para
+siempre.
+
+Los que no tienen evento terminal se **sellan** con `task.failed` y
+`fin: interrumpido`, y el estado nuevo cuenta aparte:
+
+```
+ESTADO              n     %
+  completado        104   45.2%
+  esperando_ok       67   29.1%
+  incompleto         42   18.3%
+  interrumpido        7    3.0%    ← nuevo
+  roto                7    3.0%
+```
+
+**`interrumpido` no es `roto`.** Un `SIGKILL` a media tarea y una tarea que
+fallan no son lo mismo, y meterlos en el mismo número esconde justo lo que hay
+que mirar. El corte además dejó trabajo a salvo, y eso se cuenta:
+
+> «el proceso se reinició con el run en marcha; 1 paso(s) quedaron a salvo en su
+> traza»
+
+### 9d. Lo que salió por el camino: un bug que llevaba semanas
+
+Al probar esto se descubrió que **`POST /autopilot/start` nunca había ejecutado
+un run**. `_runner()` estaba definida —con su `try`, sus dos `except` y la
+escritura de la traza del fallo— y **debajo no había nada**.
+
+Lo que se veía era lo que hace un fallo silencioso bien hecho: `200 OK`, un
+`run_id` válido y un `status: running` para siempre. `/autopilot` **síncrono** sí
+funcionaba, porque llama a `_run_autopilot_once` directamente: los dos caminos
+compartían todo el trabajo y se diferenciaban en **una línea**.
+
+Se encontró por un camino lateral —había que lanzar un run real para matarlo— y
+se localizó con un log de cuatro líneas. Es A-127.
+
 ## Cómo se mide otra vez
 
 | Lo que quieres saber | El instrumento |
@@ -409,6 +476,7 @@ que imprime secretos es un instrumento que algún día los imprime donde no debe
 | Cuánto cuesta un bloque del prompt, **en un proceso** | `bin/lab/medir-prompt-costo.py` |
 | Si el conversational escala, y lo que cuesta el swap | `bin/lab/medir-prompt-ab.py` y §5c |
 | Cuánto de lo que pido casca con un intent, y qué se escapa | `bin/medir-cobertura --detalle` y §8 |
+| Cuántos runs se cortaron y qué dejaron a salvo | `bin/medir-runs` y §9 |
 
 `probe-toolcall.sh` mida **una** tool con un prompt mínimo. Sirve para detectar
 que el modelo **dejó** de emitir tool-calls; **no** sirve para declarar que el

@@ -25,6 +25,7 @@ Seis estados, y solo seis:
 | `esperando_ok` | el run está esperando a una persona (no es un fallo) |
 | `parado` | lo paró quien lo lanzó, a propósito |
 | `roto` | el modelo no respondió, o el run reventó |
+| `interrumpido` | el proceso se reinició con el run en marcha (A-125) |
 | `rechazado` | la puerta de verificación o la autonomía lo frenó |
 
 `completado` **no** significa "el trabajo estaba bien hecho". Significa "el
@@ -49,6 +50,16 @@ from . import evidencia
 # Los `fin` que el bucle puede devolver (`autopilot.py`) más los que pone
 # `main.py` cuando el run revienta antes de empezar a correr.
 FINS_ROTO = frozenset({"modelo_caido", "reventado"})
+
+#: El proceso se reinició con el run en marcha. **No es `roto`**: un corte y un
+#: fallo son cosas distintas, y meterlas en el mismo número esconde justo lo que
+#: hay que mirar. Un `SIGKILL` a media tarea deja trabajo hecho, y ese trabajo
+#: está en el JSONL: contarlo como roto tiraría los pasos que sí se hicieron.
+#:
+#: La razón de que exista el estado es que sin él un run cortado quedaba
+#: «desconocido» para todo el que leyera el fichero, y un informe de runs
+#: interrumpidos era imposible: solo habría un `task.created` huérfano.
+FINS_INTERRUMPIDO = frozenset({"interrumpido"})
 FINS_ESPERA = frozenset({"esperando_ok"})
 FINS_PARADO = frozenset({"parado"})
 FINS_RECHAZO = frozenset({
@@ -120,6 +131,8 @@ def _clasificar(fin: str, ok: list[str], rojas: list[str],
     caidas = list(sin_respaldo or [])
     if fin in FINS_ROTO:
         estado = "roto"
+    elif fin in FINS_INTERRUMPIDO:
+        estado = "interrumpido"
     elif fin in FINS_ESPERA:
         estado = "esperando_ok"
     elif fin in FINS_PARADO:
@@ -149,6 +162,14 @@ def _clasificar(fin: str, ok: list[str], rojas: list[str],
                    + ("…" if len(caidas) > 3 else ""))
     elif estado == "completado":
         resumen = f"{len(ok)} tool(s) en verde, respuesta de {len(answer.strip())} car."
+    elif estado == "interrumpido":
+        # Cuentan **todos** los pasos, verdes y rojos. `len(ok)` a secas
+        #diría «1 paso» de un run que hizo dos, y en un estado cuyo único
+        # trabajo es decir qué se alcanzó a hacer, ese número es el que se lee.
+        hechos = len(ok) + len(rojas)
+        resumen = (f"el proceso se reinició con el run en marcha; "
+                   f"{hechos} paso(s) quedaron a salvo en su traza"
+                   + (f", {len(rojas)} en rojo" if rojas else ""))
     elif estado == "esperando_ok":
         resumen = "parado esperando tu OK; no ha escrito nada."
     elif estado == "parado":

@@ -77,11 +77,58 @@ def _sin_descubrimiento() -> bool:
 
 
 @contextlib.asynccontextmanager
+def _recuperar_runs_al_arrancar() -> None:
+    """Relee los runs del disco y devuelve su estado al buffer en memoria.
+
+    ## Por qué está aquí y no en el `bucle` de un run
+    Porque un run **no sobrevive** al reinicio: la tarea de asyncio no existe
+    después. Lo que sí sobrevive es su traza, y lo que hay que reconstruir es el
+    **estado** — que estaba en marcha, y hasta dónde llegó.
+
+    Antes de esto, reiniciar el bridge borraba los runs en vuelo sin dejar
+    rastro: ni un error, ni un motivo, ni un punto de corte. Y como
+    `aegis-bridge.service` está en `Restart=always`, «el trabajo se perdió» era
+    una frase que Aegis no podía ni pronunciar.
+
+    ## Qué NO hace
+    **No relanza nada.** Relanzar es una decisión con coste —cuántos reintentos,
+    de qué plan, y qué pasa si el corte fue un OOM y el relanzamiento lo
+    reproduce—. Este arranque solo dice la verdad, y cuenta los que quedaron a
+    medias.
+
+    ## Y por qué los sellados no cuentan como rotos
+    Un `SIGKILL` a media tarea y una tarea que falla no son lo mismo, y meterlos
+    en el mismo número esconde justo lo que hay que mirar. Va en `fin:
+    interrumpido`, que `veredicto.py` trata aparte.
+    """
+    from .recuperacion import interrumpidos, recuperar
+    try:
+        runs = recuperar(_runs_dir(), maximo=_AUTOPILOT_RUNS_MAX)
+    except Exception as exc:  # noqa: BLE001 — recuperar no puede impedir arrancar
+        log.warning("recuperacion: no pude releer los runs: %s", exc)
+        return
+    if not runs:
+        return
+    for run in runs:
+        # Lo que está en memoria manda: si este proceso ya lo está corriendo, no
+        # se pisa con lo que dice el disco.
+        _AUTOPILOT_RUNS.setdefault(run["run_id"], run)
+    a_medias = interrumpidos(runs)
+    if a_medias:
+        log.warning(
+            "recuperacion: %d run(s) estaban en marcha y no llegaron a cerrar: "
+            "%s. Su traza esta a salvo en data/logs/runs/; no se relanzan solos.",
+            len(a_medias), ", ".join(a_medias[:5])
+            + ("…" if len(a_medias) > 5 else ""))
+    log.info("recuperacion: %d run(s) restaurados desde el disco", len(runs))
+
+
 async def lifespan(app: FastAPI):
     configure_telemetry(settings.log_dir)
     init_memory(settings)                       # 'cerebro' del proyecto (capas 1-2)
     init_autonomia()                            # qué puede hacer sin preguntar
     init_agenda()                               # notas, tareas y recordatorios
+    _recuperar_runs_al_arrancar()               # el trabajo en marcha, otra vez
     # Me anuncio en la red local para que el móvil me encuentre sin que nadie
     # configure una IP. Va **después** de todo lo que puede fallar, y su fallo no
     # se propaga: `registrar` devuelve el motivo en vez de lanzar, porque perder
@@ -1428,6 +1475,13 @@ async def _correr_autopilot_en_segundo_plano(run_id: str,
             return
         run["trace"].append(entry)
         run["steps"] = max(run["steps"], step)
+        # Al disco **en cuanto termina el paso**. Con la escritura de antes —todo
+        # el fichero al final, con `open("w")`— un proceso al que se le corta el
+        # puente no dejaba rastro ninguno, y no había forma de distinguir un run
+        # que se perdió de uno que nunca existió. Ahora un corte deja los pasos
+        # que se alcanzaron a hacer, y `_cerrar_jsonl_de_autopilot` sella el resto
+        # como `interrumpido` en el siguiente arranque.
+        _anotar_paso(run_id, entry)
 
     async def _on_delta(fragmento: str) -> None:
         """Un trozo de lo que Aegis está diciendo, **ahora**.
@@ -1518,6 +1572,32 @@ async def _correr_autopilot_en_segundo_plano(run_id: str,
                 "answer": run["answer"], "steps": run.get("steps", 0),
                 "trace": run.get("trace", []), "fin": "reventado",
             })
+
+    # **Aquí se ejecutaba el run.** Y no se ejecutaba.
+    #
+    # `_runner` estaba definida, con sus tres callbacks dentro, su `try`, sus dos
+    # `except` y hasta el `_escribir_jsonl_de_autopilot` del fallo — y después de
+    # la definición no había **nada**. La función se definía y se devolvía.
+    #
+    # Lo que se veía desde fuera era exactamente lo que hace un fallo silencioso
+    # bien hecho: `POST /autopilot/start` devolvía un `run_id`, `GET
+    # /autopilot/{run_id}` contestaba `running`, y se quedaba así **para
+    # siempre**. Sin error, sin traza, sin pasos, y sin que nada pareciera roto.
+    #
+    # Encaja con lo que se llevaba medido: `/autopilot` (síncrono) funcionaba —
+    #llama a `_run_autopilot_once` directamente— y `/autopilot/start` no. La
+    # diferencia entre los dos caminos era justo esta línea.
+    #
+    # ## Cómo se encontró
+    # Con un paso más de persistence (A-125): al lanzar un run de prueba para
+    # matarlo con `SIGKILL` y comprobar que la traza sobrevivía, el run se quedó
+    # en `running` con cero pasos. No era el `SIGKILL` —faltaba el fichero
+    # entero, con `open("w")` de siempre— ni el modelo, que contestaba en 0,7 s.
+    # Un log de cuatro líneas dentro de la función dijo que se paraba justo
+    # después de crear la puerta y antes de entrar al bucle.
+    await _runner()
+
+
 @app.post("/autopilot/start", response_model=AutopilotStarted)
 async def autopilot_start(body: AutopilotIn,
                         _auth: None = Depends(exigir_token)) -> AutopilotStarted:
@@ -1532,6 +1612,16 @@ async def autopilot_start(body: AutopilotIn,
                                "answer": None, "fin": None, "error": None,
                                "parar": asyncio.Event(), "extra": asyncio.Queue(),
                                "task": None}
+    # El log se abre **aquí**, no al terminar. Antes el JSONL entero se escribía
+    # en el `open("w")` del final, así que un proceso al que se le cortaba el
+    # puente a mitad no dejaba fichero ninguno — y no había forma de distinguir
+    # «se perdió» de «nunca existió». Con `task.created` escrito al empezar y los
+    # pasos anotados a medida, un corte deja exactamente eso, y el siguiente
+    # arranque lo sella como `interrumpido`.
+    try:
+        _abrir_jsonl_de_autopilot(run_id).close()
+    except Exception as exc:  # noqa: BLE001 — la traza no puede impedir arrancar
+        log.warning("autopilot %s: no pude abrir su traza: %s", run_id, exc)
     _autopilot_trim()
     project = body.project or ""
     ctx = await _memory_context(body.prompt) if project else ""
@@ -2981,6 +3071,114 @@ def _escribir_jsonl_de_aprobacion(pet_id: str, fila: dict, argumentos: dict,
         log.warning("no pude escribir la traza de %s: %s", pet_id, exc)
 
 
+def _abrir_jsonl_de_autopilot(run_id: str) -> Any:
+    """Abre (o crea) el JSONL de un run en **append**, y escribe `task.created`.
+
+    ## Por qué append y no `open("w")` al final
+    Porque se perdía el trabajo de un run que moría a mitad. Con `open("w")` al
+    terminar, **un proceso al que se le corta el puente no deja fichero**: no hay
+    pasos, ni respuesta, ni el punto exacto en el que se cayó. Y eso no es «no
+    tener el informe», es **no poder distinguir «empezó y no terminó» de «nunca
+    existió»**, que es el peor sitio para perder una traza.
+
+    Con append, el fichero crece a medida que el run avanza y un corte deja todo
+    lo que se alcanzó a hacer, más un `task.created` sin terminal — que es
+    exactamente la forma de decir «se interrumpió aquí».
+
+    ## Y por qué no se reescribe al terminar
+    Reescribir sería un `open("w")` con todo lo acumulado, y volvería a perder lo
+    escrito antes del corte si el proceso muriese **durante** la reescritura. El
+    log se añade y nunca se toca: una línea escrita es una línea que existe.
+    """
+    d = _runs_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    ruta = d / f"{run_id}.jsonl"
+    fh = ruta.open("a", encoding="utf-8")
+    fh.write(json.dumps({
+        "at": _ahora_iso(), "run_id": run_id, "event": "task.created",
+        "agent": "autopilot", "at_run": "",
+        "payload": {"project": "", "model": "", "vivo": True},
+    }, ensure_ascii=False) + "\n")
+    fh.flush()
+    return fh
+
+
+def _anotar_paso(run_id: str, entry: dict) -> None:
+    """Escribe un paso terminado al JSONL, en cuanto termina.
+
+    Se llama desde `_on_step`, que es donde ya está el paso. Es I/O por paso —y
+    un paso dura segundos, con lo que el modelo manda— así que no es trabajo por
+    nada: es lo que hace que el corte deje rastro.
+    """
+    if not entry.get("tool"):
+        return
+    try:
+        with (_runs_dir() / f"{run_id}.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "at": _ahora_iso(), "run_id": run_id, "event": "tool.completed",
+                "agent": "autopilot", "at_run": "",
+                "payload": {"tool": entry["tool"], "ok": entry.get("ok"),
+                            "step": entry.get("step")},
+            }, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001 — escribir la traza no puede tumbar el run
+        log.warning("autopilot %s: no pude anotar el paso: %s", run_id, exc)
+
+
+def _ahora_iso() -> str:
+    return (__import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).isoformat(timespec="milliseconds"))
+
+
+def _cerrar_jsonl_de_autopilot(run_id: str) -> None:
+    """Sella un run interrumpido al arrancar el proceso.
+
+    Un run cuyo proceso murió deja su `task.created` y sus pasos, y **nada más**.
+    Se le añade un `task.failed` con `fin: Interrupted` para que todo el que lea
+    —`leer_run`, `medir-runs`, el veredicto, este propio módulo al arrancar otra
+    vez— vea un run **cerrado y con motivo**, en vez de uno que se queda
+    «desconocido» para siempre.
+
+    Sin esto, cada arranque deja una ambigüedad más acumulada en el histórico, y
+    un informe de runs interrupted sería imposible de hacer: solo habría un
+    `task.created` huérfano.
+    """
+    try:
+        ruta = _runs_dir() / f"{run_id}.jsonl"
+        if not ruta.exists():
+            return
+        with ruta.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "at": _ahora_iso(), "run_id": run_id, "event": "task.failed",
+                "agent": "autopilot", "at_run": "",
+                "payload": {"fin": "interrumpido",
+                            "answer": "",
+                            "error": "el proceso se reinició con el run en marcha"},
+            }, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001 — sellar no puede tumbar el arranque
+        log.warning("autopilot %s: no pude sellar el run: %s", run_id, exc)
+
+
+def ruta_tiene_inicio(run_id: str) -> bool:
+    """True si el JSONL ya tiene su `task.created`.
+
+    Para distinguir el camino normal —el bucle, que lo escribió al arrancar— del
+    atajo que hay cuando un `result` llega sin haber pasado por ahí. No hace
+    falta leer todo el fichero: el evento de creación va siempre el primero.
+    """
+    ruta = _runs_dir() / f"{run_id}.jsonl"
+    try:
+        with ruta.open("r", encoding="utf-8") as fh:
+            for linea in fh:
+                linea = linea.strip()
+                if not linea:
+                    continue
+                return '"event": "task.created"' in linea or \
+                       '"event":"task.created"' in linea
+    except OSError:
+        return False
+    return False
+
+
 def _escribir_jsonl_de_autopilot(run_id: str, project: str,
                                   result: dict[str, Any]) -> None:
     """Deja la traza de un run de autopilot en `data/logs/runs/{run_id}.jsonl`.
@@ -2999,14 +3197,24 @@ def _escribir_jsonl_de_autopilot(run_id: str, project: str,
     d = _runs_dir()
     try:
         d.mkdir(parents=True, exist_ok=True)
-        ahora = __import__("datetime").datetime.now(
-            __import__("datetime").timezone.utc).isoformat(timespec="milliseconds")
-        with (d / f"{run_id}.jsonl").open("w", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "at": ahora, "run_id": run_id, "event": "task.created",
-                "agent": "autopilot", "at_run": "",
-                "payload": {"project": project, "model": result.get("model", "")},
-            }, ensure_ascii=False) + "\n")
+        ahora = _ahora_iso()
+        # **Append**, no `open("w")`. El fichero ya existe con `task.created` y los
+        # pasos que se fueron anotando: reescribirlo desde cero tiraría justo lo
+        # que hace que un corte deje rastro, que es el motivo de este cambio.
+        with (d / f"{run_id}.jsonl").open("a", encoding="utf-8") as fh:
+            # `task.created` lo escribió `_abrir_jsonl_de_autopilot` al arrancar,
+            # y los pasos se fueron anotando en `_on_step`. Aquí solo va el final:
+            # el `delta`, la duración y el terminal.
+            if not ruta_tiene_inicio(run_id):
+                # Ruta de un `result` que no vino por el bucle —un test, o un
+                # llamador directo—: no hay `task.created` y sin él el fichero
+                # no parece un run.
+                fh.write(json.dumps({
+                    "at": ahora, "run_id": run_id, "event": "task.created",
+                    "agent": "autopilot", "at_run": "",
+                    "payload": {"project": project,
+                                "model": result.get("model", "")},
+                }, ensure_ascii=False) + "\n")
             for paso in result.get("trace") or []:
                 if not paso.get("tool"):
                     continue

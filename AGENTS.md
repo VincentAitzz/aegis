@@ -611,6 +611,23 @@ cd bridge && bin/medir-cobertura --detalle
 Lee tus sesiones de `aegis` y **solo** de `aegis`: los otros proyectos no están
 en `PROJECTS`, no se abren, y redacta IPs, UUID y claves de la salida.
 
+### El trabajo en vuelo sobrevive al reinicio
+
+`app/recuperacion.py`, y el JSONL de cada run es **append-only**: `task.created`
+al arrancar, cada `tool.completed` en cuanto termina su paso, y el terminal al
+cerrar.
+
+Al arrancar, el bridge relee `data/logs/runs/autopilot-*.jsonl` y devuelve los
+runs al buffer. Los que **no tienen evento terminal** se sellan con
+`fin: interrumpido` y cuentan como estado aparte: un corte no es un fallo, y
+meterlo en `roto` escondería los pasos que sí se hicieron.
+
+Ningún run restaurado dice `running`. La tarea no existe tras el reinicio, y un
+cliente esperando a un `running` que no va a llegar espera para siempre.
+
+> **El reloj de un run no sobrevive.** Se sabe que estaba en marcha y hasta qué
+> paso llegó; no se reanuda solo. Relanzar es una decisión, y no se toma sola.
+
 ## 8. Proyectos que opera el agente
 
 `PROJECTS` en `bridge/app/projects.py` declara alias → raíz, raíz y verificador de

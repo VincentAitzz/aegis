@@ -3188,3 +3188,58 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
 - **Y la de A-118**: el guardarraíl que casaba por subcadena dio 7 falsos
   positivos. El modo de fallo se repite porque el patrón es cómodo: **casa por
   subcadena lo que querías que casara por frase.**
+
+## A-127 — Una función definida y no llamada no da error: no hace nada
+
+> Aplica cuando: Defines un callback, un `runner` o un manejador y esperas que
+> algo lo invoque.
+
+- **Qué pasó** (2026-10-14): en `_correr_autopilot_en_segundo_plano` había una
+  `async def _runner()` con todo su contenido —los tres callbacks, el `try`, los
+  dos `except`, y hasta la escritura de la traza del fallo— y **debajo no había
+  nada**. La función se definía y se devolvía.
+
+  `POST /autopilot/start` devolvía un `run_id` correcto, `GET
+  /autopilot/{run_id}` contestaba `running`, y el run se quedaba así **para
+  siempre**: cero pasos, sin error, sin traza.
+
+- **Lo que lo escondía**: `/autopilot` **síncrono** funcionaba, porque llama a
+  `_run_autopilot_once` directamente. Los dos caminos compartían todo el trabajo
+  —el bucle, el veredicto, la traza— y se diferenciaban en **una línea**. Todo lo
+  demás daba señales de vida, así que nada señalaba el problema.
+
+- **Cómo se encontró**: por un camino lateral. Al probar la persistencia de runs
+  (A-125) hubo que lanzar un run real y matarlo con `SIGKILL`; el run se quedó en
+  `running` con cero pasos. Se descartó el modelo (respondía en 0,7 s) y se
+  añadió un log de cuatro líneas. Decía que se paraba justo después de crear la
+  puerta y antes de entrar al bucle. El hueco estaba entre las dos, y era una
+  línea.
+
+- **La lección**: **una ruta sin ejercitar no da señales, ni de error ni de
+  Database**. `200 OK`, un id válido y un `status` que parece vivo son
+  exactamente lo que devuelve una función que nunca se llama. El sintoma se
+  parece tanto al de «está lento» que el reloj no lo distingue.
+
+- **Y la de A-118, un patrón distinto**: el guardarraíl que probaba contra un solo
+  caso. Aquí hacía falta un test que lance un run en segundo plano y espere a que
+  **avance**, no uno que compruebe el código de respuesta. El segundo lo habría
+  dado verde sin ejecutarlo nunca.
+
+## A-128 — Un sello mal guardado duplica líneas en cada arranque
+
+> Aplica cuando: Escribas en un fichero al leerlo, en vez de al detectarlo.
+
+- **Qué pasó** (2026-10-14): al recuperar los runs cortados, el módulo
+  `recuperacion` sellaba con `task.failed` cualquiera cuyo `fin` fuera
+  `interrumpido`. El problema es que **después de sellarlo, el `fin` seguía siendo
+  `interrumpido`**: la condición volvía a dar que sí en cada arranque, y le
+  añadía otra línea —y otra— a un fichero que no tenía por qué crecer.
+
+- **La regla**: un sello tiene que decidir con «¿**tenía ya** un evento terminal?»,
+  no con «¿**su valor** es este?». Una y otra cosa se parecen mucho y solo una
+  es idempotente. El `fin` es un dato; la existencia del terminal es el estado.
+
+- **Por qué costó verlo**: el síntoma —ficheros que crecen— no aparece hasta el
+  segundo reinicio, y en un servicio con `Restart=always` reiniciar dos veces es
+  lo más normal del mundo. El test que lo coge es uno que **repite la operación
+  y compara el tamaño**, que es la forma general de probar idempotencia.
