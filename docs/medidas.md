@@ -335,6 +335,67 @@ Y el caso que la que originó la regla, de la lección A-016:
 El segundo es el peor de los dos, porque una comprobación que no suena nunca
 **parece que pasa**. Lo cazó un test que escribí para otra cosa.
 
+## 8. Cómo pides las cosas, medido sobre tus propias sesiones
+
+2026-10-14. Fuente: `~/.local/share/opencode/opencode.db`, 545 prompts, de los
+que **500 son tuyos** (45 eran el prompt del arnés, «Continue if you have next
+steps», que no cuenta). Instrumento: `bridge/bin/medir-cobertura`.
+
+### 8a. El reparto de tus prompts
+
+| patrón | n | % |
+|---|---|---|
+| **continuar** — `procede`, `continua`, `dale` | 95 | **19 %** |
+| corregir | 61 | 12 % |
+| explorar | 44 | 8 % |
+| aprobar | 33 | 6 % |
+| construir | 22 | 4 % |
+| mediana de longitud | **138 chars** | — |
+| menos de 80 caracteres | 169 | 33 % |
+| **sin tildes** | — | **94 %** |
+
+### 8b. La mitad de los «procede» vienen con requisitos
+
+De 88 reales, **44 llevan algo detrás**:
+
+> «Procede, los sin numero tambien incluyelos para manejarlos manualmente pero
+> haz la separacion de los otros»
+
+Eso no es continuar: es cambiar los requisitos de lo que ya se estaba haciendo.
+Y desde el 2026-10-14 el intent `procede` separa los dos casos.
+
+### 8c. La cobertura, antes y después
+
+Sobre **216 prompts de sesiones de `aegis`** (los otros cinco proyectos no se
+abren: no están en `PROJECTS`):
+
+| | los entiende sin modelo | se los pasa al modelo |
+|---|---|---|
+| antes | **0** (27 %) → `procede` no existía | 100 % |
+| ahora | **60 (27 %)** | 156 (72 %) |
+
+### 8d. Los tres falsos positivos
+
+De los 40 «procede» con requisitos, tres no lo eran:
+
+| frase | lo que veía |
+|---|---|
+| `Procede tal cual como dices` | resto: «tal cual como dices» |
+| `Dale procede asi entonces` | resto: «procede asi entonces» |
+| `Procede nomas rey` | resto: «nomas rey» |
+
+Son **énfasis**, no requisitos. Sin corregirlos, Aegis reformula el plan con un
+requisito inventado y eso sale en el informe como cambio drástico. Se cazaron
+**midiendo sobre los datos reales** con `--detalle`, no con un test: un test con
+frases inventadas habría dado verde para siempre.
+
+### 8e. Un detalle que salió al medir
+
+Uno de los prompts de `aegis` trae una **IP de Tailscale con el token de sesión
+dentro**, y otro habla de «la clave de api». Por eso `medir-cobertura` redacta IPs,
+UUID, números largos, claves y tu ruta de casa antes de imprimir: un instrumento
+que imprime secretos es un instrumento que algún día los imprime donde no debe.
+
 ## Cómo se mide otra vez
 
 | Lo que quieres saber | El instrumento |
@@ -347,6 +408,7 @@ El segundo es el peor de los dos, porque una comprobación que no suena nunca
 | Si el modelo emite tool-calling de verdad | `bin/probe-toolcall.sh` |
 | Cuánto cuesta un bloque del prompt, **en un proceso** | `bin/lab/medir-prompt-costo.py` |
 | Si el conversational escala, y lo que cuesta el swap | `bin/lab/medir-prompt-ab.py` y §5c |
+| Cuánto de lo que pido casca con un intent, y qué se escapa | `bin/medir-cobertura --detalle` y §8 |
 
 `probe-toolcall.sh` mida **una** tool con un prompt mínimo. Sirve para detectar
 que el modelo **dejó** de emitir tool-calls; **no** sirve para declarar que el

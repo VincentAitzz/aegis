@@ -138,6 +138,60 @@ NIVELES_CAMINO_RAPIDO: dict[str, str] = {
 #: proyecto con `POST /autonomy/{alias}`.
 CON_PERMISO = frozenset({"aegis_write_file", "aegis_patch_file"})
 
+#: Lo irreversible, por categoría. 2026-10-14.
+#:
+#: ## Por qué está escrito así y no solo metido en `REQUIERE_OK`
+#:
+#: Antes, lo que exigía tu OK era **una lista de nombres sin decir por qué**.
+#: Eso funciona hasta que alguien añade una tool nueva: no hay nada que le
+#: impida meterla en `LIBRES` por descuido, y el olvido es invisible. Aquí la
+#: lista dice **qué clase de consecuencia** es, y hay un test que exige que toda
+#: tool de estas categorías esté en la cola **en los tres modos**.
+#:
+#: ## Tu línea, escrita el 2026-10-14
+#:
+#: > lo irreversible es en cuanto a pagos, despliegues, migraciones, contactar
+#: > clientes esencialmente
+#:
+#: Traducida a código: esas cuatro cosas **siempre** preguntan, y todo lo demás
+#: no. Lo que separa una cosa de otra no es lo difícil que sea, ni lo caro, ni lo
+#: lejano: es si **alguien se entera fuera de esta máquina** cuando pase. Un
+#: fichero que se reescribe lo notas tú; una factura que sale la nota tu banco.
+#:
+#: ## Dos de las cuatro categorías no tienen ninguna tool
+#:
+#: `pago` y `contacto` están **vacías**, y eso no es un olvido: Aegis hoy no
+#: tiene forma de pagar ni de escribir a nadie. No hay tool que gatear porque no
+#: hay tool. Se dejan declaradas y vacías a propósito, porque el día que alguien
+#: añada una tiene que ser **inevitable** que pase por aquí.
+IRREVERSIBLES: dict[str, frozenset[str]] = {
+    # Nada la ejecuta hoy. El día que exista, entra por la cola sin discusión.
+    "pago": frozenset(),
+    # Instalar una build en un teléfono es un despliegue: sale del entorno de
+    # pruebas y llega a un dispositivo que alguien usa. `adb_connect` está aquí
+    # porque no es un fin, es el acceso que hace posible el resto.
+    "despliegue": frozenset({
+        "build_apk", "install_apk", "deploy_smoke", "adb_connect",
+    }),
+    "migracion": frozenset({"db_migrate", "neon_branch"}),
+    # Vacía, como `pago`. Escribir a un cliente es lo más difícil de revertir
+    # que existe —no se puede desmandar un correo— y no hay tool que lo haga.
+    "contacto": frozenset(),
+}
+
+
+def categoria_irreversible(tool: str) -> str:
+    """La categoría de consecuencia de una tool, o `""` si no tiene ninguna.
+
+    Se consulta antes que cualquier lista, en `nivel_de()`. Una tool que esté
+    en dos sitios —porque alguien la añadió a `LIBRES` por descuido— gana la
+    cola, que es la dirección en la que conviene que se equivoque.
+    """
+    for categoria, nombres in IRREVERSIBLES.items():
+        if tool in nombres:
+            return categoria
+    return ""
+
 #: Todo lo demás. Siempre pregunta, en todos los modos.
 REQUIERE_OK = frozenset({
     "db_migrate", "neon_branch", "build_apk", "install_apk",
@@ -622,6 +676,12 @@ def nivel_de(tool: str) -> str:
     y antes del `requiere_ok` por defecto: no son tools MCP, son funciones que el
     router llama tras pasar por `decide()`. Ver `NIVELES_CAMINO_RAPIDO`.
     """
+    # Lo irreversible se comprueba **primero**, antes que ninguna lista. Es la
+    # única forma de que una tool que alguien metió en `LIBRES` por descuido siga
+    # pidiendo: el olvido de un nombre no puede debilitar la puerta.
+    categoria = categoria_irreversible(tool)
+    if categoria:
+        return "requiere_ok"
     if tool in LIBRES:
         return "libre"
     if tool in CON_PERMISO:

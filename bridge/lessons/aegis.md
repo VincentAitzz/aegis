@@ -3128,3 +3128,63 @@ porque todos probaban las dos piezas por separado y ninguno probaba el **orden**
   y se comprobó que el recorte quitara los tres. Un detector que solo se acepta
   cuando no da falsos positivos sobre datos de verdad es un detector; hasta
   entonces es una conjetura.
+
+## A-125 — Un permiso aprobado y no gastado se pierde, y con él el trabajo
+
+> Aplica cuando: Un proceso guarda su trabajo en memoria y otro lo reinicia.
+
+- **Qué pasó** (2026-10-14): `_AUTOPILOT_RUNS` es un `dict` en memoria, sin carga
+  al arrancar. Con `aegis-bridge.service` en `Restart=always`, un reinicio —o un
+  OOM, que ya ocurrió— borra **todos** los runs en vuelo sin dejar rastro más allá
+  del JSONL.
+
+- **Por qué no se vio**: el JSONL del run **sí** está en disco, y se lee bien. Lo
+  que falta es el **estado**: si estaba corriendo, si esperaba tu OK, y cuál era
+  el siguiente paso. Un JSONL es un historial, y un historial no sabe si su
+  último evento fue el final o una interrupción.
+
+- **Por qué importa más de lo que parece**: la decisión de F4/F0 es que Aegis
+  trabaje solo y que la revisión sea posterior. Con estado efímero, «revisar lo
+  que hizo en mi ausencia» es «revisar lo que alcanzó a hacer antes de caerse», y
+  el corte es invisible: no hay un estado que diga «se perdió aquí».
+
+- **La lección**: **persistir el trabajo y persistir su estado son dos cosas
+  distintas, y hace falta la segunda.** Un plan persistente con runs en memoria
+  es un plan que se retoma de cero, y eso no es «se cayó», es «empezó otra vez»:
+  el mismo síntoma y una historia distinta.
+
+- **El orden para no meterlo**: primero el plan (que ya se guarda), después el
+  estado del run. Al revés, un run que se restaura sin plan no sabe qué estaba
+  haciendo.
+
+## A-126 — Un detector que casa con más de lo que debe es ruido con forma de ayuda
+
+> Aplica cuando: Escribas un patrón que reconoce frases naturales.
+
+- **Qué pasó** (2026-10-14): el intent `procede` medido sobre 216 prompts reales
+  de `aegis` —60 casan, 0 antes— daba 40 falsos positivos sobre 60. Los falsos
+  eran frases de **énfasis** que no son requisitos:
+
+  ```
+  'Procede tal cual como dices'   -> resto: «tal cual como dices»
+  'Dale procede asi entonces'     -> resto: «procede asi entonces»
+  'Procede nomas rey'             -> resto: «nomas rey»
+  ```
+
+- **La consecuencia concreta**: Aegis habría reformulado el plan con un requisito
+  que dice «tal cual», y eso habría salido en el informe como cambio drástico. Es
+  peor que no entender la frase: un requisito inventado se propaga.
+
+- **Cómo se cazó**: no con un test, sino **midiendo sobre los datos reales** con
+  `bin/medir-cobertura --detalle`, que imprime lo que casa. Un test con tres
+  frases inventadas habría dado verde para siempre.
+
+- **La lección de la de A-124, pero al revés**: un detector que **nunca** suena
+  parece que pasa; uno que suena de más se nota y se corrige bajando la
+  sensibilidad. Los dos fallos se cazan de forma distinta, y solo uno de los dos
+  necesita que alguien mire. Por eso el instrumento tiene que poder **imprimir los
+  aciertos**, no solo contar.
+
+- **Y la de A-118**: el guardarraíl que casaba por subcadena dio 7 falsos
+  positivos. El modo de fallo se repite porque el patrón es cómodo: **casa por
+  subcadena lo que querías que casara por frase.**

@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Cuánto cubre Aegis de cómo pides las cosas de verdad.
+
+## Qué mide y qué no
+
+**Mide**: de 500 prompts tuyos reales, cuántos casan con un intent de Aegis, y
+qué les pasa a los que no casan. Lo lee de la base de sesiones de opencode
+(`~/.local/share/opencode/opencode.db`), que es de donde salió el análisis.
+
+**No mide**: si Aegis hace bien el trabajo. Eso no lo puede comprobar un regex,
+y no se va a fingir lo contrario. Lo único medible aquí es el reparto entre «lo
+entiende sin modelo» y «se lo pasa al modelo».
+
+## Por qué leer sesiones de otro proyecto
+
+Solo `aegis`, y solo el **texto del prompt**: nunca el contenido de la respuesta,
+ni ficheros, ni secretos. Las sesiones de los otros cinco proyectos no se abren
+—no están en `PROJECTS` y Aegis no opera ninguno de ellos— y el directorio se
+puede cambiar con `--dir`.
+
+Y el resultado **no se escribe en el repo**: sale por pantalla. La razón está
+en `AGENTS.md` §10 —la PII de tus proyectos no se versiona— y en la invariante
+«lo íntimo no sale de la máquina».
+
+## Lo que salió el 2026-10-14
+
+    545 prompts  →  500 reales (45 eran el prompt del arnés)
+    'procede'    ->  (no casa con ningún intent)      ← antes de este trabajo
+    'continua'   ->  (no casa con ningún intent)
+
+El 19 % de tus prompts no llegaba a ningún sitio. La medición se repite con
+`--detalle` para ver el reparto por intención.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import json
+import os
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+RAIZ = Path(__file__).resolve().parent.parent
+
+
+def _reejecutar_en_el_venv() -> None:
+    """Como `bin/corregir`: se relanza en el venv si puede.
+
+    Sin `resolve()` al comparar: el `python` del venv es un symlink a
+    `/usr/bin/python3`, así que resolver las dos rutas da lo mismo y la
+    comparación es siempre falsa — el reexec no ocurriría nunca. Ese bug costó
+    una vuelta entera.
+    """
+    try:
+        import pydantic_settings  # noqa: F401
+        return
+    except ImportError:
+        pass
+    venv = RAIZ / ".venv" / "bin" / "python"
+    if venv.exists() and Path(sys.executable) != venv:
+        os.execv(str(venv), [str(venv), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_reejecutar_en_el_venv()
+sys.path.insert(0, str(RAIZ))
+
+from app.intents import resolver  # noqa: E402
+
+#: El prompt que escribe el arnés cuando pide permiso para seguir. No es tuyo.
+DEL_ARNES = "Continue if you have next steps"
+
+#: La frase que más se repite del sistema en tus sesiones. Se cuenta aparte
+#: porque medirse sobre ella infla cualquier porcentaje.
+def _es_del_arnes(texto: str) -> bool:
+    return texto.strip().startswith(DEL_ARNES)
+
+
+def _abrir_db(ruta: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{ruta}?mode=ro", uri=True)
+
+
+def prompts(db: Path, solo_dir: str) -> list[str]:
+    c = _abrir_db(db).cursor()
+    c.execute("""
+      SELECT s.directory, p.data
+      FROM part p
+      JOIN message m ON m.id = p.message_id
+      JOIN session s ON s.id = m.session_id
+      WHERE json_extract(p.data,'$.type') = 'text'
+        AND json_extract(m.data,'$.role') = 'user'
+    """)
+    fuera: list[str] = []
+    for directorio, data in c:
+        if solo_dir and solo_dir not in directorio:
+            continue
+        try:
+            texto = (json.loads(data).get("text") or "").strip()
+        except (ValueError, TypeError):
+            continue
+        if texto and not _es_del_arnes(texto):
+            fuera.append(texto)
+    return fuera
+
+
+#: Lo que se borra antes de imprimir. Medido: uno de tus prompts trae una IP de
+#: Tailscale **con el token de la sesión** dentro, y otro habla de «la clave de
+#: api». Ninguno va a un fichero —esto sale por pantalla y no se escribe— pero
+#: una salida pegada en un issue se lleva la credencial con ella, y un
+#: instrumento que imprime secretos es un instrumento que algún día los imprime
+#: donde no debe.
+_TRAZAS = (
+    (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(:\d+)?\b"), "<IP>"),
+    (re.compile(r"\b(?:[0-9a-f]{8}-){4}[0-9a-f]{12}\b", re.I), "<UUID>"),
+    (re.compile(r"\b\d{5,}\b"), "<NUM>"),
+    (re.compile(r"(?i)\b(api[_ -]?key|clave|token|secreto|password|"
+                r"contrasen?a)\b\s*[:=]?\s*\S+"), r"\1=<OCULTO>"),
+    # La ruta de tu casa es PII para este repo: `git-filter-repo` la reescribió
+    # en todo el historial por eso. Que un instrumento propio la vuelva a
+    # imprimir, aunque sea por pantalla, deshace medio trabajo.
+    (re.compile(r"/home/[\w.-]+"), "/home/<USUARIO>"),
+    (re.compile(r"/home/[\w.-]+/Workspace/[\w.-]+"), "/home/<USUARIO>/Workspace/<PROY>"),
+)
+
+
+def _redacta(texto: str) -> str:
+    for patron, quoi in _TRAZAS:
+        texto = patron.sub(quoi, texto)
+    return texto
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--db", default="",
+                    help="opencode.db (por defecto el del sistema)")
+    ap.add_argument("--dir", default="/Workspace/aegis",
+                    help="solo sesiones cuyo directorio contenga esto")
+    ap.add_argument("--detalle", action="store_true",
+                    help="reparto por intent, y qué se queda sin entender")
+    args = ap.parse_args()
+
+    db = Path(args.db) if args.db else Path.home() / ".local/share/opencode/opencode.db"
+    if not db.exists():
+        print(f"No encuentro {db}.", file=sys.stderr)
+        return 1
+
+    textos = prompts(db, args.dir)
+    if not textos:
+        print(f"No hay prompts en {db} para --dir {args.dir!r}.", file=sys.stderr)
+        return 1
+
+    casan: collections.Counter = collections.Counter()
+    sin_casa: list[str] = []
+    for t in textos:
+        r = resolver(t)
+        if r is not None:
+            casan[r.nombre] += 1
+        else:
+            sin_casa.append(t)
+
+    total = len(textos)
+    entendidos = sum(casan.values())
+    print(f"prompts reales: {total}   (de {args.dir!r})")
+    print(f"  los entiende sin modelo: {entendidos} "
+          f"({entendidos * 100 // max(total, 1)} %)")
+    print(f"  se los pasa al modelo:   {len(sin_casa)} "
+          f"({len(sin_casa) * 100 // max(total, 1)} %)")
+
+    if casan:
+        print("\npor intent:")
+        for nombre, n in casan.most_common():
+            print(f"  {n:>4}  {nombre}")
+
+    if args.detalle:
+        largos = sorted(sin_casa, key=len)
+        print(f"\nlos {min(10, len(largos))} sin entender más cortos "
+              f"(los que más fácil serían):")
+        for t in largos[:10]:
+            print(f"  · {_redacta(t)[:96]}")
+        print(f"\nlos {min(5, len(largos))} sin entender más largos:")
+        for t in largos[-5:]:
+            print(f"  · {_redacta(t)[:96]!r}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2335,6 +2335,165 @@ class TareaPatch(BaseModel):
     estado: Optional[str] = None
 
 
+# --- Planes: lo que Aegis está trabajando -------------------------------------
+#
+# El objeto que no existía. Sobre 500 prompts reales del usuario, el 19 % son
+# `procede` / `continua`, y ninguno llegaba a ningún sitio: no había nada que
+# representara «en qué está Aegis ahora» contra lo que encajar un plan nuevo.
+#
+# Y el otro hueco: cuando Aegis trabaja en tu ausencia, lo único que hay que
+# poder leer después es el cierre. Por eso plan y cierre van juntos, y por eso
+# `cerrar` **exige** el cierre.
+
+
+class PlanIn(BaseModel):
+    objetivo: str                     # en una frase, sin nombres de fichero
+    proyecto: str = ""
+    prioridad: int = 50               # 0-100; 50 es neutro a propósito
+    criterios: list[str] = []         # cómo se sabrá que está hecho
+
+
+@app.get("/planes", )
+async def planes_listar(estado: str = "", proyecto: str = "", limite: int = 100,
+                        _auth: None = Depends(exigir_token)) -> dict:
+    """Los planes, ordenados como se trabajan: el que corre, luego por prioridad."""
+    from .plan import planes as _planes
+    return {"planes": _planes().planes(estado=estado, proyecto=proyecto,
+                                        limite=limite)}
+
+
+@app.get("/planes/en_curso", )
+async def plan_en_curso(_auth: None = Depends(exigir_token)) -> dict:
+    """El plan que Aegis está trabajando ahora, o `null`.
+
+    Que sea **uno solo** no es una comodidad: es lo que permite que «esto se
+    replanifica» tenga un sujeto. Con dos en curso habría que elegir, y esa
+    elección no tendría criterio.
+    """
+    from .plan import planes as _planes
+    return {"plan": _planes().en_curso()}
+
+
+@app.get("/planes/siguiente", )
+async def plan_siguiente(_auth: None = Depends(exigir_token)) -> dict:
+    """Con qué debería trabajar Aegis ahora mismo."""
+    from .plan import planes as _planes
+    return {"plan": _planes().siguiente()}
+
+
+@app.post("/planes", )
+async def plan_crear(body: PlanIn, _auth: None = Depends(exigir_token)) -> dict:
+    """Deja un plan en la cola, y dice si desplaza al que está en curso.
+
+    No ejecuta nada: **anota**. Y devuelve `desplaza` porque esa es la pregunta
+    que se te va a hacer después, y responderla aquí evita tener que deducirla
+    preguntando por el estado de otro plan.
+    """
+    from .plan import PlanError, planes as _planes
+    ps = _planes()
+    try:
+        nuevo = ps.crear(body.objetivo, proyecto=body.proyecto,
+                         prioridad=body.prioridad, criterios=body.criterios)
+    except PlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    actual = ps.en_curso()
+    return {
+        "plan": nuevo,
+        "desplaza": ps.prioritario_sobre(nuevo["id"]),
+        "en_curso": actual["id"] if actual else "",
+    }
+
+
+@app.post("/planes/{pid}/tomar", )
+async def plan_tomar(pid: str, _auth: None = Depends(exigir_token)) -> dict:
+    """Pasa un plan a `en_curso` y suelta el que hubiera.
+
+    Devuelve `sustituido` para que el cierre pueda contarlo como cambio
+    drástico, que es lo que es: el plan desplazado **vuelve a la cola** con su
+    prioridad, no se pierde.
+    """
+    from .plan import PlanError, planes as _planes
+    try:
+        return _planes().tomar(pid)
+    except PlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/planes/{pid}/bloquear", )
+async def plan_bloquear(pid: str, body: dict,
+                        _auth: None = Depends(exigir_token)) -> dict:
+    from .plan import PlanError, planes as _planes
+    try:
+        return _planes().bloquear(pid, str(body.get("motivo", "")))
+    except PlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/planes/{pid}/reformular", )
+async def plan_reformular(pid: str, body: dict,
+                          _auth: None = Depends(exigir_token)) -> dict:
+    """Cambia el objetivo de un plan y anota por qué.
+
+    Nunca se aplica sola: la pide quien la pide y queda el motivo escrito, que
+    es lo único que la distingue de cambiar de opinión.
+    """
+    from .plan import PlanError, planes as _planes
+    try:
+        return _planes().reformular(
+            pid, nuevo_objetivo=str(body.get("objetivo", "")),
+            motivo=str(body.get("motivo", "")))
+    except PlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/planes/{pid}/cerrar", )
+async def plan_cerrar(pid: str, body: dict,
+                      _auth: None = Depends(exigir_token)) -> dict:
+    """Cierra un plan. **Exige el cierre**, y no es un detalle.
+
+    Sin `cierre`, `cerrado` sería la palabra del modelo diciendo que acabó: el
+    falso éxito de A-016 con otro nombre.
+    """
+    from .plan import PlanError, planes as _planes
+    try:
+        return _planes().cerrar(pid, cierre=str(body.get("cierre", "")))
+    except PlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/cierre/{run_id}", )
+async def cierre_de_run(run_id: str, reformulaciones: str = "",
+                        _auth: None = Depends(exigir_token)) -> dict:
+    """El cierre de un run: cinco apartados, y lo vacío no se imprime.
+
+    Se construye desde el JSONL del run, que es lo que permite mirar el
+    histórico entero con la misma regla. `reformulaciones` es un JSON con la
+    lista, para el caso de que las haya habido y no estén en la traza.
+    """
+    import json as _json
+    from .cierre import cierre_de as _cierre
+    desde = Path(get_settings().log_dir) / "runs" / f"{run_id}.jsonl"
+    if not desde.exists():
+        raise HTTPException(status_code=404, detail=f"no hay traza del run {run_id}")
+    trace, answer, fin = [], "", ""
+    for linea in desde.read_text(encoding="utf-8").splitlines():
+        try:
+            evento = _json.loads(linea)
+        except ValueError:
+            continue
+        trace.append(evento)
+        if evento.get("event") in ("task.done", "task.failed"):
+            payload = evento.get("payload") or {}
+            fin = payload.get("fin") or ""
+            answer = payload.get("answer") or ""
+    try:
+        reform = _json.loads(reformulaciones) if reformulaciones else []
+    except ValueError as exc:
+        raise HTTPException(status_code=400,
+                            detail="las reformulaciones van en JSON") from exc
+    return _cierre(answer, trace, fin=fin, reformulaciones=reform).a_dict()
+
+
 # --- El dataset de conversaciones -------------------------------------------
 #
 # No es una API de entrenamiento: es la forma de **corregir a mano** lo que dijo

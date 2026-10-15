@@ -327,6 +327,168 @@ def _dice_fecha(args: dict[str, Any]) -> str:
     return f"Hoy es {_fecha_ahora()}, y son las {_dime('')}."
 
 
+#: «procede», «continua», y lo que se le parece. La lista sale de medir 500
+#: prompts reales del usuario: 88 empiezan por aquí, y ninguno llegaba a ningún
+#: sitio. Ver `app/plan.py`.
+#: Verbos que **tienen que** valer solos. «listo», «hecho», «vamos» abren
+#: frases que pueden no ser un gesto —«listo ya está, ahora abre el fichero»—
+#: así que solo casan cuando no hay nada más detrás.
+_SOLO_SOLO = r"(?:listo|hecho|vamos|venga|ya\s+esta|ya\s+va|siguiente)"
+
+#: Verbos que se pueden llevar algo detrás. Son los que abren frases del tipo
+#: «procede, inclúyelos pero sepáralos», que es el 50 % de las reales.
+_VERBO_CONTINUAR = (
+    r"procede|procedas|continua|continuar|sigue|sigamos|dale|adelante|"
+    r"pasa\s+a\s+(?:implementar|hacer|ejecutar)"
+)
+
+#: Relleno que no significa nada. Si detrás del verbo solo hay esto, el gesto
+#: va solo.
+#: Relleno que no significa nada. Si detrás del verbo solo hay esto, el gesto
+#: va solo.
+#:
+#: La segunda línea son **énfasis**, y están porque medidos: de 40 «procede» con
+#: algo detrás, tres o cuatro no eran requisitos sino enfasis —«Procede
+#: tal cual como dices», «Dale procede asi entonces», «Procede nomas rey»—. Sin
+#: esta linea, Aegis reformula el plan con un requisito que dice «tal cual», que
+#: es ruido que luego va a aparecer en el informe como si hubiera sido una
+#: decision.
+_RELLENO = (r"(?:por\s*favor|porfa|gracias|rey|"
+            r"tal\s+cual|asi\s+entonces|a\s+vease|nomas|sin\s+mas|"
+            r"y\s+ya\s+esta|entonces|asi|ya|ahora|"
+            r"hasta\s*ahi|aqui|mas\s+o\s+menos|"
+            r"como\s+dices|como\s+digas|lo\s+que\s+digas|"
+            r"con\s+lo\s+que\s+sepas|lo\s+que\s+hagas|"
+            r"vamos|venga|vale)")
+
+#: El patrón, en dos alternativas porque los dos grupos de verbos no se
+#: comportan igual.
+#: Un solo grupo `resto`, que captura **todo** lo que va detrás del verbo —
+#: incluido el relleno, que `calcular` quita después. Con dos alternativas y
+#: anclos sueltos el grupo cogía un solo carácter (`.+?` es perezoso y
+#: `re.match` no necesita consumir la frase entera), y los verbos sin nada
+#: detrás dejaban de casar: `procede` a secas daba `resto='p'`.
+_PATRON_CONTINUAR = (
+    r"^\s*(?:(?:" + _VERBO_CONTINUAR + r")|(?:" + _SOLO_SOLO + r"))\b"
+    r"[\s,.:!]*"
+    r"(?P<resto>.*?)\s*[?.!]*\s*$"
+)
+
+
+def _calcula_procede(frase: str) -> dict[str, Any]:
+    """Separa el gesto de continuar de lo que viene pegado.
+
+    ## Por qué hay que separarlos
+    Medido: de 88 «procede / continua / dale» reales, **44 llevan una
+    restricción encima**. «Procede, los sin numero tambien incluyelos para
+    manejarlos manualmente pero haz la separacion de los otros».
+
+    Eso **no es un procede**. Es un procede con requisitos nuevos. Si se
+    tratara como un procede seco, Aegis ejecutaría un plan que el usuario acaba
+    de cambiar, y sería la peor respuesta posible a la frase más frecuente.
+
+    ## La regla que salió de eso
+    - gesto solo -> continuar
+    - gesto + resto -> **no continuar**: hay un cambio de requisitos, y Aegis
+      dice qué necesita antes de hacer nada.
+
+    ## Y por qué el patrón no se come el resto
+    El patrón ancla al principio y exige que **todo** el resto sea relleno
+    («porfavor», «gracias»). En cuanto hay texto con contenido, el intent
+    **abstiene**, y la abstención lo manda al modelo, que es donde una frase
+    ambigua se resuelve preguntando en vez de suponiendo.
+    """
+    m = re.match(_PATRON_CONTINUAR, _limpia(frase), flags=re.I)
+    resto = _limpia(m.group("resto") or "") if m else ""
+    # El grupo `resto` incluye el relleno, así que hay que quitárselo: «procede
+    # porfavor» tiene que ser un gesto solo, no un cambio de requisitos con la
+    # palabra «porfavor» de requisito.
+    #
+    # Y hay que quitarlo **hasta que no quede**: un solo `re.sub` quita uno, y
+    # «procede porfavor ahora por favor» —que es exactamente como se escribe—
+    # dejaba un «ahora por favor» como requisito. `re.sub` con `+` en vez de
+    # `*` solo arregla los que estén pegados, no los separados por espacios
+    # sueltos que`_limpia` deja entre medias.
+    # Y quitar un **verbo repetido**: «Dale procede así entonces» es un gesto
+    # con énfasis, no un plan cuyo requisito sea «procede así entonces».
+    resto = re.sub(rf"^(?:{_VERBO_CONTINUAR}|{_SOLO_SOLO})\b[\s,.:!]*", "",
+                   resto, count=1, flags=re.I).strip()
+    quitado = resto
+    for _ in range(8):                    # tope: si no converge, es contenido
+        antes = quitado
+        quitado = re.sub(rf"^(?:{_RELLENO})\b[\s,.:!]*", "", quitado,
+                         flags=re.I).strip()
+        if not quitado or quitado == antes:
+            break
+    if not quitado.strip():
+        return {"resto": "", "cambia": False}
+    return {"resto": quitado.strip(), "cambia": True}
+
+
+def _aplica_procede(args: dict[str, Any]) -> str:
+    """Responde «procede» con lo que hay de verdad, y reformula si toca.
+
+    ## Los dos casos, y por qué no son el mismo
+
+    **Gesto solo** («procede», «dale»): se sigue con el plan en curso. Si no
+    hay ninguno, se dice qué hay en la cola en vez de inventar que se continúa.
+
+    **Gesto con requisitos** («procede, inclúyelos pero sepáralos»): medido,
+    la mitad de los «procede» reales vienen así. Eso no es continuar, es
+    **cambiar los requisitos de lo que ya se estaba haciendo**, y lo que se
+    pidió fue que Aegis lo encajara por su cuenta: *«aegis debe encajar eso
+    considerando en lo que esta trabajando actualmente y reformular de ser
+    necesario el plan que esta ejecutandose»*.
+
+    ## Por qué reformula y no pregunta
+    Preguntar sería la respuesta prudente, y aquí sería la respuesta mala. La
+    frase **ya dice** lo que quiere; volver con «¿seguro?» es gastarte el gesto de
+    la persona por miedo a un error que se anota. Y el motivo queda escrito, que
+    es lo que convierte esto en una decisión auditable y no en un capricho.
+
+    ## Y si no hay nada que reformular
+    Se crea un plan nuevo con ese requisito. Que se pueda decir «procede,
+    quiero X» y acabe en la cola es mejor que contestarle «entendido» y no
+    hacer nada: era exactamente eso lo que pasaba antes.
+    """
+    from .plan import Planes
+    try:
+        from .plan import planes as _planes
+        ps = _planes()
+    except Exception:                      # noqa: BLE001 — sin almacén, sin gate
+        ps = Planes()
+
+    if args.get("cambia"):
+        requisito = str(args["resto"]).strip()
+        actual = ps.en_curso()
+        if actual:
+            nuevo_objetivo = f"{actual['objetivo']} · además: {requisito}"
+            ps.reformular(actual["id"], nuevo_objetivo=nuevo_objetivo,
+                          motivo="requisito añadido con «procede»")
+            return (f"He reformulado el plan en curso.\n"
+                    f"  antes:  {actual['objetivo']}\n"
+                    f"  ahora:  {nuevo_objetivo}\n"
+                    f"Lo ejecuto sobre lo que ya venía haciendo, no desde cero.")
+
+        creado = ps.crear(requisito, proyecto=actual.get("proyecto", "")
+                          if actual else "")
+        return (f"No había ningún plan en curso, así que he encolado esto "
+                f"(prioridad {creado['prioridad']}): «{creado['objetivo']}».\n"
+                f"Dime «procede» otra vez y lo tomo.")
+
+    actual = ps.en_curso()
+    if actual:
+        return (f"En curso: «{actual['objetivo']}» (prioridad "
+                f"{actual['prioridad']}). Sigue su curso.")
+
+    siguiente = ps.siguiente()
+    if siguiente:
+        return (f"No hay nada en curso, pero tengo «{siguiente['objetivo']}» "
+                f"en la cola con prioridad {siguiente['prioridad']}. "
+                f"Dime «toma el siguiente» y lo tomo.")
+    return ("No tengo ningún plan, así que no hay nada que continuar. "
+            "Dime qué necesitas y con qué prioridad.")
+
 def _que_puedes_hacer(args: dict[str, Any]) -> str:
     """Qué sabe hacer el sistema, dicho por el sistema.
 
@@ -473,6 +635,18 @@ INTENTS: list[Intent] = [
            r"|la\s+hora(?:\s+es)?|cuanto\s+es\s+la\s+hora|hora|"
            r"dime\s+(?:que\s+hora\s+es|la\s+hora)|que\s+hora\s+hay)\s*[?.!]*\s*$"),
         _sin_args, _dice_hora, ayuda="qué hora es",
+    ),
+    Intent(
+        # Medido el 2026-10-14 sobre 500 prompts reales: 88 empiezan por «procede»,
+        # «continua» o «dale», y **ninguno llegaba a ningún sitio**. Caean a T1
+        # —el modelo sin herramientas— y el modelo no tenía con qué continuar.
+        #
+        # El patrón exige que **todo** lo que viene detrás sea relleno. En cuanto
+        # hay texto con contenido, abstain: es un cambio de requisitos, no un
+        # gesto, y la respuesta correcta a eso es decir qué se necesita.
+        "procede",
+        _p(_PATRON_CONTINUAR),
+        _calcula_procede, _aplica_procede, ayuda="procede / continua / dale",
     ),
     Intent(
         "que_dia_es",

@@ -536,6 +536,81 @@ bin/api POST autonomy/modo '{"modo":"solo"}'    # solo|permiso|pleno
 `pleno` **no** significa "sin preguntar": el nivel 3 pregunta en los tres modos.
 No existe un modo que dispense de la cola (A-036).
 
+## 7.2 Planes, cierre y lo irreversible
+
+Tres cosas que se decidieron el 2026-10-14 y que cambian cómo encaja un encargo.
+
+### El plan es lo que Aegis está trabajando
+
+`bridge/app/plan.py`. **Solo uno está `en_curso` a la vez** —sin eso, «esto se
+replanifica» no tiene sujeto— y cada uno lleva **prioridad** (0-100, el 50 es
+neutro a propósito). Un plan nuevo solo desplaza al que corre si es
+**estrictamente mayor**.
+
+| | |
+|---|---|
+| `GET /planes` | la cola, ordenada como se trabaja |
+| `GET /planes/en_curso` | el único que está corriendo, o `null` |
+| `GET /planes/siguiente` | con qué debería trabajar ahora |
+| `POST /planes` | encola; devuelve `desplaza` |
+| `POST /planes/{id}/tomar` | pasa a `en_curso` **y suelta el que hubiera** |
+
+El plan desplazado **vuelve a la cola con su prioridad**. Abandonar no es cancelar.
+
+**`cerrar` exige el cierre.** Sin él, `cerrado` sería la palabra del modelo
+diciendo que acabó: el falso éxito de A-016 con otro nombre.
+
+### El cierre dice solo lo que importa
+
+`bridge/app/cierre.py` y `GET /cierre/{run_id}`. Cinco apartados: `resultados`,
+`cambios_drasticos`, `errores`, `decisiones`, `recomendaciones`.
+
+- **Sale de la traza, nunca del texto del modelo.** Tercera vez que se aplica la
+  misma regla, y aquí es donde más importa: el cierre es lo único que se lee
+  cuando Aegis trabaja en tu ausencia.
+- **Las recomendaciones no las escribe el modelo.** Salen de cinco reglas que
+  están a la vista, y como mucho tres por run. Una recomendación que siempre sale
+  es ruido.
+- **Un run donde no pasó nada no produce informe.** Y lo que está vacío no se
+  imprime: cinco títulos vacíos dicen «nada» en 200 caracteres.
+- El campo `sostiene` dice de qué dato sale cada apartado, para que el informe sea
+  **auditable** y no haya que creerle.
+
+### Lo irreversible, por categoría y no por lista
+
+`bridge/app/autonomy.py::IRREVERSIBLES`. Las cuatro son: **pago**, **despliegue**,
+**migracion**, **contacto**. Siempre preguntan, en los tres modos.
+
+**Dos están vacías** — Aegis no tiene forma de pagar ni de escribir a nadie — y
+eso es una **propiedad a mantener**, no un hueco: si alguien añade `enviar_correo`,
+`tests/test_irreversible.py` falla y obliga a decidir.
+
+Y **escribir código no pregunta**: `aegis_write_file` está en `CON_PERMISO`, que
+es la marca por proyecto, no la cola. La diferencia importa porque «con permiso» y
+«requiere OK» suenan igual y no son lo mismo: la primera la resolviste una vez,
+la segunda pregunta cada vez.
+
+**Lo que se sabe y no está en las cuatro categorías**: `project_create` (escribe
+fuera de los proyectos declarados) y `quien_eres_actualiza` (reescribe lo que
+Aegis sabe de ti, y eso entra en el prompt de **todos** los runs). Siguen
+preguntando, a propósito.
+
+### `procede` ya no es un agujero
+
+Era el **19 % de tus prompts reales** y no casaba con nada. Ahora hay intent, y
+distingue el gesto solo del gesto **con requisitos pegados** —que son la mitad de
+los reales—: en el segundo caso **reformula el plan en curso** y escribe el
+motivo.
+
+Para medir cuánto de lo que pides lo entiende sin modelo:
+
+```bash
+cd bridge && bin/medir-cobertura --detalle
+```
+
+Lee tus sesiones de `aegis` y **solo** de `aegis`: los otros proyectos no están
+en `PROJECTS`, no se abren, y redacta IPs, UUID y claves de la salida.
+
 ## 8. Proyectos que opera el agente
 
 `PROJECTS` en `bridge/app/projects.py` declara alias → raíz, raíz y verificador de
